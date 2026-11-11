@@ -1,0 +1,211 @@
+import { describe, expect, test } from "bun:test";
+
+import type { CanvasGroupNode, CanvasNode, CanvasNodeData } from "@/types";
+import { contentKey, restoreNodes, structureKey } from "@/utils/canvas/history";
+
+const node = (id: string, data: Partial<CanvasNodeData> = {}, x = 0): CanvasNode => ({
+  id,
+  type: "canvas",
+  position: { x, y: 0 },
+  data: { kind: "image", label: id, ...data },
+});
+
+describe("structureKey / contentKey", () => {
+  test("任务字段变化不算一步", () => {
+    const a = { nodes: [node("n1")], edges: [] };
+    const b = { nodes: [node("n1", { status: "running", taskId: "3", src: null })], edges: [] };
+    expect(structureKey(a)).toBe(structureKey(b));
+    expect(contentKey(a)).toBe(contentKey(b));
+  });
+
+  test("挪位置是结构变化，改提示词是内容变化", () => {
+    const a = { nodes: [node("n1")], edges: [] };
+    expect(structureKey({ nodes: [node("n1", {}, 40)], edges: [] })).not.toBe(structureKey(a));
+    const typed = { nodes: [node("n1", { prompt: "hi" })], edges: [] };
+    expect(structureKey(typed)).toBe(structureKey(a));
+    expect(contentKey(typed)).not.toBe(contentKey(a));
+  });
+
+  test("角色卡节点改角色名 / 形象名 / 音色 / 补充图是内容变化，只有选中状态不同则不是", () => {
+    const base = { name: "小明", look: "基础形象", description: "", extras: [], voice: null };
+    const card = (character: typeof base & Record<string, unknown>) =>
+      node("c1", { kind: "character", label: "小明", character });
+    const a = { nodes: [card(base)], edges: [] };
+    expect(contentKey({ nodes: [card({ ...base, name: "小红" })], edges: [] })).not.toBe(
+      contentKey(a),
+    );
+    expect(contentKey({ nodes: [card({ ...base, look: "礼服" })], edges: [] })).not.toBe(
+      contentKey(a),
+    );
+    expect(contentKey({ nodes: [card({ ...base, voicePrompt: "x" })], edges: [] })).not.toBe(
+      contentKey(a),
+    );
+    expect(
+      contentKey({
+        nodes: [card({ ...base, extras: [{ assetId: "1", src: "/1.png" }] })],
+        edges: [],
+      }),
+    ).not.toBe(contentKey(a));
+    expect(contentKey({ nodes: [{ ...card(base), selected: true }], edges: [] })).toBe(
+      contentKey(a),
+    );
+  });
+});
+
+describe("restoreNodes", () => {
+  const out = (id: string) => ({
+    id,
+    src: `/f/${id}.png`,
+    mediaType: "image" as const,
+    assetId: id,
+    createdAt: 0,
+  });
+
+  test("位置和提示词取快照，生成结果取眼下", () => {
+    const saved = node("n1", { prompt: "old" }, 0);
+    const now = node(
+      "n1",
+      { prompt: "new", status: "done", outputs: [out("1")], src: "/f/1.png" },
+      99,
+    );
+    const [restored] = restoreNodes([saved], [now]);
+    expect(restored.position.x).toBe(0);
+    expect(restored.data).toMatchObject({ prompt: "old", status: "done", src: "/f/1.png" });
+    expect(restored.data.outputs).toHaveLength(1);
+  });
+
+  test("上传进度取眼下的：撤销别的操作不会把还在传的节点进度倒回快照时的 0", () => {
+    const saved = node("n1", { status: "running", uploadProgress: 0 });
+    const now = node("n1", { status: "running", uploadProgress: 64 });
+    const [restored] = restoreNodes([saved], [now]);
+    expect(restored.data.uploadProgress).toBe(64);
+  });
+
+  test("快照里的当前版本按眼下的历史重新镜像", () => {
+    const saved = node("n1", { activeOutputId: "1" });
+    const now = node("n1", {
+      status: "done",
+      outputs: [out("1"), out("2")],
+      activeOutputId: "2",
+      src: "/f/2.png",
+      assetId: "2",
+    });
+    const [restored] = restoreNodes([saved], [now]);
+    expect(restored.data).toMatchObject({ activeOutputId: "1", src: "/f/1.png", assetId: "1" });
+  });
+
+  test("被删的节点原样放回，眼下多出来的节点去掉", () => {
+    const restored = restoreNodes([node("n1"), node("n2")], [node("n1"), node("n3")]);
+    expect(restored.map((item) => item.id)).toEqual(["n1", "n2"]);
+  });
+
+  test("进行中的任务集合属于任务字段：撤销不倒回它", () => {
+    const [kept] = restoreNodes(
+      [node("n1")],
+      [node("n1", { status: "done", pendingTaskIds: ["2", "3"] })],
+    );
+    expect(kept.data.pendingTaskIds).toEqual(["2", "3"]);
+    const [dropped] = restoreNodes(
+      [node("n1", { pendingTaskIds: ["2"] })],
+      [node("n1", { status: "done" })],
+    );
+    expect(dropped.data.pendingTaskIds).toBeUndefined();
+  });
+
+  test("声音生成任务 id 属于任务字段：撤销不倒回它，否则任务结果没人认领", () => {
+    const [kept] = restoreNodes([node("n1")], [node("n1", { voiceTaskId: "9" })]);
+    expect(kept.data.voiceTaskId).toBe("9");
+    const [dropped] = restoreNodes([node("n1", { voiceTaskId: "9" })], [node("n1")]);
+    expect(dropped.data.voiceTaskId).toBeUndefined();
+  });
+
+  test("声音任务回填的音色不被撤销倒回：快照时任务还在跑，眼下已绑成 AI 生成的声音", () => {
+    const base = { name: "林晚", look: "基础形象", description: "", extras: [] };
+    const generated = {
+      mode: "audio" as const,
+      assetId: "77",
+      src: "/77.mp3",
+      origin: "generated" as const,
+    };
+    const saved = node("c1", {
+      kind: "character",
+      label: "旧名",
+      voiceTaskId: "9",
+      character: { ...base, voice: null },
+    });
+    const now = node("c1", {
+      kind: "character",
+      label: "新名",
+      character: { ...base, name: "新名", voice: generated },
+    });
+    const [restored] = restoreNodes([saved], [now]);
+    expect(restored.data.voiceTaskId).toBeUndefined();
+    expect(restored.data.character?.voice).toEqual(generated);
+    expect(restored.data.label).toBe("旧名");
+    expect(restored.data.character?.name).toBe("林晚");
+  });
+
+  test("用户自己换的声音照常可以撤销（快照里没有进行中的声音任务）", () => {
+    const base = { name: "林晚", look: "基础形象", description: "", extras: [] };
+    const saved = node("c1", { kind: "character", character: { ...base, voice: null } });
+    const now = node("c1", {
+      kind: "character",
+      character: {
+        ...base,
+        voice: { mode: "audio", assetId: "5", src: "/5.mp3", origin: "generated" },
+      },
+    });
+    const [restored] = restoreNodes([saved], [now]);
+    expect(restored.data.character?.voice).toBeNull();
+  });
+
+  test("「出图后生成音色」的标记属于任务字段：撤销不倒回它，否则出图后音色不会接着生成", () => {
+    const [kept] = restoreNodes([node("n1")], [node("n1", { voiceAfterImage: ["7"] })]);
+    expect(kept.data.voiceAfterImage).toEqual(["7"]);
+  });
+
+  test("快照里没有、眼下才有的任务字段会被带上", () => {
+    const [restored] = restoreNodes([node("n1")], [node("n1", { status: "running", taskId: "7" })]);
+    expect(restored.data).toMatchObject({ status: "running", taskId: "7" });
+  });
+});
+
+describe("组", () => {
+  const group = (width: number, x = 0): CanvasGroupNode => ({
+    id: "g",
+    type: "group",
+    position: { x, y: 0 },
+    width,
+    height: 200,
+    data: { label: "组" },
+  });
+
+  test("成员入组 / 退组（只换了 parentId）是结构变化", () => {
+    const loose = node("n1");
+    const inside = { ...node("n1"), parentId: "g" };
+    expect(structureKey({ nodes: [group(300), inside], edges: [] })).not.toBe(
+      structureKey({ nodes: [group(300), loose], edges: [] }),
+    );
+  });
+
+  test("缩放组框、挪动组都是结构变化", () => {
+    const base = structureKey({ nodes: [group(300)], edges: [] });
+    expect(structureKey({ nodes: [group(400)], edges: [] })).not.toBe(base);
+    expect(structureKey({ nodes: [group(300, 50)], edges: [] })).not.toBe(base);
+  });
+
+  test("改组名、换颜色是内容变化，不是结构变化", () => {
+    const renamed: CanvasGroupNode = { ...group(300), data: { label: "第一场", color: "red" } };
+    expect(structureKey({ nodes: [renamed], edges: [] })).toBe(
+      structureKey({ nodes: [group(300)], edges: [] }),
+    );
+    expect(contentKey({ nodes: [renamed], edges: [] })).not.toBe(
+      contentKey({ nodes: [group(300)], edges: [] }),
+    );
+  });
+
+  test("撤销时组取快照里的尺寸和位置，不被眼下的覆盖", () => {
+    const [restored] = restoreNodes([group(300)], [group(500, 80)]);
+    expect(restored).toMatchObject({ width: 300, position: { x: 0, y: 0 } });
+  });
+});

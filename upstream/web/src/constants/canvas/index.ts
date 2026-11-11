@@ -1,0 +1,110 @@
+import { BackgroundVariant } from "@xyflow/react";
+
+import type { MediaType } from "@/components/canvas";
+import type { CanvasBackground } from "@/store";
+import type { CanvasEdge, CanvasNode, NodeKind, UploadNotice } from "@/types";
+
+export * from "./model-library";
+export * from "./node-library";
+
+/**
+ * 每种节点能直接驱动生成的下游种类：文本是万能上游，图片能再生图、生视频或作音频的参考，
+ * 音视频只往视频走。拉线落空时据此决定菜单里哪些项可点。
+ */
+export const DOWNSTREAM_KINDS: Record<NodeKind, NodeKind[]> = {
+  // 文本节点是手写内容，没有输入口：不接上游，也就没有哪种节点能连进它
+  script: ["image", "video", "audio"],
+  // 图片接音频节点：音频模型在后台开了图片参考时才真正连得上，由 canLinkNodes 按模型能力把关
+  image: ["image", "video", "audio"],
+  video: ["video"],
+  audio: ["video"],
+  // 导演台不接上游、也不能直接当参考：要先导出成视频 / 图片节点
+  director: [],
+  // 角色卡把形象当参考图、声音当参考音频：只能往生图 / 生视频连，不接音频、文本、导演台
+  character: ["image", "video"],
+};
+
+/** 画布一开始是空的，节点都由用户双击或拉线建出来 */
+export const INITIAL_NODES: CanvasNode[] = [];
+
+export const INITIAL_EDGES: CanvasEdge[] = [];
+
+/** 流动高亮的动画参数：一段光带从源头扫到目标，循环不停（设计稿原型选定「光带」） */
+export const ANIMATED_EDGE_DATA: NonNullable<CanvasEdge["data"]> = {
+  duration: 2,
+  direction: "forward",
+  repeat: "indefinite",
+  path: "bezier",
+  shape: "sweep",
+};
+
+/** 新建连线时套用的默认配置，交给 ReactFlow 的 defaultEdgeOptions */
+export const ANIMATED_EDGE_OPTIONS = {
+  type: "animatedSvgEdge" as const,
+  data: ANIMATED_EDGE_DATA,
+};
+
+/** 设置里的背景样式映射到 xyflow 的 variant，"none" 单独处理成不渲染 */
+export const BACKGROUND_VARIANTS: Record<Exclude<CanvasBackground, "none">, BackgroundVariant> = {
+  dots: BackgroundVariant.Dots,
+  lines: BackgroundVariant.Lines,
+  cross: BackgroundVariant.Cross,
+};
+
+/**
+ * 点阵圆点的屏幕直径（像素），不随画布缩放变化。xyflow 默认是 1 且随缩放变小，
+ * 缩到 64% 只剩半个像素；取 2 对齐节点功能区原型里半径 1px 的圆点
+ */
+export const BACKGROUND_DOT_SIZE = 2;
+
+/** 缩放低于这个值就不画点阵：点距太小，点会挨成一片灰 */
+export const BACKGROUND_DOT_MIN_ZOOM = 0.5;
+
+/** 演示用的出图耗时，同时交给 GridReveal 当进度爬升的预估时长 */
+export const IMAGE_ESTIMATED_DURATION = 3200;
+
+/** 菜单里「上传」那项的标识，和节点种类共用一份清单，所以取个不会撞车的值 */
+export const UPLOAD_ACTION = "action:upload";
+
+/** 菜单里「从资产库添加」那项的标识，取值规则同 UPLOAD_ACTION */
+export const ASSET_LIBRARY_ACTION = "action:asset-library";
+
+/** 文件选择框收的类型 */
+export const UPLOAD_ACCEPT = "image/*,video/*,audio/*";
+
+/** 单个文件的大小上限，三类分开定 */
+export const UPLOAD_SIZE_LIMIT: Record<MediaType, number> = {
+  image: 20 * 1024 * 1024,
+  video: 200 * 1024 * 1024,
+  audio: 50 * 1024 * 1024,
+};
+
+/**
+ * 一次选多个文件时，节点在落点旁按网格排开的间距和每行个数，
+ * 不错开的话几个节点会严丝合缝叠成一摞，看着像只传了一个
+ */
+export const UPLOAD_STACK_GAP = { x: 440, y: 380 };
+export const UPLOAD_STACK_COLUMNS = 3;
+
+/**
+ * 从资产库一次引入多个素材时的排布：横向最多 4 列，节点框之间留 40px（横纵都是），
+ * 超过 4 个换行。和上传不同，这里按各节点框的真实尺寸排，所以只需要一个间距
+ */
+export const ASSET_STACK_COLUMNS = 4;
+export const ASSET_STACK_GAP = 40;
+
+/** 传进来的素材落到哪种节点上 */
+export const UPLOAD_TARGET_KIND: Record<MediaType, NodeKind> = {
+  image: "image",
+  video: "video",
+  audio: "audio",
+};
+
+/** 上传那句话在画布上停留的时长 */
+export const UPLOAD_NOTICE_DURATION = 4000;
+
+/** 两种语气各自的长相：拦下来的是警示色，只是知会一声的按普通提示 */
+export const UPLOAD_NOTICE_CLASS: Record<UploadNotice["tone"], string> = {
+  error: "border-destructive/40 bg-destructive/10 text-destructive",
+  info: "bg-card/80 text-muted-foreground",
+};

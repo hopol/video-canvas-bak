@@ -1,0 +1,121 @@
+import type { CanvasEdge, CanvasNodeData, FlowNode } from "@/types";
+
+import { isGroupNode } from "./group";
+import { selectOutput } from "./outputs";
+
+/** 撤销栈最多记几步 */
+export const HISTORY_LIMIT = 100;
+
+/** 一步撤销记下的画布 */
+export type HistorySnapshot = { nodes: FlowNode[]; edges: CanvasEdge[] };
+
+/**
+ * 由生成任务写进来的字段：撤销不该把它们倒回去，
+ * 否则撤一步就把刚生成好的结果、正在跑的任务状态一起抹掉了。
+ */
+const TASK_FIELDS = [
+  "status",
+  "uploadProgress",
+  "taskId",
+  "pendingTaskIds",
+  "voiceTaskId",
+  "voiceAfterImage",
+  "error",
+  "text",
+  "outputs",
+  "src",
+  "assetId",
+  "mediaType",
+  "mediaAspect",
+  "uploaded",
+  "fileName",
+] as const satisfies readonly (keyof CanvasNodeData)[];
+
+/**
+ * 导演台场景：编辑器有自己的撤销栈，画布撤销（比如撤销挪节点）不能把场景倒回快照时的样子。
+ */
+const LIVE_FIELDS = [...TASK_FIELDS, "scene"] as const satisfies readonly (keyof CanvasNodeData)[];
+
+/**
+ * 声音任务回填写的是 character.voice（不在任务字段里，用户上传 / 绑定也写它，撤销要能倒回），
+ * 所以单独认：快照那一刻节点还记着声音任务，眼下任务记录已经清掉（或换成了别的任务）、
+ * 声音是 AI 生成的，说明这段声音是任务回填进来的，撤销保留眼下的声音，
+ * 否则撤一步就把刚生成好的音色抹掉了，任务记录又已清掉，没人再回填。
+ * @param saved 快照里的节点数据
+ * @param now 眼下的节点数据
+ * @returns 要保留的声音；不是这种情况时为 undefined
+ */
+function taskFilledVoice(saved: CanvasNodeData, now: CanvasNodeData) {
+  const voice = now.character?.voice;
+  if (!saved.voiceTaskId || saved.voiceTaskId === now.voiceTaskId) return undefined;
+  return voice?.origin === "generated" ? voice : undefined;
+}
+
+/** 节点的结构：增删、位置、连线变了就是一步，立刻入栈 */
+export function structureKey({ nodes, edges }: HistorySnapshot) {
+  return JSON.stringify([
+    nodes.map((node) => [
+      node.id,
+      Math.round(node.position.x),
+      Math.round(node.position.y),
+      // 入组 / 退组、缩放组框也是一步
+      node.parentId ?? null,
+      isGroupNode(node) ? [Math.round(node.width ?? 0), Math.round(node.height ?? 0)] : null,
+    ]),
+    // 连接点（handle）不算：换模型后节点会自己把线挪到新口上，那不是用户的一步
+    edges.map((edge) => [edge.id, edge.source, edge.target]),
+  ]);
+}
+
+/** 节点的内容：标题、模型、提示词、参数。连着打字只算一步，要攒一会儿再入栈 */
+export function contentKey({ nodes }: HistorySnapshot) {
+  return JSON.stringify(
+    nodes.map((node) =>
+      isGroupNode(node)
+        ? [node.data.label, node.data.color, node.data.labelColor]
+        : [
+            node.data.label,
+            node.data.model,
+            node.data.prompt,
+            node.data.params,
+            node.data.paramAssets,
+            node.data.character,
+          ],
+    ),
+  );
+}
+
+/**
+ * 撤销 / 重做时把快照里的节点放回画布：用户改的（位置、标题、参数、当前版本）取快照里的，
+ * 任务写的（状态、产物、历史版本）取眼下的；当前版本按眼下的历史重新对一遍镜像字段。
+ * 快照里有、眼下已经被删的节点原样放回。
+ */
+export function restoreNodes(snapshot: FlowNode[], current: FlowNode[]): FlowNode[] {
+  const live = new Map(current.map((node) => [node.id, node]));
+  return snapshot.map((saved): FlowNode => {
+    const now = live.get(saved.id);
+    if (!now) return saved;
+    // 组没有任务字段：位置、尺寸、名字、颜色全取快照，只保留眼下测得的尺寸
+    if (isGroupNode(saved) || isGroupNode(now)) return { ...saved, measured: now.measured };
+    const data: CanvasNodeData = { ...saved.data };
+    for (const key of LIVE_FIELDS) {
+      if (now.data[key] === undefined) delete data[key];
+      else Object.assign(data, { [key]: now.data[key] });
+    }
+    const filledVoice = taskFilledVoice(saved.data, now.data);
+    if (filledVoice && data.character) data.character = { ...data.character, voice: filledVoice };
+    const mirrored =
+      saved.data.activeOutputId && now.data.status !== "running"
+        ? selectOutput(data, saved.data.activeOutputId)
+        : null;
+    return {
+      ...saved,
+      measured: now.measured,
+      width: now.width,
+      height: now.height,
+      data: mirrored
+        ? { ...data, ...mirrored }
+        : { ...data, activeOutputId: now.data.activeOutputId },
+    };
+  });
+}

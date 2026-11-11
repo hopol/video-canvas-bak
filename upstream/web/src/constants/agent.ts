@@ -1,0 +1,96 @@
+import type { AgentMode } from "@/api/agent/type";
+
+/**
+ * 助手的名字：画布、短剧、后台是同一个助手，按所在位置拿到不同的工具。
+ * 和后端提示词（backend/internal/agent/prompts 的 system.md、admin.md）里的自称一致
+ */
+export const ASSISTANT_NAME = "小镜";
+
+/** 任务模式：名称、一句说明（模式下拉里显示） */
+export const AGENT_MODES: ReadonlyArray<{ value: AgentMode; label: string; hint: string }> = [
+  { value: "all", label: "全能创作", hint: "按你的想法搭建、修改、整理画布，需要时申请生成" },
+  { value: "script", label: "剧本创编", hint: "只写剧本和台词，不拆镜头、不建图片视频节点" },
+  { value: "storyboard", label: "分镜搭建", hint: "把剧本拆成角色组和镜头组，连好参考关系" },
+  { value: "prompt", label: "提示词优化", hint: "只改已有节点的提示词，不新建不删除" },
+];
+
+/** 工具的中文名，工具行显示用；不认识的工具显示原名 */
+export const TOOL_LABELS: Record<string, string> = {
+  canvas_get_state: "读取画布",
+  canvas_apply_ops: "修改画布",
+  canvas_arrange: "整理布局",
+  canvas_delete: "申请删除",
+  canvas_inspect_image: "查看图片",
+  plan_update: "更新计划",
+  show_card: "展示卡片",
+  ask_user: "向你提问",
+  model_list: "查看可用模型",
+  generate_media: "申请生成",
+  task_get: "查询任务",
+  skill_search: "搜索技能",
+  skill_read: "读取技能",
+  canvas_inspect_video: "查看视频",
+  canvas_capture_frame: "截取视频帧",
+  web_search: "搜索网页",
+  web_fetch: "读取网页",
+  codemode: "运行脚本",
+  drama_read: "读取短剧",
+  drama_update_outline: "修改大纲",
+  drama_update_episode: "修改剧本",
+  drama_update_segment: "修改片段",
+  drama_run_job: "提交任务",
+};
+
+/** 工具的短动词：活动块收起后的摘要按它计数，如「读取 2 · 修改 3」 */
+export const TOOL_VERBS: Record<string, string> = {
+  canvas_get_state: "读取",
+  canvas_apply_ops: "修改",
+  canvas_arrange: "整理",
+  canvas_delete: "删除",
+  canvas_inspect_image: "看图",
+  plan_update: "计划",
+  show_card: "展示",
+  ask_user: "提问",
+  model_list: "查模型",
+  generate_media: "生成",
+  task_get: "查任务",
+  skill_search: "技能",
+  skill_read: "技能",
+  canvas_inspect_video: "看视频",
+  canvas_capture_frame: "截帧",
+  web_search: "搜索",
+  web_fetch: "读网页",
+  codemode: "脚本",
+  drama_read: "读取",
+  drama_update_outline: "改大纲",
+  drama_update_episode: "改剧本",
+  drama_update_segment: "改片段",
+  drama_run_job: "提交",
+};
+
+/** 工具的显示名：后端随事件下发的优先（新工具不用改前端），其次本地常量，都没有就显示原名 */
+export const toolLabel = (name: string, label?: string) => label || TOOL_LABELS[name] || name;
+
+/** 工具的短动词：下发的动词 > 本地动词 > 下发的名称 > 本地名称 > 原名 */
+export const toolVerb = (name: string, verb?: string, label?: string) =>
+  verb || TOOL_VERBS[name] || label || TOOL_LABELS[name] || name;
+
+/**
+ * 运行状态给用户看的话（只列需要在消息流里提示的）。
+ * 现在由后端随 run.status 事件下发 title 和 hint，这份只给没带文字的旧事件兜底；新增状态不用加在这里。
+ */
+export const RUN_STATUS_TEXT: Record<string, { title: string; hint: string }> = {
+  failed: { title: "运行失败", hint: "可以换个说法重试" },
+  timeout: { title: "运行超时", hint: "可以继续，或换个说法重试" },
+  interrupted: { title: "运行被中断", hint: "服务重启或运行进程退出了，可以从断点继续" },
+  budget_exhausted: { title: "本轮额度用完了", hint: "追加额度后可以继续" },
+  step_limit: { title: "达到本轮步数上限", hint: "继续的话会再给一轮步数" },
+  canceled: { title: "已停止", hint: "没做完的计划还留着，可以接着让它做" },
+  expired: { title: "等待超时", hint: "你太久没有回应，这一轮已经结束" },
+};
+
+/** 运行状态的标题和提示：后端下发的优先；只下发了标题时提示退回本地的；都没有返回 undefined */
+export const runStatusText = (status: string, title?: string, hint?: string) => {
+  const local = RUN_STATUS_TEXT[status];
+  return title ? { title, hint: hint || local?.hint || "" } : local;
+};

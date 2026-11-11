@@ -1,0 +1,421 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+
+	"go.uber.org/zap"
+
+	"video-canvas/internal/agent/canvasgraph"
+	"video-canvas/internal/model"
+	"video-canvas/internal/pkg/errcode"
+	"video-canvas/internal/pkg/logger"
+	"video-canvas/internal/provider"
+)
+
+// 工具参数的限制。
+const (
+	maxPlanSteps     = 12 // 计划最多几步
+	maxPlanTitleLen  = 80 // 计划每步标题最多几个字
+	maxQuestionLen   = 200
+	maxToolErrorSize = 1500 // 回给模型的工具错误最多几个字，免得一个超长报错占掉上下文
+)
+
+// ToolResult 是一次工具调用的结果，Node 里的工具原样转给 pi。
+type ToolResult struct {
+	Data      any         `json:"data,omitempty"`   // 已脱敏的结构化工具结果
+	Content   string      `json:"content"`          // 给模型看的文字
+	IsError   bool        `json:"is_error"`         // 工具没做成，模型会看到并自行处理
+	Images    []ToolImage `json:"images,omitempty"` // 随结果交给模型看的图片（看图工具）
+	Terminate bool        `json:"terminate"`        // 本批工具执行完后停下，不再请求模型（等审批、等回答、步数用尽）
+	// ToolEnd 只在平台 API（上下文模式）下给出：令牌模式下 Go 自己发的那个 tool.end 事件的内容。
+	// 事件由 Agent 服务落库和推送，但摘要、被改动的节点、界面名称只有这里知道
+	ToolEnd map[string]any `json:"tool_end,omitempty"`
+
+	summary string // 与 tool.end 事件一致的一行摘要，只给调用记录用，不下发给 Node
+}
+
+// ToolImage 是随工具结果交给模型的一张图片。
+type ToolImage struct {
+	MimeType string `json:"mime_type"`      // image/png 等
+	Data     string `json:"data,omitempty"` // base64；素材在对象存储里时不给，改给 URL
+	URL      string `json:"url,omitempty"`  // 上游模型能直接访问的签名或公开地址
+}
+
+// toolFailure 是工具层的失败：回给模型的是说明文字，不是 HTTP 错误。
+type toolFailure struct{ msg string }
+
+func (e *toolFailure) Error() string { return e.msg }
+
+func fail(format string, a ...any) error { return &toolFailure{msg: fmt.Sprintf(format, a...)} }
+
+// toolOut 是一个工具处理函数的产出。
+type toolOut struct {
+	data      any
+	content   string
+	summary   string // 记进 tool.end 事件，前端工具行显示它
+	images    []ToolImage
+	terminate bool
+	isError   bool           // 保留结构化校验结果，同时明确业务检查失败
+	extra     map[string]any // 一并记进 tool.end 的附加信息，如被改动的节点
+}
+
+// toolCall 是一次工具调用的上下文。
+type toolCall struct {
+	run  *model.AgentRun
+	sess *bridgeSession
+	id   string
+	args json.RawMessage
+	// propose 不为 nil 时是「预估」：需要用户决定的工具把审批内容记在这里，不创建审批、不改运行状态（审批归 Agent 服务）
+	propose *approvalDraft
+}
+
+// approvalDraft 是需要用户决定的工具算出来的审批内容。
+type approvalDraft struct {
+	kind    string
+	payload any
+	quote   int
+}
+
+// requestApproval 是生成、删除、提问三个工具共用的出口：只做「预估」——把审批内容记在 tc.propose 里，
+// 不创建审批、不改运行状态（审批归 Agent 服务）。
+func (b *AgentBridge) requestApproval(_ context.Context, tc *toolCall, kind string, payload any, quote int) error {
+	if tc.propose == nil {
+		return errors.New("需要用户决定的工具只能经审批预估接口执行")
+	}
+	*tc.propose = approvalDraft{kind: kind, payload: payload, quote: quote}
+	return nil
+}
+
+// toolEndEvent 组出一次工具调用的 tool.end 事件内容，由 Agent 服务落库和推送（摘要、被改动的节点、界面名称只有这里知道）。
+func toolEndEvent(toolCallID, parentID, name string, out *toolOut, res *ToolResult) map[string]any {
+	end := withParent(withToolLabel(map[string]any{"id": toolCallID, "name": name, "is_error": res.IsError, "summary": firstNonEmpty(outSummary(out), summarizeError(res))}, name), parentID)
+	if out != nil {
+		for k, v := range out.extra {
+			end[k] = v
+		}
+	}
+	return end
+}
+
+// withParent 给脚本里发起的调用的事件带上父调用 id。
+func withParent(ev map[string]any, parentID string) map[string]any {
+	if parentID != "" {
+		ev["parent_id"] = parentID
+	}
+	return ev
+}
+
+// finishTool 把处理函数的结果转成对模型的回复：toolFailure 是普通工具错误；
+// 画布校验错误列出每一项问题；其余基础设施错误只告诉模型「内部错误」，细节记日志，不外泄。
+func (b *AgentBridge) finishTool(out *toolOut, err error) *ToolResult {
+	if err == nil {
+		return &ToolResult{Content: out.content, Terminate: out.terminate, Images: out.images, Data: out.data, IsError: out.isError}
+	}
+	var tf *toolFailure
+	var ve *canvasgraph.ValidationError
+	switch {
+	case errors.As(err, &tf):
+		return &ToolResult{Content: truncateRunes(tf.msg, maxToolErrorSize), IsError: true}
+	case errors.As(err, &ve):
+		return &ToolResult{Content: "操作没有生效：" + truncateRunes(ve.Error(), maxToolErrorSize), IsError: true}
+	case errors.Is(err, canvasgraph.ErrInvalid):
+		return &ToolResult{Content: truncateRunes(err.Error(), maxToolErrorSize), IsError: true}
+	}
+	var ec *errcode.Error
+	if errors.As(err, &ec) {
+		return &ToolResult{Content: ec.Msg, IsError: true}
+	}
+	logger.Error("Agent 工具执行失败", zap.Error(err))
+	return &ToolResult{Content: "工具执行时出现内部错误，请稍后重试。", IsError: true}
+}
+
+func outSummary(o *toolOut) string {
+	if o == nil {
+		return ""
+	}
+	return o.summary
+}
+
+func summarizeError(r *ToolResult) string {
+	if r.IsError {
+		return truncateRunes(r.Content, 120)
+	}
+	return ""
+}
+
+// modeLabel 是任务模式的中文名。
+func modeLabel(mode string) string {
+	switch mode {
+	case model.AgentModeScript:
+		return "剧本创编"
+	case model.AgentModeStoryboard:
+		return "分镜搭建"
+	case model.AgentModePrompt:
+		return "提示词优化"
+	case model.AgentModeDrama:
+		return "短剧助手"
+	}
+	return "全能创作"
+}
+
+// modeAllowsOps 判断任务模式能不能做这批画布操作。剧本创编只能新建和修改文本节点，提示词优化只能改已有节点的提示词。
+// 已知的限制：剧本创编里 update_node 改的是不是文本节点这里没有查（要读画布），只限制了操作种类。
+func modeAllowsOps(mode string, ops []canvasgraph.Op) error {
+	for _, op := range ops {
+		switch mode {
+		case model.AgentModeScript:
+			ok := (op.Op == canvasgraph.OpCreateNode && op.Kind == canvasgraph.KindScript) || op.Op == canvasgraph.OpUpdateNode
+			if !ok {
+				return fail("当前是「剧本创编」模式，只能新建和修改文本节点，不能做 %s。", op.Op)
+			}
+		case model.AgentModePrompt:
+			if op.Op != canvasgraph.OpUpdateNode || op.Label != nil || op.Model != nil {
+				return fail("当前是「提示词优化」模式，只能修改已有节点的提示词，不能做 %s。", op.Op)
+			}
+		}
+	}
+	return nil
+}
+
+// jsonOut 把结果序列化成给模型看的 JSON 文本。
+func jsonOut(v any) (string, error) {
+	b, err := json.Marshal(v)
+	return string(b), err
+}
+
+// toolGetState 读画布：不传参数返回目录（选中的节点排最前）；传 nodeIds 或 groupId 返回节点详情。
+func (b *AgentBridge) toolGetState(ctx context.Context, tc *toolCall) (*toolOut, error) {
+	var a struct {
+		NodeIDs []string `json:"nodeIds"`
+		GroupID string   `json:"groupId"`
+	}
+	if err := json.Unmarshal(tc.args, &a); err != nil {
+		return nil, fail("参数格式不对：%v", err)
+	}
+	ids := a.NodeIDs
+	if a.GroupID != "" {
+		cat, err := b.d.Canvas.Catalog(ctx, tc.run, canvasgraph.CatalogOptions{Max: 1000})
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range cat.Nodes {
+			if n.Group == a.GroupID {
+				ids = append(ids, n.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, fail("组 %q 不存在或里面没有节点", a.GroupID)
+		}
+	}
+	if len(ids) == 0 {
+		cat, err := b.d.Canvas.Catalog(ctx, tc.run, canvasgraph.CatalogOptions{Priority: tc.sess.selection})
+		if err != nil {
+			return nil, err
+		}
+		content, err := jsonOut(cat)
+		return &toolOut{content: content, summary: fmt.Sprintf("读取画布目录（%d 个节点）", cat.Total)}, err
+	}
+	d, err := b.d.Canvas.ReadDetail(ctx, tc.run, ids)
+	if err != nil {
+		return nil, err
+	}
+	content, err := jsonOut(d)
+	return &toolOut{content: content, summary: fmt.Sprintf("读取 %d 个节点", len(d.Nodes)), extra: map[string]any{"node_ids": ids}}, err
+}
+
+// toolApplyOps 应用一批编辑操作。
+func (b *AgentBridge) toolApplyOps(ctx context.Context, tc *toolCall) (*toolOut, error) {
+	var a struct {
+		Ops json.RawMessage `json:"ops"`
+	}
+	if err := json.Unmarshal(tc.args, &a); err != nil || len(a.Ops) == 0 {
+		return nil, fail("参数里需要 ops 数组")
+	}
+	ops, err := canvasgraph.ParseOps(a.Ops)
+	if err != nil {
+		return nil, fail("%v", err)
+	}
+	if err := modeAllowsOps(tc.sess.mode, ops); err != nil {
+		return nil, err
+	}
+	assets, err := b.resolveOpAssets(ctx, tc.run.UserID, ops)
+	if err != nil {
+		return nil, err
+	}
+	res, err := b.d.Canvas.ApplyOps(withOpAssets(ctx, assets), tc.run, tc.id, a.Ops)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"ok": true, "id_map": res.IDMap, "changes": res.Changes, "revision": res.Revision}
+	if len(res.Warnings) > 0 {
+		out["warnings"] = res.Warnings
+	}
+	content, err := jsonOut(out)
+	ids := make([]string, 0, len(res.IDMap))
+	for _, id := range res.IDMap {
+		ids = append(ids, id)
+	}
+	// created / updated 给前端的「本轮改动」摘要分开计数
+	extra := map[string]any{"node_ids": ids, "created": res.Created, "updated": res.Updated}
+	return &toolOut{content: content, summary: fmt.Sprintf("应用 %d 项操作", len(ops)), extra: extra}, err
+}
+
+// resolveOpAssets 解析这批操作里 create_node 的 assetId：素材必须是该用户的、支持的图片格式。
+// 没有 assetId 返回 nil。Go 这边没有「本会话附件」的记录（消息事件在 Agent 服务里），所以靠素材归属把关：
+// 只能用到用户自己的素材，别人的和不存在的一样报「不存在」。
+func (b *AgentBridge) resolveOpAssets(ctx context.Context, userID uint64, ops []canvasgraph.Op) (map[string]canvasgraph.AssetRef, error) {
+	var out map[string]canvasgraph.AssetRef
+	for _, op := range ops {
+		if op.AssetID == "" {
+			continue
+		}
+		if _, done := out[op.AssetID]; done {
+			continue
+		}
+		if b.d.Assets == nil {
+			return nil, fail("暂时无法读取素材")
+		}
+		id, err := strconv.ParseUint(op.AssetID, 10, 64)
+		if err != nil {
+			return nil, fail("assetId %q 无效", op.AssetID)
+		}
+		asset, err := b.d.Assets.Get(ctx, userID, id)
+		if errors.Is(err, provider.ErrAssetNotFound) {
+			return nil, fail("素材 %s 不存在或已删除", op.AssetID)
+		}
+		if err != nil {
+			return nil, errcode.ErrInternal
+		}
+		if !slices.Contains(inspectMimes, asset.MimeType) {
+			return nil, fail("素材 %s 的格式 %s 不支持当图片节点", op.AssetID, asset.MimeType)
+		}
+		if out == nil {
+			out = map[string]canvasgraph.AssetRef{}
+		}
+		out[op.AssetID] = canvasgraph.AssetRef{ID: op.AssetID, URL: b.fileURL(asset.StorageKey), FileName: asset.FileName, Width: asset.Width, Height: asset.Height}
+	}
+	return out, nil
+}
+
+// toolArrange 整理布局。
+func (b *AgentBridge) toolArrange(ctx context.Context, tc *toolCall) (*toolOut, error) {
+	var a struct {
+		GroupID string   `json:"groupId"`
+		NodeIDs []string `json:"nodeIds"`
+		Layout  string   `json:"layout"`
+	}
+	if err := json.Unmarshal(tc.args, &a); err != nil {
+		return nil, fail("参数格式不对：%v", err)
+	}
+	res, err := b.d.Canvas.Arrange(ctx, tc.run, tc.id, canvasgraph.ArrangeTarget{GroupID: a.GroupID, NodeIDs: a.NodeIDs}, canvasgraph.Layout(a.Layout))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"ok": true, "changes": res.Changes}
+	if len(res.Warnings) > 0 {
+		out["warnings"] = res.Warnings
+	}
+	content, err := jsonOut(out)
+	return &toolOut{content: content, summary: "整理布局（" + a.Layout + "）", extra: map[string]any{"node_ids": a.NodeIDs}}, err
+}
+
+// toolDelete 申请删除：不直接删，创建审批并让本轮停下等用户决定。
+func (b *AgentBridge) toolDelete(ctx context.Context, tc *toolCall) (*toolOut, error) {
+	var a struct {
+		NodeIDs []string `json:"nodeIds"`
+		EdgeIDs []string `json:"edgeIds"`
+		Reason  string   `json:"reason"`
+	}
+	if err := json.Unmarshal(tc.args, &a); err != nil {
+		return nil, fail("参数格式不对：%v", err)
+	}
+	if len(a.NodeIDs)+len(a.EdgeIDs) == 0 {
+		return nil, fail("没有指定要删除的节点或连线")
+	}
+	// 列表一律给空数组而不是 nil：nil 会序列化成 null，前端直接读 length 会崩
+	p := DeletePayload{
+		Reason: truncateRunes(a.Reason, 200), NodeIDs: nonNil(a.NodeIDs), EdgeIDs: nonNil(a.EdgeIDs),
+		Labels: []string{}, Outputs: []bool{},
+	}
+	if len(a.NodeIDs) > 0 {
+		d, err := b.d.Canvas.Detail(ctx, tc.run, a.NodeIDs) // 顺便确认节点都存在，卡片上要显示标题和是否含产物
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range d.Nodes {
+			label, _ := n.Data["label"].(string)
+			has, _ := n.Data["hasOutput"].(bool)
+			p.Labels, p.Outputs = append(p.Labels, label), append(p.Outputs, has)
+		}
+	}
+	if err := b.requestApproval(ctx, tc, model.ApprovalDelete, p, 0); err != nil {
+		return nil, err
+	}
+	return &toolOut{content: "已提交给用户确认，等待决定。用户决定后你会收到结果。", terminate: true,
+		summary: fmt.Sprintf("申请删除 %d 个节点", len(a.NodeIDs))}, nil
+}
+
+// askModels 列出某类已发布的生成模型，给「选模型」提问用。
+func (b *AgentBridge) askModels(ctx context.Context, kind string) ([]AskModel, error) {
+	if kind != "image" && kind != "video" {
+		return nil, fail("modelKind 只能是 image 或 video")
+	}
+	infos, err := b.d.Registry.ListModels(ctx, kind)
+	if err != nil {
+		return nil, err
+	}
+	if len(infos) == 0 {
+		return nil, fail("目前没有已发布的%s模型，请告诉用户需要管理员先配置。", map[string]string{"image": "图片", "video": "视频"}[kind])
+	}
+	out := make([]AskModel, len(infos))
+	for i, m := range infos {
+		out[i] = AskModel{Key: m.Key, Name: m.Label, Hint: m.Hint}
+	}
+	return out, nil
+}
+
+// toolModelList 列出某类已发布的生成模型和它们的能力摘要，模型据此挑模型、写参数。
+func (b *AgentBridge) toolModelList(ctx context.Context, tc *toolCall) (*toolOut, error) {
+	var a struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(tc.args, &a); err != nil || (a.Kind != "image" && a.Kind != "video" && a.Kind != "audio") {
+		return nil, fail("kind 只能是 image / video / audio")
+	}
+	infos, err := b.d.Registry.ListModels(ctx, a.Kind)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, len(infos))
+	for i, m := range infos {
+		out[i] = modelSummary(m)
+	}
+	content, err := jsonOut(map[string]any{"models": out})
+	return &toolOut{content: content, summary: fmt.Sprintf("列出 %d 个%s模型", len(out), a.Kind)}, err
+}
+
+// modelSummary 是给模型看的模型摘要：能力和定价的关键信息，不含任何内部配置。
+func modelSummary(m provider.ModelInfo) map[string]any {
+	out := map[string]any{"key": m.Key, "label": m.Label, "hint": m.Hint, "ops": m.Capabilities.Ops,
+		"refs":    map[string]bool{"image": m.Capabilities.Refs.Image.On, "video": m.Capabilities.Refs.Video.On, "audio": m.Capabilities.Refs.Audio.On},
+		"pricing": map[string]any{"billing": m.Pricing.Billing, "unit": m.Pricing.Unit, "per_second": m.Pricing.PerSecond}}
+	params := make([]map[string]any, 0, len(m.Capabilities.Params))
+	for _, p := range m.Capabilities.Params {
+		params = append(params, map[string]any{"name": p.Name, "type": p.Type, "options": p.Options, "default": p.Default})
+	}
+	out["params"] = params
+	return out
+}
+
+// nonNil 把 nil 切片换成空切片，序列化成 [] 而不是 null。
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}

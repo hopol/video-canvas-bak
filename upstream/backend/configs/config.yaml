@@ -1,0 +1,93 @@
+server:
+  name: video-canvas
+  mode: debug # debug | release | test
+  port: 8080
+  read_timeout: 10s
+  write_timeout: 60s
+  shutdown_timeout: 10s
+  # 对外 ID（画布 ID 等）十六进制编码的密钥。同一环境的所有实例必须一致，改了以后旧 ID（如书签里的画布地址）全部失效，所以定下来就不要再改。
+  id_key: "id_key"
+  allowed_origins: # WebSocket 升级允许的 Origin 白名单；为空只允许同源
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+log:
+  level: debug # debug | info | warn | error
+  format: console # console | json
+  filename: "" # 为空只输出到控制台，例如 logs/app.log
+  max_size: 100 # 单个日志文件大小（MB）
+  max_backups: 7
+  max_age: 30 # 保留天数
+
+database:
+  dsn: host=127.0.0.1 user=postgres password=root dbname=video_canvas port=5432 sslmode=disable TimeZone=Asia/Shanghai
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 1h
+  auto_migrate: true # 启动时执行 backend/migrations 里未执行的迁移
+  allow_newer_schema: false # 库比程序新（回退了镜像）时仍然启动；只在确认迁移向后兼容时打开
+  log_level: warn # silent | error | warn | info
+
+redis:
+  enabled: true # 关闭时缓存层自动降级为直查数据库
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "change-me-in-prod" # 生产环境务必用环境变量 APP_JWT_SECRET 覆盖，不要用配置文件里的明文值
+  issuer: video-canvas
+  expire_hours: 72
+
+ai:
+  # secret_key（加解密渠道 Key 的主密钥）只通过环境变量 APP_AI_SECRET_KEY 提供
+  # allow_fake_ip：放行 198.18.0.0/15（代理工具 Fake-IP 模式给域名分配的假地址），其余内网照拦。只给开发机用，线上不要开；
+  # 开发环境用环境变量 APP_AI_ALLOW_FAKE_IP=true 打开（docker-compose.dev.yml 里已设）。
+  plugin_runner: # 协议插件的沙箱执行进程，见 docs/design/协议插件设计.md 6.4
+    mode: spawn # spawn（主服务把自己作为 plugin-runner 子进程拉起，开发用）| external（连独立容器，生产用）| inprocess（同进程无隔离，仅测试排障）
+    network: tcp # unix | tcp；生产用 unix（共享卷里的 socket），开发用本机回环 tcp
+    address: 127.0.0.1:47650 # tcp 是 host:port；unix 是 socket 路径，如 /run/plugin-runner/runner.sock
+    hook_timeout: 1s # 单次钩子调用时限
+    pool_size: 8 # 每个插件版本最多的 goja Runtime 数
+    memory_limit_mb: 512 # spawn 模式下子进程的 GOMEMLIMIT 软限制；生产环境由容器 mem_limit 兜底
+    startup_wait: 15s # 启动时等 runner 就绪的最长时间
+  worker:
+    enabled: true # 本实例是否执行生成任务；任务由 River 队列调度，关闭后本实例只入队不执行
+  queue: # 任务队列并发的硬上限（每个实例）。实际并发在后台「任务队列」页调整（1..硬上限，几秒内生效，默认 16），改这里要重启
+    max_concurrency: 64 # 同时处理的任务数；一个任务从提交到转存完成占一个
+
+agent:
+  # 画布 Agent：独立的常驻服务（仓库根目录 agent/，Pi Durable + SQLite，会话、运行、审批都在它里面）。Go 负责登录校验、反向代理前端的接口，
+  # 并提供平台能力（画布读写、模型代理和计费、生成任务、素材）。docker compose 部署时由 APP_AGENT_ENABLED 开启（默认开）；
+  # 本机直接跑后端时需要另外启动 agent 服务（见 docs/development.md），所以这里默认关闭。
+  # 渠道、模型、凭证和计费在后台的 AI 配置里（模型种类选 agent），不在这里。
+  enabled: false
+  # url: http://agent:8090 # Agent 服务的地址（启用时必填）
+  # bridge_url: http://backend:47001 # Agent 服务访问平台 API 用的地址，要能从 Agent 容器连上（启用时必填）
+  # bridge_addr: 平台 API 的监听地址，默认 0.0.0.0:47001（只在内网可达，靠服务令牌鉴权）
+  # service_token: 服务令牌，至少 32 个字符，Go 和 Agent 服务互相认的唯一凭据；只用环境变量 APP_AGENT_SERVICE_TOKEN 提供，
+  # 不要写进这个文件（openssl rand -hex 32 可以生成）
+  web_enabled: true # 联网工具（搜索、读网页）。请求由 Go 发出，内网和本机地址一律拒绝；关闭后模型看不到这两个工具
+  searxng_url: "" # 自己部署的 SearXNG 地址（如 http://searxng:8080），可选；没配就依次用免配置的 Exa、Bing、DuckDuckGo，后两个对数据中心的出口常给降级结果或要求人机验证，生产环境建议部署 SearXNG
+  disabled_tools: [] # 停用的工具名，不下发给模型；Go 的工具和 Agent 自己的工具（如 codemode）都可以停用，环境变量用逗号分隔
+
+storage:
+  # 对象存储（阿里云 OSS / 腾讯云 COS / S3 / Cloudflare R2）不在这里配，请到后台“存储配置”页面添加。
+  # 这里只保留内置的本地磁盘（开发用，也是对象存储配好之前的兜底）和全局上限。
+  max_upload_bytes: 209715200 # 200MB
+  max_result_bytes: 2147483648 # 2GB
+  signed_ttl: 1h # 存储自己没配签名有效期时的兜底
+  local:
+    dir: ./data/assets
+    base_url: "" # 素材稳定地址 /files/<key> 的站点前缀，为空时使用相对路径；所有存储共用
+  # 升级提示：旧版用 APP_STORAGE_DRIVER=s3 + APP_STORAGE_S3_* 配置的对象存储，升级后首次启动会自动导入为后台存储，
+  # 导入后可以删掉这些环境变量。导入需要配置 APP_AI_SECRET_KEY（用来加密保存密钥）。
+
+update:
+  check_enabled: true # 后台检查新版本（只读 GitHub 公开接口，不上报任何信息）；内网或离线部署设为 false
+  repo: zaylora/video-canvas # 检查哪个 GitHub 仓库的正式发布
+  # 一键升级（可选）：updater 容器监听的 socket；token 用环境变量 APP_UPDATE_UPDATER_TOKEN 提供，为空表示没启用
+  updater_socket: /run/updater/updater.sock
+
+# 所有配置项都可以用环境变量覆盖，规则：APP_ + 大写路径，点换成下划线
+# 例如 APP_SERVER_PORT=9000、APP_DATABASE_DSN=...、APP_JWT_SECRET=...

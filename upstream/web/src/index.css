@@ -1,0 +1,1202 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "Geist Variable", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-chart-other: var(--chart-other);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-canvas: var(--canvas-bg);
+  --color-canvas-dot: var(--canvas-dot);
+  --color-panel: var(--panel);
+  --color-menu: var(--menu);
+  --color-chrome: var(--chrome);
+  --color-chrome-border: var(--chrome-border);
+  --color-chrome-hover: var(--chrome-hover);
+  --color-node-ring: var(--node-ring);
+  --color-credit: var(--credit);
+  --color-preset: var(--preset);
+  --color-status-running: var(--status-running);
+  --color-status-success: var(--status-success);
+  --color-status-warning: var(--status-warning);
+  --color-sheen: var(--sheen);
+  --color-beam: var(--beam);
+  --color-beam-bright: var(--beam-bright);
+  --color-stage: var(--stage);
+  --color-on-stage: var(--on-stage);
+  --color-on-stage-muted: var(--on-stage-muted);
+  --color-stage-glass: var(--stage-glass);
+  --color-stage-glass-border: var(--stage-glass-border);
+  --color-cover-scrim: var(--cover-scrim);
+  --color-cover-foreground: var(--cover-foreground);
+  --color-edge: var(--edge);
+  --color-paper: var(--paper);
+  --color-paper-foreground: var(--paper-foreground);
+  --color-info: var(--info);
+  /* 短剧工作台的标题与剧本正文：衬线体，不引入网络字体，走系统自带的宋体 / 思源宋体 */
+  --font-display: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  color-scheme: light;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  /* 图表里“其他 / 取消”这类中性项：不占类别色 */
+  --chart-other: oklch(0.708 0 0 / 0.45);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  /* 画布：设计稿 docs/design/画布UI设计。外壳是半透明浮层，颜色只留给素材、积分和状态 */
+  --canvas-bg: oklch(0.975 0 0);
+  --canvas-dot: oklch(0 0 0 / 0.16);
+  /* 节点下方的生成面板：实色，浅色靠阴影和发丝线与画布区分 */
+  --panel: oklch(1 0 0);
+  /* 添加节点菜单：比画布明显亮一档的实色，浅色靠阴影区分 */
+  --menu: oklch(1 0 0);
+  --chrome: oklch(1 0 0 / 0.82);
+  --chrome-border: oklch(0 0 0 / 0.08);
+  --chrome-hover: oklch(0 0 0 / 0.05);
+  --node-ring: oklch(0.2 0 0 / 0.85);
+  --credit: oklch(0.72 0.15 75);
+  /* 节点预设 chip 和选中标记（设计稿 6.13） */
+  --preset: oklch(0.55 0.2 295);
+  --status-running: oklch(0.58 0.15 250);
+  --status-success: oklch(0.6 0.15 155);
+  --status-warning: oklch(0.7 0.16 70);
+  --edge: oklch(0 0 0 / 0.28);
+  /* 浮层投影（Agent 浮窗等）：近处一层浅的、远处一层柔和的；浅色主题下更轻 */
+  --elevation-near: oklch(0 0 0 / 0.06);
+  --elevation-far: oklch(0 0 0 / 0.18);
+  /* 品牌「连镜」：Logo 镜间光的琥珀光束。beam 跟随主题（浅底用深琥珀），
+     beam-bright 给永远偏暗的底用（登录页舞台），两个主题取同一个值 */
+  --beam: oklch(0.62 0.16 55);
+  --beam-bright: oklch(0.78 0.15 70);
+  /* 登录页舞台：压在视频上的元素。视频永远偏暗，所以深浅主题取同一组值 */
+  --stage: oklch(0.13 0 0);
+  --on-stage: oklch(0.985 0 0);
+  --on-stage-muted: oklch(1 0 0 / 0.68);
+  --stage-glass: oklch(1 0 0 / 0.1);
+  --stage-glass-border: oklch(1 0 0 / 0.2);
+  --stage-scrim-edge: oklch(0 0 0 / 0.55);
+  --stage-scrim-center: oklch(0 0 0 / 0.32);
+  --stage-glow-a: oklch(0.45 0.12 270 / 0.55);
+  --stage-glow-b: oklch(0.4 0.1 330 / 0.4);
+  /* 首页卡片封面底部的渐变遮罩：上面压白字，深浅主题都要深色才看得清 */
+  --cover-scrim: oklch(0 0 0 / 0.62);
+  /* 节点内容加载占位的扫光高光 */
+  --sheen: oklch(1 0 0 / 0.7);
+  --cover-foreground: oklch(0.985 0 0);
+  /* 组的 8 种颜色（设计稿 6.10）：组名行直接用，背景用 color-mix 压淡 */
+  --group-red: oklch(0.58 0.2 25);
+  --group-orange: oklch(0.64 0.17 55);
+  --group-yellow: oklch(0.7 0.15 90);
+  --group-green: oklch(0.6 0.17 150);
+  --group-cyan: oklch(0.62 0.12 205);
+  --group-blue: oklch(0.55 0.18 255);
+  --group-purple: oklch(0.55 0.2 295);
+  --group-pink: oklch(0.6 0.2 345);
+  /* 个人中心活跃热力图（设计 docs/design/个人中心 §6.4）：0 档是 muted，1–4 档是 primary 的透明度梯度 */
+  --heat-0: var(--muted);
+  --heat-1: color-mix(in oklch, var(--primary) 22%, transparent);
+  --heat-2: color-mix(in oklch, var(--primary) 45%, transparent);
+  --heat-3: color-mix(in oklch, var(--primary) 70%, transparent);
+  --heat-4: var(--primary);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --chart-other: oklch(1 0 0 / 0.22);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+  --canvas-bg: oklch(0.13 0 0);
+  --canvas-dot: oklch(1 0 0 / 0.14);
+  --panel: oklch(0.243 0 0);
+  --menu: oklch(0.269 0 0);
+  --chrome: oklch(0.2 0 0 / 0.78);
+  --chrome-border: oklch(1 0 0 / 0.08);
+  --chrome-hover: oklch(1 0 0 / 0.07);
+  --node-ring: oklch(1 0 0 / 0.72);
+  --credit: oklch(0.82 0.15 85);
+  --preset: oklch(0.6 0.19 295);
+  --status-running: oklch(0.75 0.12 240);
+  --status-success: oklch(0.75 0.15 155);
+  --status-warning: oklch(0.8 0.15 75);
+  --edge: oklch(1 0 0 / 0.28);
+  --elevation-near: oklch(0 0 0 / 0.1);
+  --elevation-far: oklch(0 0 0 / 0.42);
+  --beam: oklch(0.78 0.15 70);
+  --beam-bright: oklch(0.78 0.15 70);
+  --stage: oklch(0.13 0 0);
+  --on-stage: oklch(0.985 0 0);
+  --on-stage-muted: oklch(1 0 0 / 0.68);
+  --stage-glass: oklch(1 0 0 / 0.1);
+  --stage-glass-border: oklch(1 0 0 / 0.2);
+  --stage-scrim-edge: oklch(0 0 0 / 0.55);
+  --stage-scrim-center: oklch(0 0 0 / 0.32);
+  --stage-glow-a: oklch(0.45 0.12 270 / 0.55);
+  --stage-glow-b: oklch(0.4 0.1 330 / 0.4);
+  --cover-scrim: oklch(0 0 0 / 0.7);
+  --sheen: oklch(1 0 0 / 0.09);
+  --cover-foreground: oklch(0.985 0 0);
+  /* 组的 8 种颜色（设计稿 6.10）：组名行直接用，背景用 color-mix 压淡 */
+  --group-red: oklch(0.72 0.17 25);
+  --group-orange: oklch(0.76 0.16 55);
+  --group-yellow: oklch(0.84 0.15 90);
+  --group-green: oklch(0.76 0.17 150);
+  --group-cyan: oklch(0.8 0.12 205);
+  --group-blue: oklch(0.72 0.15 255);
+  --group-purple: oklch(0.7 0.16 295);
+  --group-pink: oklch(0.74 0.17 345);
+  /* 深色底上浅档要更亮一点才分得出来 */
+  --heat-0: var(--muted);
+  --heat-1: color-mix(in oklch, var(--primary) 28%, transparent);
+  --heat-2: color-mix(in oklch, var(--primary) 50%, transparent);
+  --heat-3: color-mix(in oklch, var(--primary) 74%, transparent);
+  --heat-4: var(--primary);
+}
+
+/* 后台管理的配色：中性色（底、卡片、描边、侧栏、清透胶囊）跟前台一致——深色沿用 .dark，浅色和首页外壳共用下面那组米色。
+   这里只覆盖图表的类别色：前台沿用灰阶的 --chart-*，后台的图表要分得出类别，所以换成蓝 / 紫 / 青 / 琥珀 / 粉。
+   只在进入后台时由布局给 <html> 加上 admin-theme，画布页不受影响；弹窗挂在 body 上也能拿到。 */
+.admin-theme {
+  /* 进后台的加载层用 canvas-loader 的点阵底，底色跟后台走 */
+  --canvas-bg: var(--background);
+  --chart-1: oklch(0.58 0.15 250);
+  --chart-2: oklch(0.55 0.2 295);
+  --chart-3: oklch(0.62 0.12 205);
+  --chart-4: oklch(0.7 0.16 70);
+  --chart-5: oklch(0.6 0.2 345);
+}
+
+.dark.admin-theme {
+  --chart-1: oklch(0.72 0.14 250);
+  --chart-2: oklch(0.7 0.16 295);
+  --chart-3: oklch(0.8 0.12 205);
+  --chart-4: oklch(0.8 0.15 75);
+  --chart-5: oklch(0.74 0.17 345);
+}
+
+/*
+ * 首页外壳（创作、资产、短剧工作室入口等）与后台管理的日间色：和短剧工作台同一套米色。
+ * 只换中性色（底、卡片、弹层、描边、半透明胶囊），强调色和主按钮不变；深色模式不受影响。
+ * 侧栏比内容页深一档，浮起的内容页在米色里仍有层次。
+ */
+:root:not(.dark) .home-theme,
+:root.admin-theme:not(.dark) {
+  --background: oklch(0.95 0.007 85);
+  --card: oklch(0.985 0.004 85);
+  --popover: oklch(0.985 0.004 85);
+  --secondary: oklch(0.92 0.008 85);
+  --muted: oklch(0.92 0.008 85);
+  --muted-foreground: oklch(0.5 0.015 85);
+  --accent: oklch(0.92 0.008 85);
+  --border: oklch(0.22 0.02 85 / 0.1);
+  --input: oklch(0.22 0.02 85 / 0.16);
+  --sidebar: oklch(0.925 0.009 85);
+  --sidebar-accent: oklch(0.9 0.009 85);
+  --sidebar-border: oklch(0.22 0.02 85 / 0.1);
+  --chrome: oklch(0.97 0.006 85 / 0.8);
+  --chrome-border: oklch(0.22 0.02 85 / 0.1);
+  --chrome-hover: oklch(0.22 0.02 85 / 0.06);
+}
+
+/*
+ * 短剧工作台主题（设计：docs/design/短剧工作室/短剧工作室原型-v2.html）。
+ * 只作用在挂了 .drama-theme 的工作台根节点内：覆盖 shadcn 的语义变量，里面的按钮、弹窗、下拉
+ * 不用逐个改就跟着换成「暗房片场」——暖黑底 + 钨丝灯琥珀。强调色只有一个（--primary 即琥珀）。
+ * 浅色是 .drama-theme 本身，深色是 .dark .drama-theme；站点的明暗开关照常生效。
+ */
+.drama-theme {
+  --background: oklch(0.95 0.007 85);
+  --foreground: oklch(0.22 0.01 85);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.01 85);
+  --popover: oklch(0.985 0.004 85);
+  --popover-foreground: oklch(0.22 0.01 85);
+  --primary: oklch(0.67 0.14 78);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.92 0.008 85);
+  --secondary-foreground: oklch(0.22 0.01 85);
+  --muted: oklch(0.92 0.008 85);
+  --muted-foreground: oklch(0.5 0.015 85);
+  --accent: oklch(0.92 0.008 85);
+  --accent-foreground: oklch(0.22 0.01 85);
+  --destructive: oklch(0.58 0.2 28);
+  --border: oklch(0.22 0.02 85 / 0.1);
+  --input: oklch(0.22 0.02 85 / 0.16);
+  --ring: oklch(0.67 0.14 78);
+  --sidebar: oklch(0.95 0.007 85);
+  --sidebar-foreground: oklch(0.22 0.01 85);
+  --sidebar-accent: oklch(0.92 0.008 85);
+  --sidebar-accent-foreground: oklch(0.22 0.01 85);
+  --sidebar-border: oklch(0.22 0.02 85 / 0.1);
+  --panel: oklch(1 0 0);
+  --menu: oklch(0.985 0.004 85);
+  --chrome: oklch(0.95 0.007 85 / 0.78);
+  --chrome-border: oklch(0.22 0.02 85 / 0.1);
+  --chrome-hover: oklch(0.22 0.02 85 / 0.06);
+  --status-running: oklch(0.67 0.14 78);
+  --status-success: oklch(0.6 0.13 160);
+  --status-warning: oklch(0.67 0.14 78);
+  --info: oklch(0.55 0.17 265);
+  --paper: oklch(0.99 0.006 90);
+  --paper-foreground: oklch(0.26 0.012 85);
+}
+
+.dark .drama-theme {
+  --background: oklch(0.145 0.002 286);
+  --foreground: oklch(0.955 0.008 85);
+  --card: oklch(0.19 0.004 286);
+  --card-foreground: oklch(0.955 0.008 85);
+  --popover: oklch(0.225 0.006 286);
+  --popover-foreground: oklch(0.955 0.008 85);
+  --primary: oklch(0.81 0.15 82);
+  --primary-foreground: oklch(0.2 0.03 85);
+  --secondary: oklch(0.275 0.01 286);
+  --secondary-foreground: oklch(0.955 0.008 85);
+  --muted: oklch(0.275 0.01 286);
+  --muted-foreground: oklch(0.75 0.015 85);
+  --accent: oklch(0.275 0.01 286);
+  --accent-foreground: oklch(0.955 0.008 85);
+  --destructive: oklch(0.68 0.2 28);
+  --border: oklch(1 0 0 / 0.08);
+  --input: oklch(1 0 0 / 0.13);
+  --ring: oklch(0.81 0.15 82);
+  --sidebar: oklch(0.145 0.002 286);
+  --sidebar-foreground: oklch(0.955 0.008 85);
+  --sidebar-accent: oklch(0.275 0.01 286);
+  --sidebar-accent-foreground: oklch(0.955 0.008 85);
+  --sidebar-border: oklch(1 0 0 / 0.08);
+  --panel: oklch(0.19 0.004 286);
+  --menu: oklch(0.225 0.006 286);
+  --chrome: oklch(0.145 0.002 286 / 0.72);
+  --chrome-border: oklch(1 0 0 / 0.08);
+  --chrome-hover: oklch(1 0 0 / 0.06);
+  --status-running: oklch(0.81 0.15 82);
+  --status-success: oklch(0.8 0.15 160);
+  --status-warning: oklch(0.81 0.15 82);
+  --info: oklch(0.76 0.12 265);
+  --paper: oklch(0.19 0.004 286);
+  --paper-foreground: oklch(0.925 0.01 85);
+}
+
+@layer base {
+  @import "@xyflow/react/dist/style.css";
+
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground text-sm antialiased;
+  }
+
+  html {
+    @apply font-sans;
+  }
+}
+/* React Flow 的内置控件跟随项目主题：这些变量指向 shadcn token，
+   所以 .dark 切换时控制条会自动换色，不用额外写暗色样式。
+   放在 @layer base 之外，确保覆盖 xyflow 自带的默认值。 */
+.react-flow {
+  --xy-background-color: var(--canvas-bg);
+  --xy-background-pattern-color: var(--canvas-dot);
+  --xy-edge-stroke: var(--edge);
+  --xy-minimap-background-color: var(--chrome);
+  --xy-minimap-mask-background-color: color-mix(in oklch, var(--canvas-bg) 60%, transparent);
+  /* 连线选中、流光都用品牌琥珀光束色，和 Logo、首页「生成」同一档 */
+  --edge-shape-color: var(--beam);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--card-foreground);
+  --xy-controls-button-color-hover: var(--accent-foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow: 0 1px 2px 0 oklch(0 0 0 / 0.05);
+}
+
+/* 画布工具栏与站内图标按钮保持一致的尺寸。 */
+.react-flow__controls-button {
+  width: 36px;
+  height: 36px;
+  padding: 9px;
+}
+
+.react-flow__controls-button svg {
+  width: 16px;
+  height: 16px;
+  max-width: 16px;
+  max-height: 16px;
+}
+
+/* 光标工具：箭头（select）负责选中与框选，抓手（pan）负责拖动画布。
+   xyflow 自带的光标是按「能不能拖」推导的，这里按当前工具统一覆盖；
+   同样放在 @layer 之外，未分层样式优先级高于 base 层。 */
+[data-tool="select"] .react-flow__pane {
+  cursor: default;
+}
+
+[data-tool="pan"] .react-flow__pane {
+  cursor: grab;
+}
+
+[data-tool="pan"] .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+/* 选中节点时，连着它的线换成淡一档的品牌色，看得出选中的东西从哪来、往哪去 */
+.react-flow__edge-path.edge-highlighted {
+  stroke: color-mix(in oklch, var(--edge-shape-color) 60%, transparent);
+}
+
+/* 连线选中时换品牌色并加粗，配合中点浮出的剪刀按钮，一眼看出要剪哪一根。 */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--edge-shape-color);
+  stroke-width: 2;
+}
+
+/* 框选后 xyflow 自带的选区框只留拖动整组的作用，长相交给 SelectionToolbar 画的底框 */
+.react-flow__nodesselection-rect {
+  background: transparent;
+  border: none;
+}
+
+/* xyflow 给 group 类型节点自带了背景、边框、内边距和选中阴影，会盖在我们自己画的虚线组框外面
+   （发灰、露出方角）。组的长相全部由 GroupNodeView 负责，这里整个抹掉（设计稿 6.10） */
+.react-flow__node.react-flow__node-group,
+.react-flow__node.react-flow__node-group.selectable:hover,
+.react-flow__node.react-flow__node-group.selectable.selected,
+.react-flow__node.react-flow__node-group.selectable:focus,
+.react-flow__node.react-flow__node-group.selectable:focus-visible {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+}
+
+/* 拖着节点悬在组上方：组框外圈描边提示「松手入组」（设计稿 6.10）。属性由 flow.tsx 直接写在 DOM 上，不走 React state */
+.react-flow__node-group[data-drop-target] [data-slot="group-frame"] {
+  box-shadow:
+    0 0 0 2px var(--node-ring),
+    0 0 0 6px color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+/* 悬停引用条缩略图或提示词里的 chip 时，画布上的源节点虚线圈出来（设计稿 6.7） */
+.react-flow__node.ref-hl > * > * {
+  outline: 2px dashed var(--node-ring);
+  outline-offset: 4px;
+}
+
+/* 节点选中时：xyflow 给外层加的焦点框和阴影去掉，选中态由节点自己的描边表达 */
+.react-flow__node:focus-visible,
+.react-flow__node.selected {
+  outline: none;
+  box-shadow: none;
+}
+
+/* 抓手模式下整个界面就是一块可拖的画布：节点、连线、连接点、浮在节点下方的
+   输入框全都不接指针事件，按在哪儿拖都是平移画布，也点不进输入框、连不出线。
+   一条通配比逐个把类名列全可靠——以后新加的悬浮层不用再来补一笔。 */
+[data-tool="pan"] * {
+  pointer-events: none;
+}
+
+/* 例外只有三处：pane 是承接拖动的那一层；控制条得留着，
+   否则用按钮切到抓手以后就没地方切回箭头了；
+   还有挂 canvas-overlay-interactive 的常驻悬浮控件（设置按钮之类）。 */
+[data-tool="pan"] .react-flow__pane,
+[data-tool="pan"] .react-flow__controls,
+[data-tool="pan"] .react-flow__controls *,
+[data-tool="pan"] .canvas-overlay-interactive,
+[data-tool="pan"] .canvas-overlay-interactive * {
+  pointer-events: all;
+}
+
+/* 原生滚动条全局对齐 ScrollArea 组件的观感：轨道透明、滑块是半透明的
+   muted-foreground 圆角条，明暗主题都跟着 token 走，不用写两套。
+   宽度取 8px，和 ScrollArea 的 w-2 一致。 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: calc(infinity * 1px);
+  background-color: color-mix(in oklch, var(--muted-foreground) 40%, transparent);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--muted-foreground) 60%, transparent);
+}
+
+/* 滚动条出现或消失会让内容宽度变 8px，整块左右抖一下：骨架屏撑高后出现滚动条、
+   数据回来内容变短又没了。统一在这里处理，各页面不用再各自补。
+   - 文档：首页外壳（HomeLayout，靠文档滚动的页面）里 html 常驻 overflow-y: scroll，
+     没溢出时是一条透明的空轨道，位置一直占着。后台、登录、画布是整屏页面不走文档滚动，不加，免得右边多一条空白。
+     不能只靠 scrollbar-gutter：页面用了上面的 ::-webkit-scrollbar 自定义滚动条，
+     Chrome 在这种情况下不给 html 预留位置（实测没有滚动条的页面右边一点都没留）。
+   - 容器：写了 overflow-auto / overflow-y-auto 的容器加 scrollbar-gutter，能预留就预留。
+     不能写成 * ：overflow: hidden 的元素也会被预留，右边会多出一条空白；
+     弹出菜单、下拉、命令面板是一次性浮层，内容定了就不变，不预留。 */
+html:has([data-shell="home"]) {
+  overflow-y: scroll;
+}
+
+:is(.overflow-auto, .overflow-y-auto):not(
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="select-content"],
+  [data-slot="popover-content"],
+  [data-slot="command-list"]
+) {
+  scrollbar-gutter: stable;
+}
+
+/* Chrome 同时拿到 scrollbar-color 和 ::-webkit-scrollbar 时只认前者，
+   会让上面这套圆角样式失效，所以标准属性只留给没有伪元素的浏览器（Firefox）。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 40%, transparent) transparent;
+  }
+}
+
+/* ---------- 进入画布：聚焦显影加载（设计稿原型 A） ---------- */
+/* 全部用 CSS 关键帧：浏览器在合成线程上跑，画布挂载、解码图片占住主线程时也不掉帧。
+   别改成 JS 逐帧驱动（motion 的 scale 等单独变换走主线程），进画布那一下正好最忙。 */
+.canvas-loader {
+  background-color: var(--canvas-bg);
+  background-image: radial-gradient(circle, var(--canvas-dot) 1px, transparent 1.3px);
+  background-size: 20px 20px;
+  background-position: center;
+}
+.canvas-loader-focus {
+  animation: canvas-focus-in 0.9s cubic-bezier(0.2, 0, 0, 1) both;
+  will-change: transform, opacity, filter;
+}
+.canvas-loader-focus[data-later] {
+  animation-delay: 0.12s;
+}
+/* 退场：logo 和名字虚掉缩小，整层随后淡出；不写起点，从进场停下的样子接着走 */
+.canvas-loader[data-leaving] {
+  animation: canvas-loader-out 0.38s 0.1s both;
+}
+.canvas-loader[data-leaving] .canvas-loader-focus {
+  animation: canvas-focus-out 0.32s cubic-bezier(0.4, 0, 1, 1) both;
+}
+/* 连镜 Logo 的加载动画「开镜 · 对焦 · 光铺开」（docs/design/品牌Logo）：
+   Logo 拆成光晕、左弧、右弧、光束四层（<Logo animated />），每层是独立的盒子，只动 transform / opacity。
+   进场放完（0.9s，和 FocusLoader 的 MIN_SHOW_MS 对齐）接着循环「对焦」，两段写在同一条 animation 里，不靠 JS 切状态。 */
+.logo-anim [data-part="glow"] > svg {
+  opacity: 0;
+}
+.canvas-loader .logo-anim [data-part="left"] > svg {
+  animation:
+    logo-anim-left-in 0.9s cubic-bezier(0.2, 0, 0, 1) both,
+    logo-anim-left-focus 1.6s ease-in-out 0.9s infinite;
+}
+.canvas-loader .logo-anim [data-part="right"] > svg {
+  animation:
+    logo-anim-right-in 0.9s cubic-bezier(0.2, 0, 0, 1) both,
+    logo-anim-right-focus 1.6s ease-in-out 0.9s infinite;
+}
+.canvas-loader .logo-anim [data-part="beam"] > svg {
+  animation:
+    logo-anim-beam-in 0.75s cubic-bezier(0.2, 0, 0, 1) 0.15s both,
+    logo-anim-beam-focus 1.6s ease-in-out 0.9s infinite;
+}
+.canvas-loader .logo-anim [data-part="glow"] > svg {
+  animation: logo-anim-glow 1.6s ease-in-out 0.9s infinite;
+}
+/* 退场「光铺开」：两弧向外散开，光横向铺开，整层随后按 canvas-loader-out 淡出。
+   退场写在外层 span 上，里面的对焦循环照跑、transform 叠加，不会先跳回原位再散开 */
+.canvas-loader[data-leaving] .logo-anim [data-part="left"] {
+  animation: logo-anim-left-out 0.32s cubic-bezier(0.4, 0, 1, 1) both;
+}
+.canvas-loader[data-leaving] .logo-anim [data-part="right"] {
+  animation: logo-anim-right-out 0.32s cubic-bezier(0.4, 0, 1, 1) both;
+}
+.canvas-loader[data-leaving] .logo-anim :is([data-part="beam"], [data-part="glow"]) {
+  animation: logo-anim-beam-out 0.36s cubic-bezier(0.4, 0, 1, 1) both;
+}
+@keyframes logo-anim-left-in {
+  from {
+    opacity: 0;
+    transform: translateX(14%);
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@keyframes logo-anim-right-in {
+  from {
+    opacity: 0;
+    transform: translateX(-14%);
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@keyframes logo-anim-beam-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6, 0.05);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1, 1.1);
+  }
+}
+@keyframes logo-anim-left-focus {
+  50% {
+    transform: translateX(4%);
+  }
+}
+@keyframes logo-anim-right-focus {
+  50% {
+    transform: translateX(-4%);
+  }
+}
+@keyframes logo-anim-beam-focus {
+  50% {
+    transform: scaleY(1.06);
+  }
+}
+@keyframes logo-anim-glow {
+  50% {
+    opacity: 0.7;
+  }
+}
+@keyframes logo-anim-left-out {
+  to {
+    opacity: 0;
+    transform: translateX(-24%);
+  }
+}
+@keyframes logo-anim-right-out {
+  to {
+    opacity: 0;
+    transform: translateX(24%);
+  }
+}
+@keyframes logo-anim-beam-out {
+  40% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: scale(4, 1.4);
+  }
+}
+/* 节点内容加载占位的扫光：只动 transform，合成线程跑 */
+@keyframes node-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes canvas-focus-in {
+  from {
+    opacity: 0;
+    filter: blur(16px);
+    transform: scale(1.12);
+  }
+}
+@keyframes canvas-focus-out {
+  to {
+    opacity: 0;
+    filter: blur(10px);
+    transform: scale(0.94);
+  }
+}
+@keyframes canvas-loader-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* 加载层淡出时画布内容依次入场：节点浮上来，顶栏落下、底栏升起，连线稍后淡入。
+   只动 transform 和 opacity；节点里有大图，给每个节点做 blur 会卡 */
+[data-entering] .react-flow__node > :first-child {
+  animation: canvas-node-in 0.5s cubic-bezier(0.2, 0, 0, 1) both;
+  will-change: transform, opacity;
+  animation-delay: 0.42s;
+}
+[data-entering] .react-flow__node:nth-child(1) > :first-child {
+  animation-delay: 0.1s;
+}
+[data-entering] .react-flow__node:nth-child(2) > :first-child {
+  animation-delay: 0.16s;
+}
+[data-entering] .react-flow__node:nth-child(3) > :first-child {
+  animation-delay: 0.22s;
+}
+[data-entering] .react-flow__node:nth-child(4) > :first-child {
+  animation-delay: 0.28s;
+}
+[data-entering] .react-flow__node:nth-child(5) > :first-child {
+  animation-delay: 0.32s;
+}
+[data-entering] .react-flow__node:nth-child(6) > :first-child {
+  animation-delay: 0.36s;
+}
+[data-entering] .react-flow__edges {
+  animation: canvas-fade-in 0.5s 0.3s both;
+}
+[data-entering] [data-slot="chrome-zone"] {
+  animation: canvas-chrome-drop 0.45s cubic-bezier(0.2, 0, 0, 1) 0.12s both;
+}
+[data-entering] [data-slot="chrome-zone"][data-position^="bottom"] {
+  animation-name: canvas-chrome-lift;
+  animation-delay: 0.2s;
+}
+/* 进后台：加载层淡出时侧栏从左滑入、顶栏落下、正文浮上来（设计稿 docs/design/首页 第 10 节 A） */
+[data-entering] [data-slot="sidebar-container"] {
+  animation: admin-sidebar-in 0.45s cubic-bezier(0.2, 0, 0, 1) 0.06s both;
+}
+[data-entering] [data-slot="admin-header"] {
+  animation: canvas-chrome-drop 0.45s cubic-bezier(0.2, 0, 0, 1) 0.12s both;
+}
+[data-entering] [data-slot="admin-outlet"] {
+  animation: canvas-node-in 0.5s cubic-bezier(0.2, 0, 0, 1) 0.16s both;
+}
+@keyframes admin-sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}
+@keyframes canvas-node-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+@keyframes canvas-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes canvas-chrome-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+@keyframes canvas-chrome-lift {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-entering] *,
+  .canvas-loader-focus,
+  .canvas-loader .logo-anim [data-part],
+  .canvas-loader .logo-anim [data-part] > svg {
+    animation: none !important;
+  }
+  .canvas-loader[data-leaving] {
+    animation-duration: 0.01ms;
+    animation-delay: 0s;
+  }
+}
+
+/* 提示词里只放了预设模板、还没写字：说明文字跟在模板 chip 后面（--tpl-hint 由 PromptEditor 给） */
+.prompt-tpl-hint .ProseMirror > p:first-child::after {
+  content: var(--tpl-hint);
+  color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+  pointer-events: none;
+}
+
+/* 登录页背景轮播的进度段：一条作品播放多久，这一段就用多久从空走到满；
+   动画结束就是「该切下一条了」的信号，暂停 / 加载中时由 animation-play-state 停住。
+   只动 transform，时长由组件通过 --showcase-clip 传入。 */
+@keyframes showcase-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* 字幕里逐字打出提示词时末尾的光标 */
+@keyframes showcase-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ========== 创作页首屏的常驻氛围（设计稿 docs/design/首页 第 11 节） ==========
+   三处都在「减少动态效果」下关掉：标题「创作」二字的流光、标题后方的光晕、输入卡片边缘的流光。
+   光晕与边缘流光只动 transform / opacity，不做 blur 动画；流光只作用于两个字，开销可以忽略。 */
+@keyframes home-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 50% 0;
+  }
+}
+@keyframes home-flow {
+  from {
+    background-position: 50% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+@keyframes home-drift-a {
+  from {
+    transform: translate(-8%, 4%) scale(0.95);
+    opacity: 0.7;
+  }
+  to {
+    transform: translate(8%, -4%) scale(1.08);
+    opacity: 1;
+  }
+}
+@keyframes home-drift-b {
+  from {
+    transform: translate(10%, -2%) scale(1.05);
+    opacity: 1;
+  }
+  to {
+    transform: translate(-10%, 6%) scale(0.9);
+    opacity: 0.6;
+  }
+}
+@keyframes home-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 标题里的「创作」：入场后扫一遍光（0.5s 起、0.9s），再在 foreground / beam 之间来回缓慢流动 */
+@utility home-glow-text {
+  background: linear-gradient(
+      90deg,
+      var(--foreground) 0%,
+      var(--beam) 25%,
+      var(--beam-bright) 50%,
+      var(--beam) 75%,
+      var(--foreground) 100%
+    )
+    100% 0 / 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation:
+    home-sweep 0.9s cubic-bezier(0.2, 0, 0, 1) 0.5s forwards,
+    home-flow 6s ease-in-out 1.4s infinite alternate;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    background: none;
+    color: var(--beam);
+    -webkit-text-fill-color: var(--beam);
+  }
+}
+
+/* 标题后方的两团柔光：浓度由 --glow 给（浅色淡一点），周期不同所以不会同步 */
+@utility home-aura-blob {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklch, var(--beam) var(--glow, 14%), transparent),
+    transparent
+  );
+  animation: home-drift-a 11s ease-in-out infinite alternate;
+  &[data-tone="bright"] {
+    inset: 10% 20%;
+    background: radial-gradient(
+      closest-side,
+      color-mix(in oklch, var(--beam-bright) var(--glow, 14%), transparent),
+      transparent
+    );
+    animation: home-drift-b 14s ease-in-out infinite alternate;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/* 输入卡片的 1px 边框上有一段光沿边缘慢慢转圈：遮罩只留下边框那一圈，里面的锥形渐变元素在转 */
+@utility home-ring {
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  &::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 150%;
+    aspect-ratio: 1;
+    translate: -50% -50%;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0 80%,
+      color-mix(in oklch, var(--beam) 70%, transparent) 90%,
+      transparent 100%
+    );
+    animation: home-ring-spin 8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    display: none;
+  }
+}
+
+/* ========== 首页「更多」→ 所有画布的转场（设计稿 docs/design/首页 第 13 节，选定候选 5「飞行 + 纵深」） ==========
+   共享的画布卡（新建 + 最近 3 张）由浏览器对位置和大小补间，时长取 DURATION.slow、曲线取 EASE_OUT；
+   整页是旧页略缩小淡出、新页从稍大处落下。目前全站只有这一处用 view transition，所以直接写在全局伪元素上。 */
+@keyframes vt-shrink {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes vt-grow {
+  from {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+}
+@keyframes vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes vt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+::view-transition-group(*) {
+  animation-duration: 0.24s;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+/* 新旧快照拉伸到同一个框里：两页的卡片形状不同（16:10 叠字小卡 ↔ 4:3 带内边距的卡） */
+::view-transition-old(*),
+::view-transition-new(*) {
+  width: 100%;
+  height: 100%;
+}
+::view-transition-old(root) {
+  animation: vt-shrink 0.14s cubic-bezier(0.2, 0, 0, 1) both;
+}
+::view-transition-new(root) {
+  animation: vt-grow 0.2s cubic-bezier(0.2, 0, 0, 1) 0.06s both;
+}
+/* 侧栏和顶栏是不换的外壳：转场期间（HomeLayout 打标记）各给一个名字，从整页快照里摘出来，留在原地不缩放 */
+[data-view-transitioning] [data-slot="sidebar-container"] {
+  view-transition-name: app-sidebar;
+}
+[data-view-transitioning] [data-slot="site-header"] {
+  view-transition-name: app-header;
+}
+/* 减少动态效果：卡片不移动，整页只做淡入淡出 */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) {
+    animation: none;
+  }
+  ::view-transition-old(root) {
+    animation: vt-fade-out 0.12s linear both;
+  }
+  ::view-transition-new(root) {
+    animation: vt-fade-in 0.18s linear 0.06s both;
+  }
+}
+
+/* ========== 画布 Agent 浮窗（设计稿 docs/design/画布Agent助手设计 6.8「视觉精修」） ==========
+   不加颜色 token：层次靠 1px 顶部内高光（--sheen）、近 + 远两层投影（--elevation-*）、极淡的品牌渐变。
+   这几样组合写成工具类，各组件复用，不在组件里拼长串 shadow-[…]。 */
+
+/* 品牌光球的渐变（设计稿 6.12）：「连镜」的琥珀光，空状态光球、顶栏标识、状态行小圆点共用 */
+@utility agent-orb {
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--beam-bright),
+    var(--beam) 60%,
+    color-mix(in oklab, var(--beam) 40%, black)
+  );
+}
+/* 浮窗本体：黑白克制，不铺彩色渐变（设计稿 6.12） */
+@utility agent-panel {
+  background: color-mix(in oklab, var(--popover) 94%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    0 0 0 1px var(--chrome-border),
+    0 2px 6px var(--elevation-near),
+    0 28px 64px -16px var(--elevation-far);
+}
+/* 停靠侧栏：不透明，左边缘一道向左的软影 */
+@utility agent-docked {
+  background: var(--popover);
+  box-shadow:
+    -1px 0 0 var(--chrome-border),
+    -16px 0 48px -24px var(--elevation-far);
+}
+/* 浮起的小面：弹层、计划条、回到底部按钮 */
+@utility agent-raised {
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    0 0 0 1px var(--chrome-border),
+    0 2px 6px var(--elevation-near),
+    0 16px 40px -12px var(--elevation-far);
+}
+/* 贴在面板里的小面：用户气泡、卡片、引导项、图标方块 */
+@utility agent-inset {
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    0 0 0 1px var(--chrome-border);
+}
+/* 输入框容器；聚焦时描边加深一档（黑白克制，不泛彩色光晕） */
+@utility agent-composer {
+  background: color-mix(in oklab, var(--foreground) 4%, var(--popover));
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent),
+    0 10px 28px -12px var(--elevation-far);
+  &:focus-within {
+    box-shadow:
+      inset 0 1px 0 var(--sheen),
+      0 0 0 1px color-mix(in oklab, var(--foreground) 24%, transparent),
+      0 10px 28px -12px var(--elevation-far);
+  }
+}
+/* 可发送时的发送键：蓝紫渐变 */
+/* 常驻可见的细滚动条：空状态内容放不下时让人知道下面还有。
+   用 ::-webkit-scrollbar 而不是 scrollbar-color，macOS 上后者会变成自动隐藏的覆盖式滚动条；
+   右侧用 scrollbar-gutter 预留位置，出现滚动条时内容不横向跳动。 */
+@utility agent-scroll {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+  &::-webkit-scrollbar-thumb {
+    border-radius: calc(infinity * 1px);
+    background-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--foreground) 32%, transparent);
+  }
+}
+/* 消息流上沿 14px 渐隐 */
+@utility agent-fade-y {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 14px,
+    black calc(100% - 6px),
+    transparent 100%
+  );
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 14%, transparent) transparent;
+}
+/* 流光文字：生成中的状态指示（规范允许的循环动画）。动的是 background-position，只作用于一行文字；
+   周期取 lib/motion 的 SHIMMER，由组件通过 --shimmer 传入。减少动态效果时变成静态的次要文字 */
+@utility agent-shimmer {
+  color: transparent;
+  background: linear-gradient(
+      90deg,
+      var(--muted-foreground) 0%,
+      var(--muted-foreground) 35%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 65%,
+      var(--muted-foreground) 100%
+    )
+    0 0 / 250% 100%;
+  background-clip: text;
+  animation: agent-shimmer var(--shimmer, 1.6s) linear infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    background: none;
+    color: var(--muted-foreground);
+  }
+}
+@keyframes agent-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+
+/* 导入 / 导出进度弹窗（设计稿 docs/design/画布导入导出 第 14 节）：包裹沿轨道从起点飞向终点，只动 transform 与 opacity */
+@keyframes transfer-packet-fly {
+  0% {
+    transform: translateX(0) scale(0.6);
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(26px) scale(1);
+    opacity: 0;
+  }
+}
+@keyframes transfer-canvas-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 弹窗被 Esc / 点遮罩拦住时轻晃一次，表示「现在不能关」 */
+@keyframes transfer-nudge {
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+@utility transfer-packet {
+  animation: transfer-packet-fly 1.4s cubic-bezier(0.2, 0, 0, 1) infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    opacity: 1;
+    transform: translateX(13px);
+  }
+}
+@utility transfer-breathe {
+  animation: transfer-canvas-breathe 1.6s ease-in-out infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    opacity: 1;
+  }
+}
+@utility transfer-nudge {
+  animation: transfer-nudge 120ms cubic-bezier(0.2, 0, 0, 1);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}

@@ -1,0 +1,7 @@
+.git
+bin
+data
+configs/*.local.yaml
+**/*_test.go
+Dockerfile.dev
+.air.toml

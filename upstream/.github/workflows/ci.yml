@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    # 仓储 / 并发（积分行锁、首个超管、最后超管保护）的集成测试要真实的 Postgres 和 Redis，
+    # 没有这两个服务时它们会 t.Skip，看起来全绿其实没跑
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: video_canvas_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d video_canvas_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_DSN: host=127.0.0.1 port=5432 user=test password=test dbname=video_canvas_test sslmode=disable
+      TEST_REDIS_ADDR: 127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # lint 需要 merge-base 计算增量
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: golangci-lint（仅检查相对 master 的增量）
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.14.0 # 与 backend/Makefile 的 LINT_VERSION 保持一致
+          working-directory: backend
+          args: --new-from-merge-base=origin/master ./...
+
+      # 迁移只向前：已发布（最近一个 v* tag 里已有）的迁移文件不能修改、删除或改名，要修正就新增文件。
+      # 启动时的 checksum 校验会拒绝被改过的迁移，这一步让问题在合并前暴露
+      - name: 已发布的迁移文件只能新增
+        run: |
+          tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -z "$tag" ]; then echo "没有 v* tag，跳过"; exit 0; fi
+          changed="$(git diff --name-status "$tag" -- migrations/ | grep -v '^A' || true)"
+          if [ -n "$changed" ]; then
+            echo "相对 $tag，以下迁移文件被修改、删除或改名（已发布的迁移只能新增）："
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: 安装 ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Test
+        run: go test -race ./...
+
+  # 画布 Agent 运行时（Node/TypeScript）：和 backend 镜像里用的是同一套 npm ci 与构建
+  agent:
+    name: Agent (format + lint + typecheck + test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # package.json 的 engines 要求 >= 22.19
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  web:
+    name: Web (format + typecheck + lint + test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Format check
+        run: bun run format:check
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Test
+        run: bun run test
+
+      - name: Build
+        run: bun run build

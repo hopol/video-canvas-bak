@@ -1,0 +1,71 @@
+import service from "@/utils/requests/service";
+import type { CreateTaskRequest, CreateTaskResponse, TaskView } from "./type";
+
+/**
+ * 提交生成任务（HTTP 202）。生成数量 N 时一次请求拆成 N 个任务，按节点逐项返回任务或错误。
+ * 同一次点击的重试必须复用同一个 idempotencyKey。
+ * @param data 任务创建参数
+ * @param idempotencyKey 幂等键
+ * @returns 每个节点的结果
+ */
+export const createGenerationTask = (data: CreateTaskRequest, idempotencyKey: string) =>
+  service.post<CreateTaskResponse>("/generation-tasks", data, {
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+
+/**
+ * 获取单个生成任务
+ * @param id 任务 ID
+ * @returns 任务视图
+ */
+export const getGenerationTask = (id: string | number) =>
+  service.get<TaskView>(`/generation-tasks/${id}`, undefined);
+
+/**
+ * 按 id 批量对账，兼容画布十进制 ID 和短剧编码 ID；单次最多 100 个，超出自动分批
+ * @param ids 十进制或编码任务 ID 列表
+ * @returns 任务视图列表
+ */
+export const getGenerationTasksByIds = async (ids: Array<string | number>): Promise<TaskView[]> => {
+  if (ids.length === 0) return [];
+  const result: TaskView[] = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const list = await service.get<TaskView[] | null>("/generation-tasks", {
+      ids: chunk.join(","),
+    });
+    result.push(...(list ?? []));
+  }
+  return result;
+};
+
+/**
+ * 获取当前用户所有进行中的任务
+ * @returns 任务视图列表
+ */
+export const getActiveGenerationTasks = async (): Promise<TaskView[]> =>
+  (await service.get<TaskView[] | null>("/generation-tasks", { status: "active" })) ?? [];
+
+/**
+ * 查某张画布某个节点最近的生成记录（如角色卡的声音任务 voice:{节点id}）：
+ * 只有当前用户的正式任务，新的在前，最多 20 个，带提示词和模型展示名
+ * @param canvasId 画布 ID（十六进制串）
+ * @param nodeId 任务绑定的 node_id
+ * @returns 任务视图列表，新的在前
+ */
+export const getGenerationTasksByNode = async (
+  canvasId: string,
+  nodeId: string,
+): Promise<TaskView[]> =>
+  (await service.get<TaskView[] | null>("/generation-tasks", {
+    node_id: nodeId,
+    canvas_project_id: canvasId,
+  })) ?? [];
+
+/**
+ * 软取消任务；后端可能返回最新快照，也可能什么都不返回，调用方都要能处理
+ * @param id 任务 ID
+ * @returns 最新任务快照或 null
+ */
+export const cancelGenerationTask = (id: string | number) =>
+  service.post<TaskView | null>(`/generation-tasks/${id}/cancel`, undefined);

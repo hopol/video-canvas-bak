@@ -1,0 +1,54 @@
+# video-canvas 开发目录说明
+
+这是仓库给 Claude、Codex 和其他编码助手使用的入口。全项目的开发逻辑、目录职责、TDD 约定和命令见 [`AGENTS.md`](AGENTS.md)；请先读它，再按目标目录读取更具体的规则。
+
+## 必须遵守的优先级
+
+1. 用户当前请求和现有产品契约。
+2. 目标目录最近的 `AGENTS.md` 或 `CLAUDE.md`。
+3. 根目录 [`AGENTS.md`](AGENTS.md) 的全项目约定。
+4. 相关设计、API、插件契约和代码规范文档。
+
+当前已有的具体规则包括：
+
+- `backend/AGENTS.md`：后端分层、错误处理、依赖组装、敏感信息和测试要求。
+- `backend/docs/standards/`：后端架构、日志、复用、测试和工程化规范。
+- `web/docs/coding-standards.md`：前端注释、API、类型、错误处理和组件约定。
+- `.agents/skills/ui-design/SKILL.md`：前端界面设计和交互改动流程。
+
+## 工作方式
+
+- 先读项目现状和相关测试，再动手改文件。不要假设 Vite 模板 README 代表本项目的真实架构，真实入口以根 README、后端 README、代码和 CI 为准。
+- 对功能、修复、行为变化和重构，先写能复现需求或 bug 的失败测试，再实现，再重构。测试覆盖用户可观察行为、边界和业务错误。
+- 后端测试放 `backend/internal/tests/`，前端测试放 `web/src/tests/`。先跑定向测试，再跑受影响目录的完整检查；异步测试采用轮询与超时。
+- 不覆盖或回退用户已有的未提交改动。修改前查看 `git status`，只编辑当前任务需要的文件。
+- 不把密钥、令牌、真实数据库连接串或生成的运行时数据写入仓库。
+- 不需要使用 playright 进行端到端测试
+- 前端格式化和 lint 只用仓库自带的 oxfmt / oxlint（`web/` 下 `bun run format`、`bun run format:check`、`bun run lint`），不要用 prettier 或编辑器的默认格式化，否则会把无关代码改成另一种风格。本机默认 node 是 v16，直接跑会报 `ERR_UNKNOWN_FILE_EXTENSION`，改用 `bun node_modules/oxfmt/bin/oxfmt <文件>` 和 `bun node_modules/oxlint/bin/oxlint src`。
+
+## 格式与提交前检查
+
+CI 经常因为格式 / lint 挂掉返工，下面几条是硬约束：
+
+- **改完一个文件就格式化它**，不要攒到最后：web 文件 `cd web && bun node_modules/oxfmt/bin/oxfmt <文件>`；agent 文件 `cd agent && npx oxfmt <文件>`（和 web 同一套 oxfmt / oxlint 规则，CI 同样检查）；Go 文件 `cd backend && golangci-lint fmt <文件>`（gofmt + goimports，与 CI 相同）。Claude Code 已用项目钩子自动完成（`.claude/settings.json` → `scripts/ai-hooks/format-on-edit.mjs`），其他助手需要自己跑。
+- **提交前跑 `bash scripts/check.sh`**（`--fix` 先自动格式化，`SKIP_TESTS=1` 跳过测试，可指定 `web` / `backend` / `agent`），它按改动范围执行和 `.github/workflows/ci.yml` 相同的检查。全部通过再提交。
+- **不许跳过 Git 钩子**：不用 `--no-verify`、`git commit -n`，不把 `core.hooksPath` 指空。钩子报什么修什么；确认是钩子本身坏了就停下来告诉用户。
+- 写 Go 就按 golangci 限额写：函数 ≤ 80 行、≤ 50 条语句、认知复杂度 ≤ 20；超了就拆函数，不加 `//nolint` 糊过去。
+- 本机 `BUN_OPTIONS` 带 `--preload` 时 `bun run <脚本>` 会只打印帮助并返回 0（假通过），在 `web/` 下跑脚本前先 `unset BUN_OPTIONS`（PowerShell：`$env:BUN_OPTIONS=''`）。
+- 完整流程和常见报错修法见 `.claude/skills/ci-check/SKILL.md`（Codex 直接读该文件）。
+
+## 线上 Agent 观测
+
+- 线上画布 Agent 的运行记录用 `scripts/agent-trace` 拉到本地（`node scripts/agent-trace/agent-trace.mjs pull|show|compare`，用法见该目录 README），再用 `/agent-review` skill（`.claude/skills/agent-review/SKILL.md`，Codex 直接读该文件按流程执行）分析；失败分类见 `docs/agent-eval/failure-taxonomy.md`。
+- `.traces/` 里是用户原文，已在 `.gitignore` 中，**不得提交**，也不要贴到 PR、issue 或外部服务；令牌只放环境变量或 `.traces/.env`。
+
+## 关键架构记忆
+
+- 仓库根目录 `agent/` 是画布 Agent 服务（TypeScript，Pi Durable + SQLite，独立常驻，零渠道密钥）：会话、运行、审批、事件都在它里面，前端的 Agent 接口由 Go 校验登录态后反向代理过去（`backend/internal/handler/agent/proxy.go`），Go 通过平台 API（`/internal/platform/v1/*`，服务令牌鉴权）提供画布读写、模型代理和计费、生成任务、素材；Go 侧的 Agent 逻辑在 `backend/internal/agent/`、`backend/internal/service/agent/` 和 `backend/internal/handler/agent/`。改动在 `agent/` 下依次跑 `npm run typecheck`、`npm test`、`npm run build`；开发时用 `npm run serve`（Node 22.19+ 的类型剥离，不用先构建，环境变量见 `src/serve.ts` 头部注释），部署镜像里只有 `npm run build` 生成的 `dist/`（`agent/Dockerfile`）。设计与进度见 `docs/design/Agent服务拆分/`，部署、升级备份和恢复见 `docs/docker-production.md`「Agent 服务」。源码只能用「可擦除」的 TS 语法（不用 enum、namespace、参数属性），`tsc` 已通过 `erasableSyntaxOnly` 检查。
+
+- 产品是 React 无限画布 + Go API 的 AI 视频创作应用。
+- 后端链路为 `router → middleware → handler → service → repository/cache`，异步生成经 worker 和 JS plugin-runner 调用模型供应商。
+- 前端通过 HTTP 请求读写资源，通过 WebSocket 接收任务状态，并用任务对账恢复断线期间的更新。
+- 画布保存依赖 `revision` 乐观锁；模型配置没有版本管理，保存即写入唯一一份配置，启用开关决定用户是否可见（启用前要通过校验与渠道检查）；素材存储可为本地磁盘或 S3 兼容存储。
+
+交付时给出修改摘要、验证命令及其结果。若某项检查因环境缺失无法运行，明确说明原因和替代验证。

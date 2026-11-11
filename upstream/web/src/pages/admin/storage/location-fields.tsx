@@ -1,0 +1,208 @@
+import { ChevronRight } from "lucide-react";
+import { useState } from "react";
+
+import { FormField } from "@/components/admin-ui/form-field";
+import { OptionSelect } from "@/components/admin-ui/option-select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
+import { STORAGE_NAME_MAX } from "@/utils/admin/storage-form";
+import { deriveEndpoint } from "@/utils/admin/storage-endpoint";
+
+import { ADDRESSING_OPTIONS, PROVIDER_META } from "./provider-meta";
+import { fieldLock, type SectionProps } from "./section-props";
+
+/**
+ * 基本信息：名称、地域（R2 换成 Account ID）、endpoint 只读推导、桶名、路径前缀。
+ * Endpoint 只是按规则推导的展示，真正使用的值由后端按同样规则算出并保存。
+ * 已被素材引用的定位字段禁用并带锁图标。
+ */
+export function LocationFields(props: SectionProps) {
+  const { form, patch, errors, readOnly, preset } = props;
+  const meta = PROVIDER_META[form.provider];
+  const isR2 = form.provider === "r2";
+  const region = fieldLock(props, "region");
+  const account = fieldLock(props, "accountId");
+  const bucket = fieldLock(props, "bucket");
+  const prefix = fieldLock(props, "pathPrefix");
+  const endpoint = fieldLock(props, "endpoint");
+  const regions = preset?.regions ?? [];
+  /** 已存的地域不在预设里时也要能显示，避免下拉空白 */
+  const regionMissing = form.region !== "" && !regions.some((item) => item.id === form.region);
+  const shownEndpoint =
+    form.provider === "s3" && form.endpoint.trim()
+      ? form.endpoint.trim()
+      : deriveEndpoint(form.provider, { region: form.region, accountId: form.accountId });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <FormField label="名称" htmlFor="storage-name" error={errors.name} required>
+        <Input
+          id="storage-name"
+          value={form.name}
+          maxLength={STORAGE_NAME_MAX * 2}
+          placeholder="例如：OSS 杭州 · 生产"
+          disabled={readOnly}
+          aria-invalid={!!errors.name}
+          onChange={(event) => patch({ name: event.target.value })}
+        />
+      </FormField>
+
+      {isR2 && (
+        <FormField
+          label={<>Account ID{account.lock}</>}
+          htmlFor="storage-account"
+          error={errors.accountId}
+          required
+        >
+          <Input
+            id="storage-account"
+            className="font-mono"
+            value={form.accountId}
+            placeholder="0123456789abcdef0123456789abcdef"
+            disabled={account.disabled}
+            aria-invalid={!!errors.accountId}
+            onChange={(event) => patch({ accountId: event.target.value.trim() })}
+          />
+        </FormField>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {isR2 ? (
+          <FormField label="Region" htmlFor="storage-region">
+            <Input id="storage-region" className="font-mono" value="auto" disabled />
+          </FormField>
+        ) : (
+          <FormField
+            label={<>地域{region.lock}</>}
+            htmlFor="storage-region"
+            error={errors.region}
+            required
+          >
+            <OptionSelect
+              id="storage-region"
+              value={form.region}
+              placeholder="请选择"
+              disabled={region.disabled || regions.length === 0}
+              invalid={!!errors.region}
+              onValueChange={(value) => patch({ region: value })}
+              options={[
+                ...(regionMissing ? [{ value: form.region, label: form.region }] : []),
+                ...regions.map((item) => ({
+                  value: item.id,
+                  label: `${item.name} · ${item.id}`,
+                })),
+              ]}
+            />
+          </FormField>
+        )}
+        <FormField label={<>Endpoint{endpoint.lock}</>} htmlFor="storage-endpoint">
+          <Input
+            id="storage-endpoint"
+            className="font-mono text-xs"
+            value={shownEndpoint}
+            disabled
+            readOnly
+          />
+        </FormField>
+      </div>
+
+      <FormField
+        label={<>Bucket{bucket.lock}</>}
+        htmlFor="storage-bucket"
+        error={errors.bucket}
+        required
+      >
+        <Input
+          id="storage-bucket"
+          className="font-mono"
+          value={form.bucket}
+          placeholder={meta.bucketPlaceholder}
+          disabled={bucket.disabled}
+          aria-invalid={!!errors.bucket}
+          onChange={(event) => patch({ bucket: event.target.value.trim() })}
+        />
+      </FormField>
+
+      <FormField
+        label={
+          <>
+            路径前缀<span className="text-muted-foreground font-normal">可选</span>
+            {prefix.lock}
+          </>
+        }
+        htmlFor="storage-prefix"
+        error={errors.pathPrefix}
+      >
+        <Input
+          id="storage-prefix"
+          className="font-mono"
+          value={form.pathPrefix}
+          placeholder="assets/"
+          disabled={prefix.disabled}
+          aria-invalid={!!errors.pathPrefix}
+          onChange={(event) => patch({ pathPrefix: event.target.value })}
+        />
+      </FormField>
+    </div>
+  );
+}
+
+/**
+ * S3 的“高级”折叠区：自定义 endpoint（MinIO 等兼容服务）、寻址方式、HTTPS 开关。
+ * 已经填过自定义配置时默认展开，免得管理员看不到自己改过的东西。
+ */
+export function AdvancedFields(props: SectionProps) {
+  const { form, patch, errors, readOnly } = props;
+  const [open, setOpen] = useState(
+    () => form.endpoint.trim() !== "" || form.addressing !== "auto" || !form.useSSL,
+  );
+  const endpoint = fieldLock(props, "endpoint");
+  const addressing = fieldLock(props, "addressing");
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 py-1 text-sm font-medium">
+        <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} />
+        高级
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 flex flex-col gap-3">
+        <FormField
+          label={<>自定义 Endpoint{endpoint.lock}</>}
+          htmlFor="storage-custom-endpoint"
+          error={errors.endpoint}
+          hint="留空按地域推导 · host:port"
+        >
+          <Input
+            id="storage-custom-endpoint"
+            className="font-mono"
+            value={form.endpoint}
+            placeholder="minio.internal:9000"
+            disabled={endpoint.disabled}
+            onChange={(event) => patch({ endpoint: event.target.value })}
+          />
+        </FormField>
+        <FormField label={<>寻址方式{addressing.lock}</>} htmlFor="storage-addressing">
+          <OptionSelect
+            id="storage-addressing"
+            value={form.addressing}
+            disabled={addressing.disabled}
+            onValueChange={(value) => patch({ addressing: value as (typeof form)["addressing"] })}
+            options={ADDRESSING_OPTIONS.map((item) => ({ value: item.value, label: item.label }))}
+          />
+        </FormField>
+        <div className="flex items-center gap-2 text-sm">
+          <Switch
+            id="storage-ssl"
+            checked={form.useSSL}
+            disabled={readOnly}
+            onCheckedChange={(checked) => patch({ useSSL: checked })}
+          />
+          <Label htmlFor="storage-ssl">使用 HTTPS</Label>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}

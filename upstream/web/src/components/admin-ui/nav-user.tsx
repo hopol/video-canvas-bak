@@ -1,0 +1,107 @@
+import type { ReactNode } from "react";
+import { ChevronsUpDown, LogOut } from "lucide-react";
+
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import { logout } from "@/utils/storage/session";
+
+/**
+ * 侧栏底部的账号菜单（shadcn-admin 的 NavUser）：头像 + 名称 + 说明，点开是菜单。
+ * 菜单固定以「退出登录」结尾；children 是它上面的额外菜单项（DropdownMenuGroup / DropdownMenuItem），
+ * 只放针对账号的操作，跳转页面之类的导航不放这里。
+ */
+function NavUser({
+  name,
+  description,
+  initials,
+  avatarSrc,
+  children,
+}: {
+  name: string;
+  description?: string;
+  /** 头像里的文字 */
+  initials: string;
+  /** 头像图片地址；不传或加载失败时显示 initials */
+  avatarSrc?: string | null;
+  children?: ReactNode;
+}) {
+  const { isMobile } = useSidebar();
+  const identity = (
+    <>
+      <Avatar className="size-8 rounded-lg">
+        {avatarSrc && <AvatarImage src={avatarSrc} alt={`${name}的头像`} className="rounded-lg" />}
+        <AvatarFallback className="rounded-lg bg-gradient-to-br from-zinc-500 to-zinc-700 text-xs font-semibold text-white">
+          {initials}
+        </AvatarFallback>
+      </Avatar>
+      <div className="grid flex-1 text-left text-sm leading-tight">
+        <span className="truncate font-medium">{name}</span>
+        {description && (
+          <span className="text-sidebar-foreground/60 truncate text-xs">{description}</span>
+        )}
+      </div>
+    </>
+  );
+
+  return (
+    <SidebarMenu data-slot="nav-user">
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <SidebarMenuButton
+                size="lg"
+                className="data-[popup-open]:bg-sidebar-accent data-[popup-open]:text-sidebar-accent-foreground"
+              />
+            }
+          >
+            {identity}
+            <ChevronsUpDown className="ml-auto size-4" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            className="min-w-56 rounded-lg"
+            side={isMobile ? "bottom" : "right"}
+            align="end"
+            sideOffset={4}
+          >
+            {/* Base UI 要求 Label 在 Group 里 */}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="p-0 font-normal">
+                <div className="flex items-center gap-2 px-1 py-1.5 text-sm">{identity}</div>
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
+            {children && (
+              <>
+                <DropdownMenuSeparator />
+                {children}
+              </>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem variant="destructive" onClick={logout}>
+                <LogOut />
+                退出登录
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  );
+}
+
+export { NavUser };

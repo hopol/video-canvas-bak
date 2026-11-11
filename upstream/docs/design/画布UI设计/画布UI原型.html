@@ -1,0 +1,4941 @@
+<title>画布 UI 原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap"
+/>
+<style>
+  /* 布局：全屏画布 + 五区浮层外壳（左上/右上/底中/左下/右下）+ 屏幕空间的节点历史浮条与生成面板。深色单主题，刻意只做这一套。 */
+  :root {
+    color-scheme: dark;
+    --canvas-bg: #0d0d0e;
+    --dot: rgba(255, 255, 255, 0.075);
+    --chrome: rgba(28, 28, 30, 0.78);
+    --chrome-solid: #1b1b1d;
+    --chrome-border: rgba(255, 255, 255, 0.08);
+    --surface: #161618;
+    --surface-2: #232326;
+    --surface-3: #2e2e32;
+    --fg: #f4f4f5;
+    --fg-2: #a1a1aa;
+    --fg-3: #6b6b73;
+    --node-ring: rgba(255, 255, 255, 0.72);
+    --edge: rgba(255, 255, 255, 0.28);
+    --credit: #f2c14e;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --run: #7cb4ff;
+    --font: "Geist", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --e-out: cubic-bezier(0.2, 0, 0, 1);
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background: var(--canvas-bg);
+    color: var(--fg);
+    font-family: var(--font);
+    font-size: 14px;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    padding: 0;
+  }
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--node-ring);
+    outline-offset: 2px;
+  }
+  svg.i {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- 画布 ---------- */
+  #stage {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    touch-action: none;
+    cursor: default;
+    background-image: radial-gradient(circle, var(--dot) 1px, transparent 1.3px);
+  }
+  #stage.grid {
+    background-image:
+      linear-gradient(var(--dot) 1px, transparent 1px),
+      linear-gradient(90deg, var(--dot) 1px, transparent 1px);
+  }
+  #stage.plain {
+    background-image: none;
+  }
+  #stage.hand {
+    cursor: grab;
+  }
+  #stage.panning {
+    cursor: grabbing;
+  }
+  #world {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+  }
+  svg.edges {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .edges path {
+    fill: none;
+    vector-effect: non-scaling-stroke;
+  }
+  .edges .base {
+    stroke: var(--edge);
+    stroke-width: 1.5;
+    transition: stroke 0.18s;
+  }
+  .edges .hot .base {
+    stroke: rgba(255, 255, 255, 0.5);
+  }
+  /* 流光颜色：平时白色，下游生成中换成蓝色并加速 */
+  .edges g {
+    --fx: rgba(255, 255, 255, 0.85);
+    --speed: 1;
+  }
+  .edges g.hot {
+    --fx: #fff;
+  }
+  .edges g.run {
+    --fx: var(--run);
+    --speed: 0.45;
+  }
+  /* A 彗星：一段带辉光的亮带从上游跑向下游 */
+  .fx-comet-glow {
+    stroke: var(--fx);
+    stroke-width: 6;
+    stroke-linecap: round;
+    opacity: 0.28;
+    filter: blur(3px);
+    stroke-dasharray: 16 84;
+    animation: comet calc(2.2s * var(--speed)) cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  .fx-comet-core {
+    stroke: var(--fx);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-dasharray: 10 90;
+    animation: comet calc(2.2s * var(--speed)) cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  @keyframes comet {
+    from {
+      stroke-dashoffset: 16;
+    }
+    to {
+      stroke-dashoffset: -84;
+    }
+  }
+  /* B 光带：渐变描边，渐变本身沿线平移 */
+  .fx-sweep {
+    stroke-width: 2.5;
+    stroke-linecap: round;
+  }
+  /* C 粒子流：圆头的零长度虚线就是一颗颗光点，偏移量滚动让它们流向下游 */
+  .fx-dots {
+    stroke: var(--fx);
+    stroke-width: 2.6;
+    stroke-linecap: round;
+    stroke-dasharray: 0 13;
+    animation: dots calc(0.9s * var(--speed)) linear infinite;
+  }
+  .fx-dots-glow {
+    stroke: var(--fx);
+    stroke-width: 7;
+    stroke-linecap: round;
+    opacity: 0.18;
+    filter: blur(2px);
+    stroke-dasharray: 0 13;
+    animation: dots calc(0.9s * var(--speed)) linear infinite;
+  }
+  @keyframes dots {
+    to {
+      stroke-dashoffset: -13;
+    }
+  }
+
+  .node {
+    position: absolute;
+  }
+  .node-head {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    bottom: calc(100% + 8px);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--fg);
+  }
+  .node-head .st {
+    margin-left: auto;
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--run);
+    font-family: var(--mono);
+  }
+  .node-head .st.bad {
+    color: var(--bad);
+    font-family: var(--font);
+  }
+  .card {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 16px;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    transition: box-shadow 0.12s var(--e-out);
+  }
+  .node:hover .card {
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+  }
+  .node.sel .card {
+    box-shadow:
+      0 0 0 2px var(--node-ring),
+      0 12px 40px rgba(0, 0, 0, 0.5);
+  }
+  .node.empty .card {
+    background: #141416;
+    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.08);
+  }
+  .node.empty.sel .card {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(255, 255, 255, 0.12),
+      0 0 0 2px var(--node-ring);
+  }
+  .media {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+  }
+  .media.next {
+    opacity: 0;
+  }
+  .media .tag {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.45);
+    color: rgba(255, 255, 255, 0.7);
+  }
+  .empty-hint {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 10px;
+    color: var(--fg-3);
+    font-size: 12px;
+  }
+  .empty-hint svg.i {
+    width: 30px;
+    height: 30px;
+    stroke-width: 1.4;
+  }
+  .shimmer {
+    position: absolute;
+    inset: 0;
+    display: none;
+    background: linear-gradient(
+        100deg,
+        transparent 30%,
+        rgba(255, 255, 255, 0.06) 50%,
+        transparent 70%
+      )
+      #18181b;
+    background-size: 200% 100%;
+    animation: shimmer 1.4s linear infinite;
+  }
+  .node.running .shimmer {
+    display: block;
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+  .prog {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.06);
+    display: none;
+  }
+  .node.running .prog {
+    display: block;
+  }
+  .prog i {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--run);
+    transition: width 0.2s linear;
+  }
+  .fail {
+    position: absolute;
+    inset: 0;
+    display: none;
+    place-content: center;
+    justify-items: center;
+    gap: 8px;
+    text-align: center;
+    padding: 16px;
+    color: var(--fg-2);
+    font-size: 12px;
+    background: #161214;
+  }
+  .node.failed .fail {
+    display: grid;
+  }
+  .fail b {
+    color: var(--bad);
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .fail button {
+    margin-top: 4px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    font-size: 12px;
+  }
+  .textout {
+    position: absolute;
+    inset: 0;
+    padding: 16px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--fg-2);
+    overflow: hidden;
+  }
+  .wave {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 0 24px;
+  }
+  .wave i {
+    flex: 1;
+    max-width: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.4);
+  }
+
+  .port {
+    position: absolute;
+    top: 50%;
+    width: 28px;
+    height: 28px;
+    margin-top: -14px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.35);
+    background: var(--canvas-bg);
+    opacity: 0;
+    transform: scale(0.6);
+    transition:
+      opacity 0.12s var(--e-out),
+      transform 0.18s var(--e-out),
+      color 0.12s,
+      box-shadow 0.12s;
+  }
+  .port svg.i {
+    width: 14px;
+    height: 14px;
+  }
+  .port.l {
+    left: -48px;
+  }
+  .port.r {
+    right: -48px;
+  }
+  .node:hover .port,
+  .node.sel .port {
+    opacity: 1;
+    transform: scale(1);
+  }
+  .port:hover {
+    color: var(--fg);
+    box-shadow: inset 0 0 0 1.5px var(--fg);
+    transform: scale(1.1) !important;
+  }
+
+  /* ---------- 外壳胶囊 ---------- */
+  .zone {
+    position: fixed;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 20;
+  }
+  .z-tl {
+    left: 12px;
+    top: calc(12px + env(safe-area-inset-top, 0px));
+  }
+  .z-tr {
+    right: 12px;
+    top: calc(12px + env(safe-area-inset-top, 0px));
+  }
+  .z-bc {
+    left: 50%;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+  }
+  .z-bl {
+    left: 12px;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .z-br {
+    right: 12px;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 40px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--chrome);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .pill.big {
+    height: 52px;
+    padding: 0 6px;
+    gap: 4px;
+  }
+  .sep {
+    width: 1px;
+    height: 18px;
+    background: var(--chrome-border);
+    margin: 0 4px;
+    flex: none;
+  }
+  .ib {
+    position: relative;
+    height: 32px;
+    min-width: 32px;
+    padding: 0 8px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--fg-2);
+    transition:
+      background 0.12s,
+      color 0.12s,
+      transform 0.12s;
+    white-space: nowrap;
+  }
+  .ib:hover {
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--fg);
+  }
+  .ib:active {
+    transform: scale(0.96);
+  }
+  .ib[disabled] {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+  .pill.big .ib {
+    height: 40px;
+    min-width: 40px;
+  }
+  .ib.primary {
+    background: var(--fg);
+    color: #0d0d0e;
+    width: 40px;
+    padding: 0;
+  }
+  .ib.primary:hover {
+    background: #fff;
+    color: #0d0d0e;
+  }
+  .ib.primary svg.i {
+    width: 20px;
+    height: 20px;
+    stroke-width: 2.2;
+  }
+  .ib.on {
+    color: var(--fg);
+  }
+  .kbd {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-3);
+  }
+
+  .seg {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .seg-ind {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    height: 32px;
+    margin-top: -16px;
+    width: 0;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    pointer-events: none;
+  }
+  .pill.big .seg-ind {
+    height: 40px;
+    margin-top: -20px;
+  }
+  .no-motion-lib .seg-ind {
+    transition:
+      transform 0.22s cubic-bezier(0.3, 1.25, 0.5, 1),
+      width 0.22s cubic-bezier(0.3, 1.25, 0.5, 1);
+  }
+  .seg > button {
+    position: relative;
+    z-index: 1;
+  }
+
+  .brand {
+    width: 34px;
+    height: 30px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: var(--fg);
+  }
+  .brand .logo {
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    background: var(--fg);
+    display: grid;
+    place-items: center;
+  }
+  .brand .logo i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--canvas-bg);
+    box-shadow: 5px 0 0 -1px var(--canvas-bg);
+    transform: translateX(-2px);
+  }
+  .title-in {
+    width: 9ch;
+    min-width: 4ch;
+    max-width: 28ch;
+    background: transparent;
+    border: 0;
+    color: var(--fg);
+    font: 600 14px var(--font);
+    padding: 4px 6px;
+    border-radius: 8px;
+  }
+  .title-in:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .title-in:focus {
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
+  }
+  .proto {
+    font-size: 11px;
+    color: var(--fg-3);
+    padding: 2px 7px;
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+  }
+  .save {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--fg-3);
+    padding: 0 8px 0 4px;
+    height: 32px;
+    border-radius: 999px;
+  }
+  .save .lbl {
+    max-width: 80px;
+    overflow: hidden;
+    transition:
+      max-width 0.24s var(--e-out),
+      opacity 0.18s;
+  }
+  .save.idle .lbl {
+    max-width: 0;
+    opacity: 0;
+  }
+  .save.saving svg.i {
+    animation: spin 1s linear infinite;
+  }
+  .save.error {
+    color: var(--bad);
+    cursor: pointer;
+  }
+  .save.error:hover {
+    background: rgba(248, 113, 113, 0.1);
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .credits {
+    gap: 6px;
+    padding: 0 12px 0 10px;
+    color: var(--fg);
+    font-weight: 600;
+    font-family: var(--mono);
+  }
+  .credits .spark {
+    color: var(--credit);
+    fill: var(--credit);
+    stroke: none;
+  }
+  .ws {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.15);
+  }
+  .ws.down {
+    background: var(--warn);
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18);
+    animation: blink 1s ease-in-out infinite;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-weight: 600;
+    font-size: 14px;
+    background: conic-gradient(from 200deg, #3b3b40, #6b6b73, #3b3b40);
+    box-shadow: 0 0 0 1px var(--chrome-border);
+  }
+  .stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-2);
+    padding: 0 8px;
+    height: 32px;
+    border-radius: 999px;
+  }
+  .stat.warn {
+    color: var(--warn);
+  }
+  button.stat:hover {
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .zoom-v {
+    font-family: var(--mono);
+    font-size: 12px;
+    min-width: 64px;
+  }
+
+  /* ---------- 弹出层 ---------- */
+  .pop {
+    position: fixed;
+    z-index: 60;
+    min-width: 200px;
+    padding: 6px;
+    border-radius: 14px;
+    background: var(--chrome-solid);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 16px 48px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(var(--dy, 4px)) scale(0.96);
+    pointer-events: none;
+    transition:
+      opacity 0.13s var(--e-out),
+      transform 0.13s var(--e-out),
+      visibility 0s 0.13s;
+  }
+  .pop.open {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+    transition:
+      opacity 0.18s var(--e-out),
+      transform 0.18s var(--e-out);
+  }
+  .mi {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 9px;
+    font-size: 13px;
+    color: var(--fg);
+    text-align: left;
+  }
+  .mi:hover,
+  .mi:focus-visible {
+    background: rgba(255, 255, 255, 0.07);
+    outline: none;
+  }
+  .mi svg.i {
+    color: var(--fg-2);
+  }
+  .mi .kbd,
+  .mi .r {
+    margin-left: auto;
+  }
+  .mi .ck {
+    margin-left: auto;
+    color: var(--fg);
+    visibility: hidden;
+  }
+  .mi.checked .ck {
+    visibility: visible;
+  }
+  .mi .sub {
+    display: block;
+    font-size: 11px;
+    color: var(--fg-3);
+    margin-top: 1px;
+  }
+  .mlabel {
+    padding: 8px 10px 4px;
+    font-size: 11px;
+    color: var(--fg-3);
+    letter-spacing: 0.04em;
+  }
+  .msep {
+    height: 1px;
+    background: var(--chrome-border);
+    margin: 6px 4px;
+  }
+  .prow {
+    padding: 6px 8px;
+    display: grid;
+    gap: 6px;
+  }
+  .prow .k {
+    font-size: 11px;
+    color: var(--fg-3);
+  }
+  .chips {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .chip-o {
+    padding: 5px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    background: var(--surface-2);
+    color: var(--fg-2);
+  }
+  .chip-o:hover {
+    color: var(--fg);
+  }
+  .chip-o.on {
+    background: var(--fg);
+    color: #0d0d0e;
+  }
+  .ledger {
+    display: grid;
+    gap: 2px;
+    padding: 4px 6px 6px;
+    font-size: 12px;
+  }
+  .ledger div {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
+    color: var(--fg-2);
+    padding: 4px 4px;
+  }
+  .ledger .neg {
+    color: var(--fg);
+    font-family: var(--mono);
+  }
+  .ledger .pos {
+    color: var(--ok);
+    font-family: var(--mono);
+  }
+  .bal {
+    padding: 10px 10px 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .bal b {
+    font: 600 24px var(--mono);
+  }
+
+  /* ---------- 节点历史浮条 ---------- */
+  #hist {
+    position: fixed;
+    z-index: 15;
+    left: 0;
+    top: 0;
+    display: flex;
+    align-items: center;
+    height: 40px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--chrome);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 8px 24px rgba(0, 0, 0, 0.35);
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+    pointer-events: none;
+    transition:
+      opacity 0.18s var(--e-out),
+      transform 0.18s var(--e-out);
+  }
+  #hist.show {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+  #hist.dim,
+  #panel.dim {
+    opacity: 0.35 !important;
+    pointer-events: none !important;
+  }
+  #hist .cnt {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: #0d0d0e;
+    background: var(--fg);
+    border-radius: 999px;
+    padding: 1px 6px;
+  }
+  #hist .thumbs {
+    position: relative;
+    display: flex;
+    gap: 6px;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition:
+      max-width 0.24s var(--e-out),
+      opacity 0.18s,
+      margin 0.24s;
+  }
+  #hist.open .thumbs {
+    opacity: 1;
+    margin: 0 4px;
+  }
+  .thumb {
+    width: 52px;
+    height: 30px;
+    border-radius: 7px;
+    background-size: cover;
+    flex: none;
+    opacity: 0.65;
+    transition: opacity 0.12s;
+  }
+  .thumb:hover,
+  .thumb.on {
+    opacity: 1;
+  }
+  .thumb-ring {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 52px;
+    height: 30px;
+    border-radius: 7px;
+    box-shadow: 0 0 0 2px var(--fg);
+    pointer-events: none;
+  }
+  .no-motion-lib .thumb-ring {
+    transition: transform 0.22s cubic-bezier(0.3, 1.25, 0.5, 1);
+  }
+  .ring-st {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--fg-2);
+  }
+  .ring-st.run {
+    box-shadow: inset 0 0 0 1.5px rgba(124, 180, 255, 0.25);
+    border-top: 1.5px solid var(--run);
+    animation: spin 0.9s linear infinite;
+  }
+  .ring-st.ok {
+    box-shadow: inset 0 0 0 1.5px var(--ok);
+  }
+
+  /* ---------- 生成面板 ---------- */
+  #panel {
+    position: fixed;
+    z-index: 16;
+    left: 0;
+    top: 0;
+    padding: 14px;
+    border-radius: 22px;
+    background: rgba(24, 24, 27, 0.94);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 24px 64px rgba(0, 0, 0, 0.55);
+    display: grid;
+    gap: 12px;
+    opacity: 0;
+    transform: translateY(var(--pdy, -6px)) scale(0.98);
+    pointer-events: none;
+    transition:
+      opacity 0.18s var(--e-out),
+      transform 0.18s var(--e-out);
+  }
+  #panel.show {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+  .p-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
+  .tabs {
+    padding: 3px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    overflow-x: auto;
+    scrollbar-width: none;
+    min-width: 0;
+  }
+  .tabs .seg-ind {
+    height: 30px;
+    margin-top: -15px;
+    background: var(--surface-3);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  .tabs button {
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    color: var(--fg-2);
+    white-space: nowrap;
+    transition: color 0.12s;
+  }
+  .tabs button.on {
+    color: var(--fg);
+  }
+  .expand {
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+    flex: none;
+  }
+  .expand:hover {
+    color: var(--fg);
+    background: rgba(255, 255, 255, 0.06);
+  }
+  /* 引用条：所有节点的面板顶部都有，列出接进来的上游（连线 = 引用），横向放不下就滚动 */
+  .refs {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 2px;
+    margin: -2px;
+  }
+  .ref {
+    position: relative;
+    flex: none;
+    width: 56px;
+    height: 56px;
+    border-radius: 10px;
+    background-size: cover;
+    background-position: center;
+    box-shadow: 0 0 0 1px var(--chrome-border);
+    display: grid;
+    place-items: center;
+    color: var(--fg-2);
+    background-color: var(--surface-2);
+    cursor: pointer;
+    transition:
+      box-shadow 0.12s,
+      opacity 0.12s,
+      transform 0.12s;
+  }
+  .ref:hover,
+  .ref.hl {
+    box-shadow: 0 0 0 2px var(--node-ring);
+  }
+  .ref:active {
+    transform: scale(0.96);
+  }
+  .ref:focus-visible {
+    outline: 2px solid var(--node-ring);
+    outline-offset: 2px;
+  }
+  .ref.txt {
+    place-items: start;
+    padding: 21px 6px 4px;
+    font-size: 9.5px;
+    line-height: 1.35;
+    color: var(--fg-2);
+    text-align: left;
+    overflow: hidden;
+  }
+  .ref.txt span {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .ref.aud svg.i {
+    width: 22px;
+    height: 22px;
+    color: var(--ok);
+  }
+  .ref.none {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.12);
+    color: var(--fg-3);
+  }
+  .ref.unused {
+    opacity: 0.4;
+  }
+  .ref .kb {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.6);
+    color: var(--fg);
+  }
+  .ref .kb svg.i {
+    width: 10px;
+    height: 10px;
+    stroke-width: 2.4;
+  }
+  .node.ref-hl .card {
+    outline: 2px dashed var(--node-ring);
+    outline-offset: 4px;
+  }
+  .ref .lk {
+    position: absolute;
+    left: 3px;
+    top: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.6);
+  }
+  .ref .lk svg.i {
+    width: 10px;
+    height: 10px;
+    stroke-width: 2.4;
+  }
+  .addref {
+    flex: none;
+    width: 56px;
+    height: 56px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.12);
+    border: 0;
+    background-image: none;
+    outline-offset: 2px;
+  }
+  .addref {
+    box-shadow: none;
+    border: 1.5px dashed rgba(255, 255, 255, 0.18);
+  }
+  .addref:hover {
+    color: var(--fg);
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+  .ta-wrap {
+    position: relative;
+  }
+  /* 提示词编辑器：可编辑的 div，@ 进来的素材是不可编辑的 chip，整体删除 */
+  .pe {
+    width: 100%;
+    color: var(--fg);
+    font: 15px/1.75 var(--font);
+    padding: 0 2px;
+    min-height: 52px;
+    max-height: 214px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    cursor: text;
+  }
+  .pe.is-empty::before {
+    content: attr(data-ph);
+    color: var(--fg-3);
+    pointer-events: none;
+    position: absolute;
+  }
+  .pe:focus {
+    outline: none;
+  }
+  .mention {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    max-width: 168px;
+    margin: 0 2px;
+    padding: 0 8px 0 3px;
+    border-radius: 7px;
+    vertical-align: -7px;
+    background: var(--surface-2);
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--fg);
+    cursor: default;
+    transition:
+      box-shadow 0.12s,
+      background 0.12s;
+  }
+  .mention .mi-ic {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background-size: cover;
+    background-position: center;
+    display: grid;
+    place-items: center;
+    background-color: var(--surface-3);
+  }
+  .mention .mi-ic svg.i {
+    width: 12px;
+    height: 12px;
+  }
+  .mention .mi-ic.aud svg.i {
+    color: var(--ok);
+  }
+  .mention .ml {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mention.hl {
+    box-shadow: inset 0 0 0 1.5px var(--node-ring);
+    background: var(--surface-3);
+  }
+  .mention.gone {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    color: var(--fg-3);
+  }
+  .mention.gone .ml {
+    text-decoration: line-through;
+  }
+  .mention.gone .mi-ic {
+    opacity: 0.35;
+  }
+  /* ---------- 节点预设（设计稿 6.13）：底栏入口、提示词里的预设 chip、选择器 ---------- */
+  :root {
+    --preset: oklch(0.6 0.19 295);
+  }
+  .pt {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 36px;
+    height: 34px;
+    border-radius: 999px;
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    transition:
+      background 0.12s,
+      color 0.12s,
+      transform 0.12s;
+  }
+  .pt:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--fg);
+  }
+  .pt:active {
+    transform: scale(0.96);
+  }
+  .pt.on,
+  .pt[aria-expanded="true"] {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--fg);
+  }
+  .pt[aria-disabled="true"] {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  .pt svg.i {
+    width: 17px;
+    height: 17px;
+  }
+  .pt .dot {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--preset);
+    box-shadow: 0 0 0 2px #232326;
+  }
+  .pt .cnt {
+    position: absolute;
+    top: 0;
+    right: 0;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--preset);
+    color: #fff;
+    font: 600 10px/15px var(--mono);
+    text-align: center;
+  }
+  .pchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    max-width: 168px;
+    margin: 0 2px;
+    padding: 0 8px 0 3px;
+    border-radius: 7px;
+    vertical-align: -7px;
+    background: var(--surface-2);
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--fg);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .pchip:hover {
+    background: var(--surface-3);
+  }
+  .pchip .pi {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background: var(--preset);
+    color: #fff;
+    display: grid;
+    place-items: center;
+  }
+  .pchip .pi svg.i {
+    width: 12px;
+    height: 12px;
+  }
+  .pchip .ml {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pchip.gone {
+    background: transparent;
+    color: var(--fg-3);
+  }
+  .pchip.gone .ml {
+    text-decoration: line-through;
+  }
+  /* 只放了模板、还没写字：占位文字跟在 chip 后面 */
+  .pe.tpl-only::after {
+    content: attr(data-ph2);
+    color: var(--fg-3);
+    pointer-events: none;
+  }
+  #pop-preset {
+    z-index: 70;
+    padding: 0;
+    width: min(620px, calc(100vw - 16px));
+    overflow: hidden;
+  }
+  .pk-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 10px 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .pk-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .pk-tab {
+    flex: none;
+    height: 28px;
+    padding: 0 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--fg-2);
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+  .pk-tab:hover {
+    color: var(--fg);
+  }
+  .pk-tab.on {
+    background: var(--surface-3);
+    color: var(--fg);
+  }
+  .pk-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    padding: 6px 10px 10px;
+    max-height: min(318px, 46vh);
+    overflow-y: auto;
+  }
+  .pk-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 10px;
+    aspect-ratio: 16 / 9;
+    background: var(--surface-3);
+    text-align: left;
+    outline: none;
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+    transition:
+      box-shadow 0.12s,
+      transform 0.12s;
+  }
+  .pk-grid.sq .pk-card {
+    aspect-ratio: 1;
+  }
+  .pk-card:active {
+    transform: scale(0.97);
+  }
+  .pk-card:hover,
+  .pk-card:focus-visible {
+    box-shadow: inset 0 0 0 1.5px var(--node-ring);
+  }
+  .pk-card.on {
+    box-shadow: 0 0 0 2px var(--preset);
+  }
+  .pk-card img,
+  .pk-card canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .pk-card .nm {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 14px 8px 5px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.62));
+  }
+  .pk-card .ck {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--preset);
+    color: #fff;
+    display: none;
+    place-items: center;
+  }
+  .pk-card.on .ck {
+    display: grid;
+  }
+  .pk-card .ck svg.i {
+    width: 11px;
+    height: 11px;
+    stroke-width: 3;
+  }
+  /* 信息条会随悬停变高，弹窗锚在底部就会上下抖，已取消；留着节点只为不动脚本 */
+  .pk-foot {
+    display: none !important;
+  }
+  .pk-foot-old {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 64px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--chrome-border);
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  .pk-foot .tx {
+    flex: 1;
+    min-width: 0;
+  }
+  .pk-foot b {
+    display: block;
+    font-size: 13px;
+    color: var(--fg);
+    margin-bottom: 2px;
+  }
+  .pk-foot .sn {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .pk-foot .warn {
+    color: var(--warn);
+  }
+  .pk-foot .refs {
+    display: flex;
+    gap: 4px;
+    flex: none;
+  }
+  .pk-foot .refs span {
+    width: 56px;
+    height: 32px;
+    border-radius: 6px;
+    background-size: cover;
+    background-position: center;
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+  }
+  .tpl-cols {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px 12px;
+    padding: 12px 10px 8px;
+    align-items: start;
+  }
+  .tpl-cols .gl {
+    padding: 4px 10px 6px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  .tpl-cols .gap {
+    height: 10px;
+  }
+  .tpl-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    color: var(--fg);
+    outline: none;
+    transition: background 0.12s;
+  }
+  .tpl-item:hover,
+  .tpl-item:focus-visible {
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .tpl-item .ti {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: var(--surface-3);
+    display: grid;
+    place-items: center;
+    color: var(--fg-2);
+  }
+  .tpl-item .ti svg.i {
+    width: 17px;
+    height: 17px;
+  }
+  .tpl-item.on .ti {
+    background: var(--preset);
+    color: #fff;
+  }
+  .tpl-item[aria-disabled="true"] {
+    opacity: 0.4;
+  }
+  @media (max-width: 860px) {
+    .pk-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .tpl-cols {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  @media (max-width: 520px) {
+    .pk-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .tpl-cols {
+      grid-template-columns: 1fr;
+    }
+    .pk-foot .refs {
+      display: none;
+    }
+  }
+  /* @ 菜单：贴着光标，放不下翻到光标上方 */
+  #pop-mention {
+    z-index: 85;
+    width: min(300px, calc(100vw - 16px));
+    max-height: min(360px, 60vh);
+    overflow-y: auto;
+  }
+  #pop-mention .mi.act {
+    background: rgba(255, 255, 255, 0.07);
+  }
+  #pop-mention .th {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background-size: cover;
+    background-position: center;
+    display: grid;
+    place-items: center;
+    background-color: var(--surface-3);
+  }
+  #pop-mention .th svg.i {
+    width: 15px;
+    height: 15px;
+  }
+  #pop-mention .th.aud svg.i {
+    color: var(--ok);
+  }
+  #pop-mention .th.p {
+    background: color-mix(in oklab, var(--credit) 22%, transparent);
+    color: var(--credit);
+    font: 700 13px var(--mono);
+  }
+  #pop-mention .nm {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #pop-mention .r {
+    font-size: 11px;
+    color: var(--fg-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  #pop-mention .r svg.i {
+    width: 12px;
+    height: 12px;
+  }
+  #pop-mention .none {
+    padding: 10px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  #prompt.shake {
+    animation: shake 0.32s;
+  }
+  @keyframes shake {
+    25% {
+      transform: translateX(-4px);
+    }
+    75% {
+      transform: translateX(4px);
+    }
+  }
+  .counter {
+    text-align: right;
+    font: 12px var(--mono);
+    color: var(--fg-3);
+  }
+  .counter.warn {
+    color: var(--warn);
+  }
+  .p-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pc {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    color: var(--fg);
+    background: transparent;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    transition:
+      background 0.12s,
+      transform 0.12s;
+    white-space: nowrap;
+  }
+  .pc:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .pc:active {
+    transform: scale(0.96);
+  }
+  .pc[aria-disabled="true"] {
+    color: var(--fg-3);
+  }
+  .pc .vendor {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    display: grid;
+    place-items: center;
+    font-size: 10px;
+    font-weight: 700;
+    background: var(--surface-3);
+  }
+  .p-bar .grow {
+    flex: 1;
+  }
+  .send {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: 40px;
+    padding: 0 3px 0 12px;
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+  .send .cost {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 15px var(--mono);
+    padding-right: 8px;
+  }
+  .send .cost svg {
+    width: 16px;
+    height: 16px;
+    fill: var(--credit);
+    stroke: none;
+  }
+  .go {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--fg);
+    color: #0d0d0e;
+    display: grid;
+    place-items: center;
+    transition:
+      transform 0.12s,
+      opacity 0.12s;
+  }
+  .go:hover {
+    transform: scale(1.05);
+  }
+  .go:active {
+    transform: scale(0.94);
+  }
+  .go svg.i {
+    stroke-width: 2.4;
+  }
+  .send.off {
+    opacity: 0.45;
+  }
+  .send.off .go {
+    pointer-events: none;
+  }
+  .send.off .cost svg {
+    fill: var(--fg-3);
+  }
+
+  /* ---------- 空状态、对话框、toast ---------- */
+  #empty {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 18px;
+    z-index: 5;
+    pointer-events: none;
+  }
+  #empty[hidden] {
+    display: none !important;
+  }
+  #empty h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  #empty p {
+    margin: 0;
+    color: var(--fg-3);
+    font-size: 13px;
+  }
+  .qcards {
+    display: flex;
+    gap: 12px;
+    pointer-events: auto;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 0 16px;
+  }
+  .qc {
+    width: 150px;
+    padding: 16px;
+    border-radius: 16px;
+    background: var(--surface);
+    box-shadow: 0 0 0 1px var(--chrome-border);
+    display: grid;
+    gap: 10px;
+    text-align: left;
+    transition:
+      transform 0.18s var(--e-out),
+      box-shadow 0.12s;
+  }
+  .qc:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+  }
+  .qc b {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .qc span {
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 0.2s,
+      visibility 0s 0.2s;
+  }
+  .backdrop.open {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 0.24s;
+  }
+  .dialog {
+    position: fixed;
+    z-index: 81;
+    left: 50%;
+    top: 50%;
+    width: min(720px, calc(100vw - 32px));
+    max-height: calc(100vh - 64px);
+    overflow: auto;
+    translate: -50% -50%;
+    padding: 20px;
+    border-radius: 22px;
+    background: var(--chrome-solid);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 32px 80px rgba(0, 0, 0, 0.6);
+    opacity: 0;
+    visibility: hidden;
+    transform-origin: 50% 50%;
+  }
+  .dialog.open {
+    opacity: 1;
+    visibility: visible;
+  }
+  .dialog h3 {
+    margin: 0 0 14px;
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+  }
+  .dialog h3 .x {
+    margin-left: auto;
+  }
+  .dialog .pe {
+    min-height: 280px;
+    max-height: calc(100vh - 220px);
+    border-radius: 12px;
+    padding: 14px;
+    background: var(--surface);
+  }
+  .dialog .pe:focus {
+    outline: 1px solid rgba(255, 255, 255, 0.2);
+  }
+  .keys {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 24px;
+    font-size: 13px;
+    color: var(--fg-2);
+  }
+  .keys kbd {
+    font: 12px var(--mono);
+    color: var(--fg);
+    background: var(--surface-2);
+    padding: 2px 7px;
+    border-radius: 6px;
+    justify-self: end;
+  }
+  #toasts {
+    position: fixed;
+    left: 50%;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    z-index: 90;
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    pointer-events: none;
+  }
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    background: var(--chrome-solid);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 12px 32px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+    transition:
+      opacity 0.18s var(--e-out),
+      transform 0.18s var(--e-out);
+    white-space: nowrap;
+  }
+  .toast.in {
+    opacity: 1;
+    transform: none;
+  }
+  .toast .d {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
+  }
+  .toast.bad .d {
+    background: var(--bad);
+  }
+  .toast.info .d {
+    background: var(--run);
+  }
+
+  /* 流光层用画布单位：虚线间距、亮带长度跟着缩放走，pathLength 才算得准 */
+  .edges path:not(.base) {
+    vector-effect: none;
+  }
+
+  /* ---------- 进入画布的加载层 ---------- */
+  @property --hole {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+  }
+  @property --ripple {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+  }
+  #loader {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 22px;
+    background-color: var(--canvas-bg);
+    background-image: radial-gradient(circle, var(--dot) 1px, transparent 1.3px);
+    background-size: 20px 20px;
+    background-position: center;
+  }
+  #loader[hidden] {
+    display: none;
+  }
+  .ld-mark {
+    width: 72px;
+    height: 72px;
+    border-radius: 22px;
+    background: var(--fg);
+    display: grid;
+    place-items: center;
+  }
+  .ld-mark svg {
+    width: 40px;
+    height: 40px;
+  }
+  .ld-name {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+  }
+  .ld-sub {
+    font-size: 12px;
+    color: var(--fg-3);
+    margin-top: -14px;
+  }
+  .ld-bar {
+    width: 140px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+  }
+  .ld-bar i {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: var(--fg);
+    transition: width 0.25s var(--e-out);
+  }
+  /* A 聚焦显影 */
+  .ld-a .ld-mark,
+  .ld-a .ld-name {
+    animation: focusIn 0.9s var(--e-out) both;
+  }
+  .ld-a .ld-name {
+    animation-delay: 0.12s;
+  }
+  .ld-a.out .ld-mark,
+  .ld-a.out .ld-name {
+    animation: focusOut 0.32s cubic-bezier(0.4, 0, 1, 1) both;
+  }
+  .ld-a.out {
+    transition: opacity 0.38s 0.1s;
+    opacity: 0;
+  }
+  @keyframes focusIn {
+    from {
+      opacity: 0;
+      filter: blur(16px);
+      transform: scale(1.12);
+    }
+    to {
+      opacity: 1;
+      filter: blur(0);
+      transform: none;
+    }
+  }
+  @keyframes focusOut {
+    to {
+      opacity: 0;
+      filter: blur(10px);
+      transform: scale(0.94);
+    }
+  }
+  /* B 点阵涟漪：一圈更亮的点阵从中心往外扩；结束时中心开洞，画布从洞里露出来 */
+  .ld-b::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.55) 1.1px, transparent 1.5px);
+    background-size: 20px 20px;
+    background-position: center;
+    -webkit-mask: radial-gradient(
+      circle at 50% 50%,
+      transparent calc(var(--ripple) - 60px),
+      #000 var(--ripple),
+      transparent calc(var(--ripple) + 60px)
+    );
+    mask: radial-gradient(
+      circle at 50% 50%,
+      transparent calc(var(--ripple) - 60px),
+      #000 var(--ripple),
+      transparent calc(var(--ripple) + 60px)
+    );
+    animation: ripple 1.6s cubic-bezier(0.3, 0, 0.3, 1) infinite;
+  }
+  @keyframes ripple {
+    from {
+      --ripple: 0px;
+      opacity: 1;
+    }
+    to {
+      --ripple: 75vmax;
+      opacity: 0;
+    }
+  }
+  .ld-b .ld-mark {
+    background: transparent;
+    box-shadow: inset 0 0 0 2px var(--fg);
+  }
+  .ld-b .ld-mark svg * {
+    stroke: var(--fg);
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    animation: draw 1.1s var(--e-out) 0.1s forwards;
+  }
+  .ld-b .ld-mark svg path[fill] {
+    fill: var(--fg);
+    fill-opacity: 0;
+    animation:
+      draw 1.1s var(--e-out) 0.1s forwards,
+      fillIn 0.4s 0.9s forwards;
+  }
+  @keyframes draw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes fillIn {
+    to {
+      fill-opacity: 1;
+    }
+  }
+  .ld-b {
+    -webkit-mask: radial-gradient(
+      circle at 50% 45%,
+      transparent var(--hole),
+      #000 calc(var(--hole) + 1px)
+    );
+    mask: radial-gradient(circle at 50% 45%, transparent var(--hole), #000 calc(var(--hole) + 1px));
+  }
+  .ld-b.out {
+    transition: --hole 0.7s cubic-bezier(0.65, 0, 0.35, 1);
+    --hole: 120vmax;
+  }
+  .ld-b .ld-name,
+  .ld-b .ld-sub {
+    animation: rise 0.6s var(--e-out) 0.3s both;
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+  /* C 品牌归位：大 logo 飞去左上角变成品牌标，其余淡出 */
+  .ld-c .ld-mark {
+    animation: popIn 0.5s cubic-bezier(0.3, 1.3, 0.5, 1) both;
+    transform-origin: center;
+  }
+  .ld-c .ld-name,
+  .ld-c .ld-bar {
+    animation: rise 0.5s var(--e-out) 0.15s both;
+  }
+  .ld-c.out {
+    background-color: transparent;
+    background-image: none;
+    transition: background-color 0.35s;
+  }
+  .ld-c.out .ld-name,
+  .ld-c.out .ld-bar {
+    transition: opacity 0.2s;
+    opacity: 0;
+  }
+  @keyframes popIn {
+    from {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+  }
+
+  /* 画布内容的入场：加载层撤下时依次出现 */
+  .booting .zone,
+  .booting #world,
+  .booting #hist,
+  .booting #panel,
+  .booting #fxdemo {
+    opacity: 0;
+  }
+  .revealing .node {
+    animation: nodeIn 0.55s var(--e-out) both;
+    animation-delay: calc(var(--i, 0) * 70ms + 80ms);
+  }
+  .revealing .edges {
+    animation: fadeIn 0.5s 0.3s both;
+  }
+  .revealing .z-tl,
+  .revealing .z-tr {
+    animation: dropIn 0.45s var(--e-out) both;
+    animation-delay: 0.1s;
+  }
+  .revealing .z-bc,
+  .revealing .z-bl,
+  .revealing .z-br {
+    animation: liftIn 0.45s var(--e-out) both;
+    animation-delay: 0.18s;
+  }
+  .revealing .z-bc {
+    animation-name: liftInC;
+  }
+  .revealing #panel.show,
+  .revealing #hist.show {
+    animation: fadeIn 0.4s 0.45s both;
+  }
+  .revealing.no-brand #btn-logo .logo {
+    opacity: 0;
+  }
+  @keyframes nodeIn {
+    from {
+      opacity: 0;
+      filter: blur(8px);
+      transform: scale(0.97) translateY(8px);
+    }
+  }
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes dropIn {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+  }
+  @keyframes liftIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+  }
+  @keyframes liftInC {
+    from {
+      opacity: 0;
+      transform: translate(-50%, 10px);
+    }
+    to {
+      transform: translate(-50%, 0);
+    }
+  }
+
+  /* ---------- 原型演示：切换加载动画和流光效果 ---------- */
+  #fxdemo {
+    position: fixed;
+    z-index: 30;
+    top: calc(64px + env(safe-area-inset-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 6px 10px;
+    max-width: calc(100vw - 24px);
+    padding: 6px 8px 6px 12px;
+    border-radius: 16px;
+    background: var(--chrome);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow:
+      0 0 0 1px var(--chrome-border),
+      0 8px 24px rgba(0, 0, 0, 0.35);
+    font-size: 12px;
+  }
+  #fxdemo .lab {
+    color: var(--fg-3);
+  }
+  #fxdemo .grp {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #fxdemo .opts {
+    display: flex;
+    padding: 2px;
+    border-radius: 999px;
+    background: var(--surface-2);
+  }
+  #fxdemo .opts button {
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 999px;
+    color: var(--fg-2);
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+  #fxdemo .opts button:hover {
+    color: var(--fg);
+  }
+  #fxdemo .opts button.on {
+    background: var(--surface-3);
+    color: var(--fg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  #fxdemo .replay {
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 999px;
+    color: var(--fg);
+    box-shadow: inset 0 0 0 1px var(--chrome-border);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  #fxdemo .replay:hover {
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  @media (max-width: 860px) {
+    .z-bl,
+    .z-br,
+    .hide-sm {
+      display: none !important;
+    }
+  }
+  @media (max-width: 520px) {
+    .title-in {
+      max-width: 12ch;
+    }
+    .proto,
+    .save .lbl {
+      display: none;
+    }
+    .z-tr .ib.more {
+      display: none;
+    }
+    .avatar {
+      width: 36px;
+      height: 36px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+
+<div id="stage">
+  <div id="world"><svg class="edges" id="edges"></svg></div>
+</div>
+
+<div id="empty" hidden>
+  <h2>从一个节点开始</h2>
+  <p>点下面的卡片，或者双击画布空白处</p>
+  <div class="qcards">
+    <button class="qc" data-new="image">
+      <span data-icon="image"></span><b>图片生成</b><span>文字或参考图出图</span>
+    </button>
+    <button class="qc" data-new="video">
+      <span data-icon="video"></span><b>视频生成</b><span>文生、参考、延长</span>
+    </button>
+    <button class="qc" data-new="text">
+      <span data-icon="type"></span><b>文本</b><span>脚本与分镜描述</span>
+    </button>
+  </div>
+</div>
+
+<!-- 左上：品牌 / 标题 / 保存状态 -->
+<div class="zone z-tl">
+  <div class="pill">
+    <button class="ib brand" id="btn-logo" aria-label="画布菜单">
+      <span class="logo"><i></i></span><span data-icon="chev" data-size="12"></span>
+    </button>
+    <input id="title" class="title-in" value="无限画布" aria-label="画布名称" spellcheck="false" />
+    <span class="proto">原型</span>
+    <span class="save idle" id="save" role="status"
+      ><span data-icon="check"></span><span class="lbl">已保存</span></span
+    >
+  </div>
+</div>
+
+<!-- 右上：更多 / 积分 / 头像 -->
+<div class="zone z-tr">
+  <div class="pill">
+    <button class="ib more" id="btn-more" aria-label="更多"><span data-icon="more"></span></button>
+  </div>
+  <div class="pill">
+    <button class="ib credits" id="btn-credits" aria-label="积分">
+      <span class="ws" id="ws" title="实时进度已连接"></span
+      ><span data-icon="spark" data-cls="spark"></span><span class="num" id="credits">2,480</span>
+    </button>
+  </div>
+  <button class="avatar" id="btn-avatar" aria-label="账户">Z</button>
+</div>
+
+<!-- 底部中央：主工具条 -->
+<div class="zone z-bc">
+  <div class="pill big">
+    <button class="ib primary" id="btn-add" aria-label="添加节点" title="添加节点">
+      <span data-icon="plus"></span>
+    </button>
+    <div class="sep"></div>
+    <div class="seg" id="seg-tool">
+      <span class="seg-ind"></span>
+      <button class="ib on" data-tool="select" title="选择 V" aria-label="选择工具">
+        <span data-icon="pointer"></span>
+      </button>
+      <button class="ib" data-tool="hand" title="抓手 H" aria-label="抓手工具">
+        <span data-icon="hand"></span>
+      </button>
+    </div>
+    <div class="sep"></div>
+    <button class="ib" id="btn-undo" title="撤销 ⌘Z" aria-label="撤销" disabled>
+      <span data-icon="undo"></span>
+    </button>
+    <button class="ib" id="btn-redo" title="重做 ⇧⌘Z" aria-label="重做" disabled>
+      <span data-icon="redo"></span>
+    </button>
+    <div class="sep hide-sm"></div>
+    <button class="ib hide-sm" id="btn-assets" title="素材库" aria-label="素材库">
+      <span data-icon="folder"></span>
+    </button>
+    <button class="ib hide-sm" id="btn-tasks" title="任务历史" aria-label="任务历史">
+      <span data-icon="clock"></span>
+    </button>
+  </div>
+</div>
+
+<!-- 左下：视图 / 缩放 / 小地图 / 帮助 -->
+<div class="zone z-bl">
+  <div class="pill">
+    <div class="seg" id="seg-view">
+      <span class="seg-ind"></span>
+      <button class="ib on" data-view="dots" title="点阵背景" aria-label="点阵背景">
+        <span data-icon="dots"></span>
+      </button>
+      <button class="ib" data-view="grid" title="网格背景" aria-label="网格背景">
+        <span data-icon="grid"></span>
+      </button>
+    </div>
+    <div class="sep"></div>
+    <button class="ib zoom-v" id="btn-zoom">
+      <span data-icon="search"></span><span class="num" id="zoom">100%</span>
+    </button>
+  </div>
+  <div class="pill">
+    <button class="ib" id="btn-help" aria-label="快捷键"><span data-icon="help"></span></button>
+  </div>
+</div>
+
+<!-- 右下：统计 -->
+<div class="zone z-br">
+  <div class="pill">
+    <span class="stat" title="连线"
+      ><span data-icon="arrow" data-size="13"></span><span class="num" id="st-edges">0</span></span
+    >
+    <span class="stat" title="节点"
+      ><span data-icon="grid" data-size="13"></span><span class="num" id="st-nodes">0</span></span
+    >
+    <button class="stat" id="st-warn" title="失败节点，点击定位">
+      <span data-icon="alert" data-size="13"></span><span class="num" id="st-fail">0</span>
+    </button>
+  </div>
+</div>
+
+<!-- 节点历史浮条 + 生成面板（屏幕空间，不随缩放变化） -->
+<div id="hist"></div>
+<div id="panel" role="dialog" aria-label="生成面板"></div>
+
+<!-- 弹出菜单 -->
+<div class="pop" id="pop-logo">
+  <button class="mi" data-act="back"><span data-icon="back"></span>返回项目列表</button>
+  <button class="mi" data-act="newcanvas"><span data-icon="plus"></span>新建画布</button>
+</div>
+<div class="pop" id="pop-more">
+  <button class="mi" data-act="settings"><span data-icon="sliders"></span>画布设置</button>
+  <button class="mi" data-act="keys">
+    <span data-icon="help"></span>快捷键<span class="kbd">?</span>
+  </button>
+  <div class="msep"></div>
+  <div class="mlabel">原型演示</div>
+  <button class="mi" data-demo="failSave">
+    模拟保存失败<span data-icon="check" data-cls="ck"></span>
+  </button>
+  <button class="mi" data-demo="wsDown">
+    模拟实时连接断开<span data-icon="check" data-cls="ck"></span>
+  </button>
+  <button class="mi" data-demo="failGen">
+    下一次生成失败<span data-icon="check" data-cls="ck"></span>
+  </button>
+  <button class="mi" data-act="clear">清空画布（看空状态）</button>
+</div>
+<div class="pop" id="pop-credits" style="min-width: 260px">
+  <div class="bal">
+    <b class="num" id="bal-big">2,480</b
+    ><span style="color: var(--fg-3); font-size: 12px">可用积分</span>
+  </div>
+  <div class="msep"></div>
+  <div class="mlabel">本次会话流水</div>
+  <div class="ledger" id="ledger">
+    <div><span>暂无记录</span></div>
+  </div>
+</div>
+<div class="pop" id="pop-avatar">
+  <button class="mi" data-act="admin"><span data-icon="sliders"></span>管理后台</button>
+  <button class="mi" data-act="logout"><span data-icon="back"></span>退出登录</button>
+</div>
+<div class="pop" id="pop-add">
+  <div class="mlabel">添加节点</div>
+  <button class="mi" data-new="image">
+    <span data-icon="image"></span><span>图片生成<span class="sub">文字或参考图出图</span></span>
+  </button>
+  <button class="mi" data-new="video">
+    <span data-icon="video"></span
+    ><span>视频生成<span class="sub">文生、参考、编辑、延长</span></span>
+  </button>
+  <button class="mi" data-new="text">
+    <span data-icon="type"></span><span>文本<span class="sub">脚本、分镜描述</span></span>
+  </button>
+  <button class="mi" data-new="audio">
+    <span data-icon="music"></span><span>音频<span class="sub">配乐、音效、配音</span></span>
+  </button>
+  <div class="msep"></div>
+  <button class="mi" data-act="upload">
+    <span data-icon="upload"></span>上传素材<span class="kbd">二期支持拖拽</span>
+  </button>
+</div>
+<div class="pop" id="pop-zoom">
+  <button class="mi" data-zoom="in">放大<span class="kbd">⌘ +</span></button>
+  <button class="mi" data-zoom="out">缩小<span class="kbd">⌘ −</span></button>
+  <button class="mi" data-zoom="fit">适应画布<span class="kbd">⇧ 1</span></button>
+  <button class="mi" data-zoom="100">缩放到 100%<span class="kbd">⇧ 0</span></button>
+</div>
+<div class="pop" id="pop-model"></div>
+<div class="pop" id="pop-param" style="min-width: 250px"></div>
+<div class="pop" id="pop-preset" role="dialog" aria-label="选择预设"></div>
+<div class="pop" id="pop-mention" role="listbox" aria-label="引用画布素材"></div>
+
+<div class="backdrop" id="backdrop"></div>
+<div class="dialog" id="dlg-prompt" role="dialog" aria-label="编辑提示词">
+  <h3>
+    编辑提示词<button class="ib x" data-close aria-label="收起">
+      <span data-icon="min"></span>
+    </button>
+  </h3>
+  <div
+    class="pe"
+    id="big-prompt"
+    contenteditable="true"
+    role="textbox"
+    aria-multiline="true"
+    data-ph="描述画面、镜头运动和节奏…，输入 @ 引用画布里的素材"
+  ></div>
+  <div class="counter num" id="big-counter" style="margin-top: 8px">0/16000</div>
+</div>
+<div
+  class="dialog"
+  id="dlg-keys"
+  role="dialog"
+  aria-label="快捷键"
+  style="width: min(420px, calc(100vw - 32px))"
+>
+  <h3>
+    快捷键<button class="ib x" data-close aria-label="关闭"><span data-icon="x"></span></button>
+  </h3>
+  <div class="keys">
+    <span>发送生成</span><kbd>⌘ ↵</kbd> <span>聚焦提示词</span><kbd>↵</kbd> <span>撤销 / 重做</span
+    ><kbd>⌘Z / ⇧⌘Z</kbd> <span>复制 / 粘贴 / 原地复制</span><kbd>⌘C / ⌘V / ⌘D</kbd>
+    <span>删除选中</span><kbd>⌫</kbd> <span>选择 / 抓手 / 临时抓手</span><kbd>V / H / 空格</kbd>
+    <span>适应画布 / 100%</span><kbd>⇧1 / ⇧0</kbd> <span>取消选中、关闭弹层</span><kbd>Esc</kbd>
+  </div>
+</div>
+<div id="toasts"></div>
+
+<!-- 进入画布前的加载层：三种效果由下面的演示面板切换 -->
+<div id="loader" class="ld-a" role="status" aria-label="正在打开画布"></div>
+
+<!-- 原型演示：切换加载动画和连线流光 -->
+<div id="fxdemo">
+  <div class="grp">
+    <span class="lab">加载动画</span>
+    <div class="opts" id="opt-loader">
+      <button data-v="a" class="on">聚焦显影</button><button data-v="b">点阵涟漪</button
+      ><button data-v="c">品牌归位</button>
+    </div>
+    <button class="replay" id="btn-replay" title="重新播放进入画布的过程">
+      <span data-icon="redo" data-size="13"></span>重播
+    </button>
+  </div>
+  <div class="grp">
+    <span class="lab">连线流光</span>
+    <div class="opts" id="opt-edge">
+      <button data-v="comet" class="on">彗星</button><button data-v="sweep">光带</button
+      ><button data-v="dots">粒子流</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/motion@11.11.13/dist/motion.js"></script>
+<script>
+  (() => {
+    "use strict";
+    const M = window.Motion && window.Motion.animate ? window.Motion : null;
+    document.documentElement.classList.toggle("no-motion-lib", !M);
+    const REDUCE = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const SPRING = { type: "spring", stiffness: 500, damping: 38, mass: 0.8 };
+    const $ = (s, r = document) => r.querySelector(s);
+    const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+    /* ---------- 图标（lucide 线框） ---------- */
+    const ICONS = {
+      plus: '<path d="M5 12h14M12 5v14"/>',
+      chev: '<path d="m6 9 6 6 6-6"/>',
+      check: '<path d="M20 6 9 17l-5-5"/>',
+      more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+      spark:
+        '<path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0l1.58 6.14a2 2 0 0 0 1.44 1.44l6.14 1.58a.5.5 0 0 1 0 .96l-6.14 1.58a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/>',
+      pointer:
+        '<path d="M4.04 4.69a.5.5 0 0 1 .65-.65l16 6.5a.5.5 0 0 1-.06.95l-6.13 1.58a2 2 0 0 0-1.43 1.43l-1.58 6.13a.5.5 0 0 1-.95.06z"/>',
+      hand: '<path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+      undo: '<path d="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+      redo: '<path d="m15 14 5-5-5-5M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+      folder:
+        '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+      clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+      dots: '<circle cx="6" cy="6" r="1.2"/><circle cx="12" cy="6" r="1.2"/><circle cx="18" cy="6" r="1.2"/><circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/><circle cx="6" cy="18" r="1.2"/><circle cx="12" cy="18" r="1.2"/><circle cx="18" cy="18" r="1.2"/>',
+      grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+      help: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/>',
+      arrow: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+      alert:
+        '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3M12 9v4M12 17h.01"/>',
+      image:
+        '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/>',
+      video:
+        '<path d="m16 13 5.22 3.48a.5.5 0 0 0 .78-.42V7.87a.5.5 0 0 0-.75-.43L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+      type: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
+      music:
+        '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+      upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+      expand: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+      min: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
+      up: '<path d="m5 12 7-7 7 7M12 19V5"/>',
+      link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+      copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+      layers:
+        '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83zM2 12l8.58 3.91a2 2 0 0 0 1.66 0L21 12M2 17l8.58 3.91a2 2 0 0 0 1.66 0L21 17"/>',
+      palette:
+        '<circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2z"/>',
+      crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2"/>',
+      sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+      film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4"/>',
+      back: '<path d="m12 19-7-7 7-7M19 12H5"/>',
+      x: '<path d="M18 6 6 18M6 6l12 12"/>',
+      camera:
+        '<path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/>',
+      box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>',
+      shapes:
+        '<path d="M8.3 10a.7.7 0 0 1-.626-1.079L11.4 3a.7.7 0 0 1 1.198-.043L16.3 8.9a.7.7 0 0 1-.572 1.1Z"/><rect x="3" y="14" width="7" height="7" rx="1"/><circle cx="17.5" cy="17.5" r="3.5"/>',
+      user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-2.93 1.41-1.41m11.32-11.32 1.41-1.41M2 12h2m16 0h2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41"/>',
+      history:
+        '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>',
+    };
+    const ic = (n, size, cls = "") =>
+      `<svg class="i ${cls}" viewBox="0 0 24 24"${size ? ` style="width:${size}px;height:${size}px"` : ""} aria-hidden="true">${ICONS[n] || ""}</svg>`;
+    const hydrateIcons = (root = document) =>
+      $$("[data-icon]", root).forEach((el) => {
+        el.outerHTML = ic(el.dataset.icon, el.dataset.size, el.dataset.cls || "");
+      });
+    hydrateIcons();
+
+    /* ---------- 示例素材：用渐变模拟镜头画面 ---------- */
+    function art(seed) {
+      const h = (seed * 67) % 360,
+        h2 = (h + 38) % 360,
+        sx = 22 + ((seed * 13) % 56);
+      return (
+        `radial-gradient(42% 46% at ${sx}% 38%, hsl(${h2} 75% 72% / .55), transparent 70%),` +
+        `radial-gradient(30% 20% at ${100 - sx}% 70%, hsl(${h} 60% 60% / .25), transparent 70%),` +
+        `linear-gradient(180deg, hsl(${h} 32% 24%) 0%, hsl(${h} 28% 13%) 57%, hsl(${h2} 22% 9%) 57.6%, hsl(${h2} 26% 5%) 100%)`
+      );
+    }
+    const KIND = {
+      image: {
+        name: "图片生成",
+        icon: "image",
+        w: 420,
+        h: 236,
+        hint: "输入提示词生成图片",
+        ph: "请输入图片描述…",
+      },
+      video: {
+        name: "视频生成",
+        icon: "video",
+        w: 420,
+        h: 236,
+        hint: "输入提示词生成视频",
+        ph: "描述画面、镜头运动和节奏…",
+      },
+      text: {
+        name: "文本",
+        icon: "type",
+        w: 320,
+        h: 200,
+        hint: "输入要求生成文本",
+        ph: "例如：把这段故事拆成 6 个分镜…",
+      },
+      audio: {
+        name: "音频",
+        icon: "music",
+        w: 320,
+        h: 120,
+        hint: "输入描述生成音频",
+        ph: "例如：温暖的钢琴配乐，60 BPM…",
+      },
+    };
+    const MODELS = {
+      image: [
+        { id: "neo-image-2", name: "Neo Image 2", v: "N", sub: "写实与插画，最高 4K" },
+        { id: "seedream-4", name: "Seedream 4.0", v: "S", sub: "中文理解更好" },
+      ],
+      video: [
+        {
+          id: "seedance-2.5",
+          name: "Seedance 2.5",
+          v: "S",
+          sub: "支持全能参考、延长",
+          ops: ["文生视频", "全能参考", "视频编辑", "视频延长", "动作模仿"],
+        },
+        {
+          id: "kling-2.1",
+          name: "Kling 2.1",
+          v: "K",
+          sub: "运动幅度大",
+          ops: ["文生视频", "首尾帧"],
+        },
+        { id: "veo-3", name: "Veo 3", v: "V", sub: "带同期声", ops: ["文生视频"] },
+      ],
+      text: [{ id: "qwen3", name: "Qwen3", v: "Q", sub: "通用写作" }],
+      audio: [{ id: "music-1", name: "Music 1", v: "M", sub: "配乐与音效" }],
+    };
+    const SAMPLE_TEXT =
+      "镜头 1｜教室窗边，男孩低头翻书，暖光从左侧进入。\n镜头 2｜老师推过一本练习册，手部特写。\n镜头 3｜男孩抬头，表情由紧张转为放松。\n镜头 4｜双人中景，窗外树影晃动。";
+
+    /* ---------- 状态 ---------- */
+    let uid = 10,
+      seedN = 20;
+    let nodes = [
+      {
+        id: "n1",
+        kind: "image",
+        label: "U03-1",
+        x: 0,
+        y: 0,
+        outputs: [
+          { id: "o1", seed: 4 },
+          { id: "o2", seed: 9 },
+          { id: "o3", seed: 3 },
+        ],
+        active: "o3",
+        status: "done",
+        params: { model: "neo-image-2", ratio: "16:9", size: "2K", batch: 1 },
+        prompt: "教室里，老师与男孩隔桌而坐，自然光，纪实摄影风格",
+      },
+      {
+        id: "n2",
+        kind: "video",
+        label: "视频生成",
+        x: 560,
+        y: 0,
+        outputs: [],
+        active: null,
+        status: "idle",
+        params: {
+          model: "seedance-2.5",
+          op: "全能参考",
+          res: "480p",
+          ratio: "16:9",
+          dur: 4,
+          batch: 1,
+        },
+        prompt:
+          "参考 @[n1] 的构图，按 @[n3] 的分镜：男孩抬头看向老师，老师微笑着把书推过去，镜头缓慢推近",
+      },
+      {
+        id: "n5",
+        kind: "image",
+        label: "C05 — 周德发",
+        x: 0,
+        y: 320,
+        outputs: [{ id: "o5", seed: 14 }],
+        active: "o5",
+        status: "done",
+        params: { model: "neo-image-2", ratio: "16:9", size: "2K", batch: 1 },
+        prompt: "中年男人，系白围裙，正面全身",
+      },
+      {
+        id: "n3",
+        kind: "text",
+        label: "分镜脚本",
+        x: 50,
+        y: 640,
+        outputs: [],
+        active: null,
+        status: "done",
+        text: SAMPLE_TEXT,
+        params: { model: "qwen3", batch: 1 },
+        prompt: "把故事拆成 4 个分镜",
+      },
+      {
+        id: "n4",
+        kind: "audio",
+        label: "周德发 · 台词",
+        x: 50,
+        y: 920,
+        outputs: [{ id: "o6", seed: 5 }],
+        active: "o6",
+        status: "done",
+        params: { model: "music-1", batch: 1 },
+        prompt: "中年男声，暴怒吼叫",
+      },
+      {
+        id: "n6",
+        kind: "image",
+        label: "S05 — 包子铺",
+        x: -480,
+        y: 320,
+        outputs: [],
+        active: null,
+        status: "idle",
+        params: { model: "neo-image-2", ratio: "16:9", size: "2K", batch: 1 },
+        prompt: "",
+      },
+    ];
+    let edges = [
+      { id: "e1", source: "n1", target: "n2" },
+      { id: "e2", source: "n3", target: "n2" },
+    ];
+    let selId = "n2";
+    const view = { x: 0, y: 0, k: 1 };
+    let credits = 2480;
+    const ledger = [];
+    const demo = { failSave: false, wsDown: false, failGen: false };
+    let tool = "select",
+      spaceHeld = false,
+      interacting = false,
+      histOpen = false;
+    const past = [],
+      future = [];
+    let clipboard = null;
+
+    const byId = (id) => nodes.find((n) => n.id === id);
+    const sel = () => byId(selId);
+    const activeOut = (n) => n.outputs.find((o) => o.id === n.active);
+    const cost = (n) => {
+      const p = n.params,
+        b = p.batch || 1;
+      if (n.kind === "video")
+        return Math.round(120 * p.dur * { "480p": 1, "720p": 1.5, "1080p": 2.5 }[p.res]) * b;
+      if (n.kind === "image") return { "1K": 45, "2K": 89, "4K": 160 }[p.size] * b;
+      return (n.kind === "text" ? 2 : 30) * b;
+    };
+    const fmt = (v) => v.toLocaleString("en-US");
+
+    /* ---------- 撤销 / 重做：节点和连线的快照 ---------- */
+    const snap = () => JSON.stringify({ nodes, edges, selId });
+    function commit(before) {
+      past.push(before);
+      if (past.length > 100) past.shift();
+      future.length = 0;
+      changed();
+    }
+    function restore(json) {
+      const s = JSON.parse(json);
+      const running = new Map(nodes.filter((n) => n.status === "running").map((n) => [n.id, n]));
+      nodes = s.nodes.map((n) =>
+        running.get(n.id) ? { ...n, status: "running", progress: running.get(n.id).progress } : n,
+      );
+      edges = s.edges;
+      selId = byId(s.selId) ? s.selId : null;
+      changed(true);
+    }
+    function undo() {
+      if (!past.length) return;
+      future.push(snap());
+      restore(past.pop());
+      toast("已撤销", "info");
+    }
+    function redo() {
+      if (!future.length) return;
+      past.push(snap());
+      restore(future.pop());
+      toast("已重做", "info");
+    }
+    function changed(rebuildPanel) {
+      render();
+      markDirty();
+      syncUndo();
+      if (rebuildPanel) buildPanel();
+      else refreshPanel();
+    }
+    function syncUndo() {
+      $("#btn-undo").disabled = !past.length;
+      $("#btn-redo").disabled = !future.length;
+    }
+
+    /* ---------- 保存状态 ---------- */
+    let saveT, idleT;
+    function setSave(st) {
+      const el = $("#save");
+      el.className = "save " + st;
+      const icon = { saved: "check", idle: "check", saving: "clock", error: "alert" }[st];
+      const lbl = { saved: "已保存", idle: "已保存", saving: "保存中", error: "保存失败 · 重试" }[
+        st
+      ];
+      el.innerHTML = ic(icon, 14) + `<span class="lbl">${lbl}</span>`;
+      el.style.maxWidth = "";
+    }
+    function markDirty() {
+      clearTimeout(saveT);
+      clearTimeout(idleT);
+      setSave("saving");
+      saveT = setTimeout(() => {
+        if (demo.failSave) {
+          setSave("error");
+          toast("保存失败，修改还在本地，点左上角重试", "bad");
+          return;
+        }
+        setSave("saved");
+        idleT = setTimeout(() => setSave("idle"), 2000);
+      }, 650);
+    }
+    $("#save").addEventListener("click", () => {
+      if ($("#save").classList.contains("error")) {
+        demo.failSave = false;
+        syncDemo();
+        markDirty();
+      }
+    });
+
+    /* ---------- 视口 ---------- */
+    const stage = $("#stage"),
+      world = $("#world");
+    function apply() {
+      world.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.k})`;
+      const g = 20 * view.k;
+      stage.style.backgroundSize = `${g}px ${g}px`;
+      stage.style.backgroundPosition = `${view.x}px ${view.y}px`;
+      $("#zoom").textContent = Math.round(view.k * 100) + "%";
+      layoutOverlay();
+    }
+    const clampK = (k) => Math.min(2.5, Math.max(0.2, k));
+    function zoomAt(k, cx, cy) {
+      k = clampK(k);
+      view.x = cx - (cx - view.x) * (k / view.k);
+      view.y = cy - (cy - view.y) * (k / view.k);
+      view.k = k;
+      apply();
+    }
+    function flyTo(tx, ty, tk, d = 320) {
+      if (REDUCE) d = 0;
+      const s = { ...view },
+        t0 = performance.now();
+      const ease = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+      (function f(t) {
+        const p = d ? Math.min(1, (t - t0) / d) : 1,
+          e = ease(p);
+        view.x = s.x + (tx - s.x) * e;
+        view.y = s.y + (ty - s.y) * e;
+        view.k = s.k + (tk - s.k) * e;
+        apply();
+        if (p < 1) requestAnimationFrame(f);
+      })(t0);
+    }
+    function fitView(list = nodes, pad = 140) {
+      if (!list.length) return flyTo(innerWidth / 2, innerHeight / 2, 1);
+      let x0 = Infinity,
+        y0 = Infinity,
+        x1 = -Infinity,
+        y1 = -Infinity;
+      list.forEach((n) => {
+        const k = KIND[n.kind];
+        x0 = Math.min(x0, n.x);
+        y0 = Math.min(y0, n.y - 30);
+        x1 = Math.max(x1, n.x + k.w);
+        y1 = Math.max(y1, n.y + k.h);
+      });
+      const W = innerWidth,
+        H = innerHeight - 120 - 260;
+      const k = clampK(Math.min((W - pad * 2) / (x1 - x0), Math.max(200, H) / (y1 - y0), 1.1));
+      flyTo(
+        W / 2 - ((x0 + x1) / 2) * k,
+        64 + Math.max(40, (H - (y1 - y0) * k) / 2) - y0 * k + 40,
+        k,
+      );
+    }
+    function centerOn(n) {
+      const k = KIND[n.kind];
+      flyTo(
+        innerWidth / 2 - (n.x + k.w / 2) * view.k,
+        innerHeight * 0.36 - (n.y + k.h / 2) * view.k,
+        view.k,
+      );
+    }
+
+    /* ---------- 渲染节点与连线 ---------- */
+    const els = new Map();
+    function nodeEl(n) {
+      let el = els.get(n.id);
+      if (el) return el;
+      el = document.createElement("div");
+      el.className = "node";
+      el.dataset.id = n.id;
+      el.innerHTML = `<div class="node-head"></div>
+    <div class="card"><div class="media"></div><div class="media next"></div><div class="empty-hint"></div>
+      <div class="shimmer"></div><div class="fail"></div><div class="prog"><i></i></div></div>
+    <button class="port l" aria-label="添加上游节点">${ic("plus")}</button><button class="port r" aria-label="添加下游节点">${ic("plus")}</button>`;
+      world.appendChild(el);
+      els.set(n.id, el);
+      return el;
+    }
+    function render() {
+      const live = new Set(nodes.map((n) => n.id));
+      for (const [id, el] of els)
+        if (!live.has(id)) {
+          el.remove();
+          els.delete(id);
+        }
+      nodes.forEach((n) => {
+        const el = nodeEl(n),
+          k = KIND[n.kind],
+          out = activeOut(n);
+        el.style.left = n.x + "px";
+        el.style.top = n.y + "px";
+        el.style.width = k.w + "px";
+        el.style.height = k.h + "px";
+        const hasOut = !!out || (n.kind === "text" && n.text);
+        el.classList.toggle("sel", n.id === selId);
+        el.classList.toggle("empty", !hasOut && n.status !== "running");
+        el.classList.toggle("running", n.status === "running");
+        el.classList.toggle("failed", n.status === "failed");
+        const st =
+          n.status === "running"
+            ? `<span class="st num">生成中 ${Math.round(n.progress || 0)}%</span>`
+            : n.status === "failed"
+              ? `<span class="st bad">生成失败</span>`
+              : "";
+        const head = ic(k.icon, 15) + `<span>${esc(n.label)}</span>` + st;
+        const hd = $(".node-head", el);
+        if (hd.innerHTML !== head) hd.innerHTML = head;
+        const media = $(".media", el);
+        if (n.kind === "text")
+          media.innerHTML = n.text
+            ? `<div class="textout">${esc(n.text).replace(/\n/g, "<br>")}</div>`
+            : "";
+        else if (n.kind === "audio")
+          media.innerHTML = out ? `<div class="wave">${waveBars(out.seed)}</div>` : "";
+        else {
+          media.style.backgroundImage = out ? art(out.seed) : "none";
+          media.innerHTML = out ? `<span class="tag">示例画面</span>` : "";
+        }
+        $(".empty-hint", el).innerHTML = hasOut ? "" : ic(k.icon) + `<span>${k.hint}</span>`;
+        $(".fail", el).innerHTML =
+          n.status === "failed"
+            ? `<b>生成失败</b><span>${esc(n.error || "")}</span><span>积分已退回</span><button data-retry="${n.id}">重试</button>`
+            : "";
+        $(".prog i", el).style.width = (n.progress || 0) + "%";
+      });
+      renderEdges();
+      $("#empty").hidden = nodes.length > 0;
+      $("#st-nodes").textContent = nodes.length;
+      $("#st-edges").textContent = edges.length;
+      const failed = nodes.filter((n) => n.status === "failed").length;
+      $("#st-fail").textContent = failed;
+      $("#st-warn").classList.toggle("warn", failed > 0);
+      renderHist();
+    }
+    /* 连线：底线 + 流光层。流光有三种（彗星 / 光带 / 粒子流），由演示面板切换 */
+    let edgeFx = "comet";
+    function edgeFxMarkup(e, d, sx, sy, tx, ty, running) {
+      if (edgeFx === "comet")
+        return `<path class="fx-comet-glow" pathLength="100" d="${d}"/><path class="fx-comet-core" pathLength="100" d="${d}"/>`;
+      if (edgeFx === "dots")
+        return `<path class="fx-dots-glow" d="${d}"/><path class="fx-dots" d="${d}"/>`;
+      // 光带：沿上下游连线方向的渐变，渐变本身从上游平移到下游
+      const gid = "sw-" + e.id,
+        vx = tx - sx,
+        vy = ty - sy;
+      const color = running ? "var(--run)" : "#fff";
+      const dur = running ? 1.1 : 2.6;
+      const anim = REDUCE
+        ? ""
+        : `<animateTransform attributeName="gradientTransform" type="translate" from="${-vx} ${-vy}" to="${vx} ${vy}" dur="${dur}s" repeatCount="indefinite"/>`;
+      return `<defs><linearGradient id="${gid}" gradientUnits="userSpaceOnUse" x1="${sx}" y1="${sy}" x2="${tx}" y2="${ty}">
+      <stop offset=".3" stop-color="${color}" stop-opacity="0"/><stop offset=".5" stop-color="${color}" stop-opacity=".95"/><stop offset=".7" stop-color="${color}" stop-opacity="0"/>${anim}
+    </linearGradient></defs><path class="fx-sweep" stroke="url(#${gid})" d="${d}"/>`;
+    }
+    /**
+     * 每帧都可能调用（拖节点、生成进度），所以不整块重建：
+     * 同一根线复用原来的 <g>，只改路径和渐变坐标，流光动画才不会被一次次打断重来。
+     * 只有换了流光类型、或者生成状态变了（光带的颜色和速度写在标记里）才重建这一根。
+     */
+    function renderEdges() {
+      const svg = $("#edges");
+      const live = new Set();
+      for (const e of edges) {
+        const a = byId(e.source),
+          b = byId(e.target);
+        if (!a || !b) continue;
+        live.add(e.id);
+        const ka = KIND[a.kind],
+          kb = KIND[b.kind];
+        const sx = a.x + ka.w,
+          sy = a.y + ka.h / 2,
+          tx = b.x,
+          ty = b.y + kb.h / 2;
+        const dx = Math.max(60, Math.abs(tx - sx) / 2);
+        const d = `M${sx},${sy} C${sx + dx},${sy} ${tx - dx},${ty} ${tx},${ty}`;
+        const running = b.status === "running";
+        const cls = running ? "run" : selId === a.id || selId === b.id ? "hot" : "";
+        const sig = edgeFx + (running ? ":run" : "");
+        let g = svg.querySelector(`g[data-id="${e.id}"]`);
+        if (!g || g.dataset.sig !== sig) {
+          g?.remove();
+          g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          g.dataset.id = e.id;
+          g.dataset.sig = sig;
+          g.innerHTML = `<path class="base" d="${d}"/>${edgeFxMarkup(e, d, sx, sy, tx, ty, running)}`;
+          svg.appendChild(g);
+        }
+        if (g.getAttribute("class") !== cls) g.setAttribute("class", cls);
+        g.querySelectorAll("path").forEach(
+          (p) => p.getAttribute("d") !== d && p.setAttribute("d", d),
+        );
+        const grad = g.querySelector("linearGradient");
+        if (grad) {
+          grad.setAttribute("x1", sx);
+          grad.setAttribute("y1", sy);
+          grad.setAttribute("x2", tx);
+          grad.setAttribute("y2", ty);
+          const t = grad.querySelector("animateTransform");
+          t?.setAttribute("from", `${sx - tx} ${sy - ty}`);
+          t?.setAttribute("to", `${tx - sx} ${ty - sy}`);
+        }
+      }
+      svg.querySelectorAll("g[data-id]").forEach((g) => {
+        if (!live.has(g.dataset.id)) g.remove();
+      });
+    }
+    const waveBars = (seed) =>
+      Array.from(
+        { length: 48 },
+        (_, i) =>
+          `<i style="height:${18 + Math.abs(Math.sin(i * 0.7 + seed) * Math.cos(i * 0.23)) * 60}%"></i>`,
+      ).join("");
+    const esc = (s) =>
+      String(s).replace(
+        /[&<>"]/g,
+        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+      );
+
+    /* ---------- 滑块指示器（layoutId 的等价物） ---------- */
+    function glide(ind, x, w, instant) {
+      if (!ind) return;
+      if (M) {
+        M.animate(ind, { x, width: w }, instant || REDUCE ? { duration: 0 } : SPRING);
+        return;
+      }
+      ind.style.transform = `translateX(${x}px)`;
+      ind.style.width = w + "px";
+    }
+    function segTo(seg, btn, instant) {
+      if (seg && btn) glide($(".seg-ind", seg), btn.offsetLeft, btn.offsetWidth, instant);
+    }
+
+    /* ---------- 节点历史浮条 ---------- */
+    const hist = $("#hist");
+    function renderHist() {
+      const n = sel();
+      if (!n || n.kind === "text") {
+        hist.classList.remove("show");
+        return;
+      }
+      const cnt = n.outputs.length;
+      const ring = n.status === "running" ? "run" : cnt ? "ok" : "";
+      const sig = [n.id, cnt, n.active, ring, histOpen].join("|");
+      if (hist.dataset.sig !== sig) {
+        hist.dataset.sig = sig;
+        hist.innerHTML = `<button class="ib" id="hist-toggle" aria-expanded="${histOpen}">${ic("history")}<span>节点生成历史</span>${cnt > 1 ? `<span class="cnt num">${cnt}</span>` : ""}</button>
+      <div class="thumbs" id="thumbs">${n.outputs.map((o) => `<button class="thumb${o.id === n.active ? " on" : ""}" data-out="${o.id}" style="background-image:${n.kind === "audio" ? "linear-gradient(90deg,#333,#555)" : art(o.seed)}" aria-label="切换到这一版"></button>`).join("")}<span class="thumb-ring"></span></div>
+      <span class="sep"></span><span class="ring-st ${ring}" title="${ring === "run" ? "生成中" : cnt ? "当前版本已就绪" : "尚未生成"}" style="margin:0 8px 0 4px"></span>`;
+        hist.classList.toggle("open", histOpen && cnt > 0);
+        const th = $("#thumbs");
+        th.style.maxWidth = histOpen && cnt ? Math.min(cnt, 8) * 58 + "px" : "0px";
+        th.style.overflowX = cnt > 8 ? "auto" : "hidden";
+        placeRing(true);
+      }
+      hist.classList.add("show");
+    }
+    function placeRing(instant) {
+      const on = $("#thumbs .thumb.on"),
+        ring = $("#thumbs .thumb-ring");
+      if (!ring) return;
+      ring.style.display = on ? "" : "none";
+      if (on) glide(ring, on.offsetLeft, 52, instant);
+    }
+    hist.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-out]");
+      if (t) return switchVersion(sel(), t.dataset.out);
+      if (e.target.closest("#hist-toggle")) {
+        if (!sel().outputs.length) {
+          toast("这个节点还没有生成结果", "info");
+          return;
+        }
+        histOpen = !histOpen;
+        renderHist();
+        requestAnimationFrame(layoutOverlay);
+      }
+    });
+    function switchVersion(n, outId) {
+      if (!n || n.active === outId) return;
+      const before = snap(),
+        el = els.get(n.id),
+        next = $(".media.next", el),
+        o = n.outputs.find((x) => x.id === outId);
+      n.active = outId;
+      $$(".thumb", hist).forEach((t) => t.classList.toggle("on", t.dataset.out === outId));
+      placeRing(false);
+      if (n.kind !== "audio" && !REDUCE) {
+        next.style.backgroundImage = art(o.seed);
+        const done = () => {
+          hist.dataset.sig = "";
+          commit(before);
+          next.style.opacity = 0;
+        };
+        if (M) M.animate(next, { opacity: [0, 1] }, { duration: 0.15 }).then(done);
+        else {
+          next.style.transition = "opacity .15s";
+          next.style.opacity = 1;
+          setTimeout(done, 160);
+        }
+      } else {
+        hist.dataset.sig = "";
+        commit(before);
+      }
+      const downs = edges.filter((e) => e.source === n.id).length;
+      if (downs) toast(`已切换版本，${downs} 个下游节点会使用这一版作为参考`, "info");
+    }
+
+    /* ---------- 引用：连线即引用；面板顶部是引用条，提示词里用 @ 点名 ---------- */
+    /* 节点种类规则 + 下游当前生成方式收哪些上游（对应代码里的 canLinkNodes） */
+    const ACCEPT_KIND = { text: ["text"], audio: ["text"], image: ["text", "image"] };
+    const ACCEPT_OP = {
+      文生视频: ["text"],
+      全能参考: ["text", "image", "video", "audio"],
+      视频编辑: ["text", "image", "video"],
+      视频延长: ["text", "video"],
+      首尾帧: ["text", "image"],
+      动作模仿: ["text", "image", "video"],
+    };
+    const accepts = (n) =>
+      n.kind === "video" ? ACCEPT_OP[n.params.op] || ["text"] : ACCEPT_KIND[n.kind];
+    const hasMaterial = (s) => (s.kind === "text" ? !!s.text : !!activeOut(s));
+    const upstream = (n) =>
+      edges
+        .filter((e) => e.target === n.id)
+        .map((e) => byId(e.source))
+        .filter(Boolean);
+    const isUp = (n, id) => edges.some((e) => e.source === id && e.target === n.id);
+    /* id 在不在 n 的下游：在的话再连回来会成环 */
+    function downstreamHas(n, id) {
+      const seen = new Set([n.id]),
+        stack = [n.id];
+      while (stack.length) {
+        const c = stack.pop();
+        for (const e of edges)
+          if (e.source === c && !seen.has(e.target)) {
+            if (e.target === id) return true;
+            seen.add(e.target);
+            stack.push(e.target);
+          }
+      }
+      return false;
+    }
+    /* @ 能列哪些：有素材、种类和生成方式都收、连过来不成环。接不上的一律不显示 */
+    function mentionables(n) {
+      const acc = accepts(n),
+        ok = (s) => s.id !== n.id && hasMaterial(s) && acc.includes(s.kind);
+      return {
+        linked: upstream(n).filter(ok),
+        canvas: nodes.filter((s) => ok(s) && !isUp(n, s.id) && !downstreamHas(n, s.id)),
+      };
+    }
+    function thumbHTML(s, cls) {
+      const o = activeOut(s);
+      if (s.kind === "text") return `<span class="${cls}">${ic("type")}</span>`;
+      if (s.kind === "audio") return `<span class="${cls} aud">${ic("music")}</span>`;
+      return o
+        ? `<span class="${cls}" style="background-image:${art(o.seed)}"></span>`
+        : `<span class="${cls}">${ic(KIND[s.kind].icon)}</span>`;
+    }
+
+    /* ---------- 节点预设数据（来自 docs/research/open-ai-canvas-prompts.md，封面和动图在 open-ai-canvas-assets） ---------- */
+    const PRESET_RAW = {"style": [[1, "period_idol", "古装偶像", "period", "古偶唯美柔光风格，东方新古典写意浪漫，古装言情影像，ARRI Alexa Mini LF大画幅摄影机拍摄，[50/85/135mm]大光圈定焦镜头，1/8黑柔焦镜+薄雾滤镜效果。低"], [2, "palace_intrigue", "宫廷权谋", "period", "古装宫廷权谋正剧，冷峻肃杀风格，东方写实主义极简美学，ARRI Alexa 35 摄影机拍摄，Super35 画幅，电影级质感。低明度低饱和冷调色盘；大光比硬光布光，侧逆光伦勃朗光"], [3, "wuxia", "武侠江湖", "period", "写实武侠江湖题材，新现实主义武侠风格，沉郁凛冽的江湖烟火气质，院线电影级画面，采用ARRI Alexa 35数字电影摄影机拍摄，Super 35画幅，库克S4/i定焦镜头，35mm"], [4, "cn_urban", "国产都市", "city", "中国新写实主义都市剧情片，纪实美学风格，克制粗粝的本土都市质感，蔡司 CP.3 定焦镜头，35mm 焦段，自然景深；低饱和冷灰基底，小面积高饱和霓虹点缀，中低反差影调，实景自然光源"], [5, "urban_romance", "都市情感", "city", "韩国当代都市情感剧集影像，韩剧都市柔光风格，日常浪漫主义美学，暖柔治愈基调；ARRI Alexa Mini LF 全画幅数字摄影机，35mm 大光圈定焦镜头，1/8 黑柔焦镜，浅景"], [6, "crime_suspense", "现实悬疑", "city", "国产社会派现实主义悬疑，冷峻克制的写实影像风格，沉郁压抑的冷调悬疑气质,ARRI Alexa Mini LF全画幅数字电影机，35mm定焦镜头，电影级浅景深,整体色彩偏沉偏冷,低调"], [7, "korean_muted", "韩国冷淡", "city", "新现实主义写实美学，清冷克制的疏离感，ARRI Alexa Mini 拍摄，Super 35mm 传感器，35mm 定焦人文视角，克制虚化。低饱和冷灰调基底，阴天漫射侧光，低光比平"], [8, "nineties", "90年代", "decade", "90年代新写实主义电影，现实题材纪实感，Super 16mm胶片拍摄，柯达Vision 500T 5279胶片，Arriflex SR3摄影机，手持拍摄轻微呼吸感，蔡司25mm/3"], [9, "golden_age", "黄金时代", "decade", "美式复古好莱坞黄金时代风格，古典制片厂美学，1930s-1960s年代感，强电影叙事感，浪漫与戏剧张力并存，35mm醋酸纤维胶片，Mitchell BNC摄影机，Cooke Spe"], [10, "documentary_realism", "纪实写实", "decade", "复古叙事电影风格，35mm胶片拍摄，ARRICAM摄影机，Cooke经典定焦镜头，诗意现实主义风格，年代剧情片质感，整体暖棕基调，低饱和中低明度色彩，侧逆柔光，伦勃朗布光，中等柔反"], [11, "retro_narrative", "复古叙事", "decade", "现实主义纪实风格，35mm柯达Vision彩色胶片拍摄，Arri BL4胶片摄影机，35mm标准定焦镜头，自然空间透视，纪实自然光效，中等偏粗胶片颗粒，低通透度，空气浮尘朦胧感，强"], [12, "american_nineties", "美式90", "decade", "经典复古剧情片视觉，古典好莱坞摄影美学，35mm胶片质感，沉静叙事感，怀旧厚重氛围，35mm柯达Vision3彩色电影胶片，Arriflex 535B摄影机，180°快门角度，Pa"], [13, "showa_monochrome", "昭和黑白", "decade", "日本昭和黑白电影风格，35mm黑白负片胶片拍摄，机械式胶片电影摄影机，，50mm标准定焦镜头，f/4.0中等光圈，日式写实主义，物哀美学，沉静克制的视觉基调，留白式构图，纯黑白灰阶"], [14, "vintage_industrial", "老式工业", "decade", "20 世纪中期重工业纪实影像，胶片工业美学，冷峻厚重的工业力量感；35mm 柯达 Ektachrome 彩色反转胶片，Arriflex 35 II 摄影机，Cooke Speed "], [15, "sixties_poster", "60海报", "decade", "50-60年代美式复古海报风格，Mid-Century Modern插画美学，高饱和度撞色搭配，强烈的摄影棚硬光与深邃阴影，高反差长调影调，清晰可见的CMYK四色印刷网点与罗塞塔纹"], [16, "hk_retro", "复古港片", "decade", "90年代香港电影风格，35mm柯达500T胶片拍摄，Arriflex 435摄影机，35mm标准定焦镜头，冷暖对冲色彩体系，混合光源照明，硬光侧逆光布光，高反差硬调影调，暗部扎实厚"], [17, "retro_film", "复古胶片", "decade", "复古柯达胶片摄影风格，Kodak Portra 400与Gold 200色彩科学，细腻的ISO 400胶片颗粒质感，暖黄与冷蓝双调的怀旧色偏，定焦老镜头（Helios/Canon "], [18, "healing_life", "生活治愈", "life", "日式生活流治愈影像，整体基调静谧松弛温润，自然主义日常美学；16mm彩色负片拍摄，35mm/50mm/85mm定焦镜头组，漫射自然光为主、暖柔光为辅，软调低反差影调，明暗过渡平缓；"], [19, "youth_film", "青春胶片", "life", "日式青春胶片风格，135 彩色负片，富士 C200 质感，大光圈定焦拍摄，平成青春映画美学，清新写实风格,低饱和高明度色彩，阴影青蓝色偏高光暖黄调，中低反差高调影调，宽动态范围，明"], [20, "atompunk", "原子朋克", "science_fiction", "原子朋克复古科幻，黄金时代科幻美学，1950 年代复古未来主义，前数字时代的未来幻想，冷峻工业感与浪漫人文感交织；35mm 电影胶片，Panavision C 系列变形宽银幕镜头，"], [21, "neon_punk", "霓虹朋克", "science_fiction", "科幻反乌托邦赛博朋克风格，新黑色电影叙事逻辑，高科技低生活二元对立气质，冷峻迷幻的反乌托邦都市基调，ARRI Alexa Mini LF 大画幅摄影机拍摄，变形宽银幕镜头，带水平眩"], [22, "hard_scifi", "硬核科幻", "science_fiction", "硬核科幻风格，严谨的工程技术美学，极低饱和的功能指示色点缀，航天级铝合金与钛合金精密加工质感，暴露可循的管道与电缆走线逻辑，高反差无情阴影，真空级通透度与零浮尘空气感，零颗粒数字成"], [23, "steampunk", "蒸汽朋克", "science_fiction", "维多利亚时代蒸汽朋克风格，复古机械美学与古典贵族服饰融合，中高反差长调影调，金属镜面高光与天鹅绒暗部层次，精密渐开线齿轮与铆接蒸汽管道结构，新艺术运动与哥特复兴装饰纹样，新维多利亚"], [24, "biopunk", "血肉朋克", "science_fiction", "科幻反乌托邦血肉朋克美学，生物工业共生题材，肉体与工业深度侵蚀融合，有机生长替代工业组装，压抑诡谲的生理冲击感，暗黑生物科技基，35mm柯达Vision3 500T胶片拍摄，ARR"], [25, "psychological_horror", "心理恐怖", "type", "院线级恐怖电影，写实主义恐怖风格，哥特暗黑美学，日常空间异化，心理惊悚氛围，35mm胶片拍摄，ARRICAM ST摄影机，老式电影镜头，轻微暗角与呼吸效应，高反差硬调，大面积纯黑暗"], [26, "cult_film", "邪典cult", "type", "美式复古怪诞邪典风格，50-70年代美式复古背景，林奇式超现实悬疑，乡村哥特怪核美学，克制型心理惊悚，平静下的诡异感，35mm彩色胶片拍摄，Arriflex 35mm胶片摄影机，老"], [27, "modern_warfare", "现代战争", "type", "写实复古战争史诗画面，35mm 柯达电影胶片拍摄，潘纳维申复古变形镜头，自然胶片颗粒，轻微镜头眩光与焦外拉丝；低饱和低明度影调，高反差低调硬调，侧逆光硬光布光，冷暖光影对比；中等偏"], [28, "wasteland_road", "荒野公路", "type", "荒野叙事电影质感，新写实主义融合史诗气质，粗粝冷峻的旷野美学，ARRI Alexa Mini LF大画幅数字摄影机，变形宽银幕定焦镜头成像，14档宽动态范围，自然光效主导，黄金时刻"], [29, "western_cowboy", "西部牛仔", "type", "经典美式西部风格，强烈的正午直射阳光，边缘锋利的硬阴影，极高反差的影调结构，风沙扬尘的大气介质，35mm 胶片颗粒感，变形宽银幕的横向拉伸与光学眩光，复古西部电影的严峻史诗氛围，帽"], [30, "neo_chinese", "新兴中式", "poetic", "电影级画面，新中式诗意写实风格，东方人文意境，阿莱Alexa Mini LF拍摄，蔡司电影定焦镜头，35mm柯达夜景胶片质感，霁蓝灰蓝冷蓝辉光，低饱和冷暖对冲，柔光布光，半明半暗留"], [31, "high_key_absurd", "高调荒诞", "poetic", "35mm胶片质感，高调荒诞美学，超现实怪诞风格，ARRICAM胶片摄影机，潘纳维申C系列变形镜头，柯达Vision3 50D彩色负片，高短调影调，大面积柔光照明，光比1:2，高明度"], [32, "shanghai_animation", "上美动漫", "animation", "中国动画学派，上海美术电影制片厂经典风格，手绘赛璐璐动画正片，中国传统工笔重彩，东方古典浪漫主义，影视级叙事质感，ISO100低感光度，平光为主弱塑形光，装饰性布光，中国传统矿物颜"], [33, "otomo_akira", "大友克洋", "animation", "大友克洋风格，硬核科幻写实动画，赛璐璐手绘质感，工业精密美学，冷峻末世基调，低调硬光布光，大光比高反差硬调，人工霓虹混合光源，中低通透度，强空间纵深感，12档动态范围，中高锐度，暗"], [34, "stop_motion", "定格动画", "animation", "逐帧定格动画，物理实体微缩模型，手工制作质感，移轴效果，自然景深，精准透视，柔光主光，低位漫反射补光，中对比度全阶影调，明暗过渡自然，黏土/树脂/布艺/木质实体材质，统一微缩比例，"], [35, "claymation", "黏土动画", "animation", "传统手工黏土定格动画，100mm f/2.8微距镜头，大画幅传感器，宽动态范围，实体塑性黏土材质，表面带手工塑形细微肌理，微缩实体模型场景，手工制作轻微不完美痕迹，45°侧位主光，"], [36, "chinese_ink", "中式水墨", "drawing", "新中式数字水墨影像，东方诗意美学，虚实相生，留白见意，气韵生动，墨分五色，清雅空灵的电影画面，墨色五阶为主色，软反差低对比度，细腻灰阶过渡，自然漫射柔光，阴影边缘晕染虚化，中低调影"], [37, "ukiyo_e", "浮世绘风", "drawing", "日本传统浮世绘木版画风格，葛饰北斋与歌川广重艺术风格，流畅有力的书法性黑色轮廓线，大面积矿物颜料平涂上色，层次分明的硬边阴影切割，无渐变渲染的2-3级色阶，和纸植物纤维的天然纹理质"], [38, "shadow_puppet", "传统皮影", "drawing", "中国传统非遗皮影戏风格，蔡司Supreme Prime定焦镜头，Super 35画幅，16档宽动态范围，中高反差戏剧影调，传统矿物颜料色系，明暗层级丰富，逆光下皮料半通透，手工兽皮"], [39, "egyptian_mural", "埃及壁画", "drawing", "史诗级古埃及壁画风格，平涂矿物色彩，硬朗粗粝的深色轮廓线，几何化边框纹样，象形文字铭文装饰，局部鎏金斑驳质感，极低反差影调，神秘古老仪式氛围，浮尘空气感，ARRI Alexa 65"], [40, "minimal_illustration", "简约插画", "drawing", "现代扁平化设计风格，纯矢量图形质感，极简几何形状构成，高饱和纯色块填充，高对比度色相搭配，清晰锐利的轮廓线条（单像素级），绝对无阴影、无渐变、无纹理、无材质表现的平面设计法则，严格"], [41, "dali_surreal", "荒诞达利", "drawing", "达利式超现实主义影视画面，偏执批判派梦境美学，潜意识荒诞隐喻，古典艺术厚重调性，非逻辑错视空间，写实细节搭配违背物理规则的形态,65mm柯达Vision3 50D胶片拍摄，Pana"], [42, "game_concept", "游戏概念", "drawing", "美国游戏概念艺术，好莱坞写实主义数字概念设计，Master Prime定焦镜头，大光圈浅景深，轻微自然暗角与镜头眩光，低饱和基底色，高对比度点缀色，侧逆轮廓光，伦勃朗布光逻辑，硬调"], [43, "chinese_myth", "传统神话", "myth", "东方新古典神话史诗，新东方主义美学，上古神话题材，兼具洪荒厚重感与空灵仙气，写实与东方写意结合，庄肃瑰丽，65mm大画幅传感器，16mm柯达胶片颗粒，电影级浅景深，变形宽银幕散景，"], [44, "greek_myth", "希腊神话", "myth", "希腊神话史诗风格，35mm柯达胶片拍摄，Vision3胶片质感，中等胶片颗粒，高动态范围，新古典主义史诗风格，沉郁雄浑的神性史诗气质，考古级写实质感，地中海硬调自然光，侧逆光塑造雕"], [45, "western_fantasy", "西式魔幻", "myth", "黑暗奇幻影视，新哥特现实主义风格，史诗悲剧质感，神性陨落与蛮荒生长的核心情绪，辉煌残响中的绝望诗意，写实化奇幻叙事，35mm柯达Vision3 5219胶片拍摄，Panavisio"]], "motion": [[46, "static_shot", "固定镜头", "basic", "建立冷静秩序", "运镜：固定机位，镜头位置和拍摄方向都保持不变，画面构图稳定，由主体动作或画面内部变化形成运动感。"], [47, "tilt_up", "镜头上摇", "basic", "展示高度威压", "运镜：固定机位上摇，镜头位置不移动，只沿垂直方向缓慢向上转动，画面重心从下方逐步移向上方。"], [48, "tilt_down", "镜头下摇", "basic", "从环境落到人", "运镜：固定机位下摇，镜头位置不移动，只沿垂直方向缓慢向下转动，画面重心从上方逐步移向下方。"], [49, "pan_left", "镜头左摇", "basic", "横向展示空间", "运镜：固定机位左摇，镜头位置不移动，只沿水平方向缓慢向左转动，让画面内容从右向左连续变化。"], [50, "pan_right", "镜头右摇", "basic", "引出画外信息", "运镜：固定机位右摇，镜头位置不移动，只沿水平方向缓慢向右转动，让画面内容从左向右连续变化。"], [51, "crane_up", "镜头上升", "basic", "展开场景规模", "运镜：镜头垂直上升，拍摄方向基本保持稳定，机位高度从低到高变化，画面视角随高度产生变化。"], [52, "truck_left", "镜头左移", "basic", "制造空间视差", "运镜：镜头左移，机位整体向左横向平移，拍摄方向基本不变，前景与背景形成自然视差。"], [53, "crane_down", "镜头下降", "basic", "从全局聚焦", "运镜：镜头垂直下降，拍摄方向基本保持稳定，机位高度从高到低变化，画面视角随高度产生变化。"], [54, "truck_right", "镜头右移", "basic", "制造空间视差", "运镜：镜头右移，机位整体向右横向平移，拍摄方向基本不变，前景与背景形成自然视差。"], [55, "dolly_in", "镜头前推", "basic", "强调情绪靠近", "运镜：镜头缓慢前推，机位沿镜头朝向向前移动，主体在画面中逐渐变大，空间层次产生自然视差。"], [56, "dolly_out", "镜头后移", "basic", "展示人物孤独", "运镜：镜头缓慢后拉，机位沿镜头朝向向后移动，主体在画面中逐渐变小，画面范围逐步变宽。"], [57, "zoom_in", "变焦推进", "basic", "突出表情反应", "运镜：缓慢变焦推进，机位保持不动，只通过焦距变化让画面范围逐渐收紧。"], [58, "zoom_out", "变焦拉远", "basic", "从局部到全貌", "运镜：缓慢变焦拉远，机位保持不动，只通过焦距变化让画面范围逐渐放宽。"], [59, "follow_tracking", "跟随拍摄", "follow", "跟住人物行动", "运镜：跟随拍摄，镜头跟随主体运动方向移动，与主体保持相对稳定的距离和构图。"], [60, "leading_tracking", "迎面跟拍", "follow", "保留人物表情", "运镜：迎面跟拍，镜头位于主体前方并随主体运动同步后退，保持主体正面信息稳定可见。"], [61, "profile_tracking", "侧面跟拍", "follow", "强化行进节奏", "运镜：侧面跟拍，镜头在主体侧方与其平行移动，保持侧向构图稳定，并形成横向空间视差。"], [62, "handheld_shot", "手持拍摄", "follow", "增加真实紧张", "运镜：手持拍摄，镜头带轻微自然晃动和近距离临场感，可随主体动作产生小幅调整。"], [63, "pov_shot", "第一视角", "follow", "进入角色视角", "运镜：第一视角，镜头模拟角色视线和身体移动，带轻微头部晃动和主观视角的运动反馈。"], [64, "steadicam_walkthrough", "稳定器行进", "follow", "平稳进入现场", "运镜：稳定器行进，镜头以稳定、连续的方式向前或跟随移动，运动平滑，晃动幅度低。"], [65, "slider_reveal", "横滑揭示", "reveal", "从遮挡露主体", "运镜：横滑揭示，镜头从遮挡关系中横向滑出，逐步露出被遮挡的主体或关键信息。"], [66, "foreground_wipe", "前景擦过", "reveal", "用遮挡完成切换", "运镜：前景擦过，近处遮挡物从镜头前掠过并短暂覆盖画面，随后露出新的画面内容。"], [67, "push_through", "穿越镜头", "reveal", "穿过边界入场", "运镜：穿越镜头，镜头持续快速向前推进，并产生短暂运动模糊，穿过明确的前景边界或空间层次，进入后方画面，最后落到新的构图或目标上。"], [68, "whip_pan", "甩摇", "reveal", "快速切换信息", "运镜：甩摇，镜头快速水平转动并产生短暂运动模糊，最后落到新的构图或目标上。"], [69, "rack_focus", "焦点转移", "reveal", "注意力换目标", "运镜：焦点转移，镜头位置可以不变，焦点从一个画面层次平滑切换到另一个画面层次。"], [70, "crash_zoom", "急速变焦", "emotion", "放大戏剧反应", "运镜：急速变焦推进，机位保持不动，画面范围快速收紧到目标区域，形成突然强调。"], [71, "dolly_zoom", "希区柯克", "emotion", "现实崩塌瞬间", "运镜：希区柯克式变焦，机位移动与反向变焦同时发生，主体大小基本保持稳定，背景透视发生明显变化。"], [72, "orbit_180", "环绕拍摄", "emotion", "强化人物气场", "运镜：环绕拍摄，镜头围绕主体平稳旋转约180度，主体保持在画面核心位置，背景产生连续旋转视差。"], [73, "ascending_orbit", "盘旋抬升", "emotion", "高光登场时刻", "运镜：盘旋抬升，镜头围绕主体旋转的同时逐渐升高，主体保持锁定，机位高度持续变化。"], [74, "descending_orbit", "盘旋下降", "emotion", "巨物压迫登场", "运镜：盘旋下降，镜头围绕主体旋转的同时逐渐降低，主体保持锁定，机位高度持续变化。"], [75, "fpv_flythrough", "穿越机运镜", "aerial", "高速掠过空间", "运镜：穿越机运镜，fpv 镜头以第一视角高速穿行空间，贴近场景边界和主体灵活飞行，带明显速度感与滚转俯仰变化。"], [76, "aerial_establishing", "高空航拍", "aerial", "建立宏大世界", "运镜：高空航拍，镜头以高角度俯视画面，并保持稳定滑行，用于呈现空间关系和整体布局。"], [77, "drone_dive", "俯冲下降", "aerial", "从高空压向目标", "运镜：俯冲下降，镜头从高处向目标方向快速下降并靠近，形成明显速度感和压迫感。"], [78, "pull_away", "拉升离场", "aerial", "人变小世界变大", "运镜：拉升离场，镜头从主体附近向后并向上移动，主体在画面中逐渐变小，画面范围逐步扩大。"]], "tpl": [[79, "multi_camera_nine_grid", "多机位九宫格", "生成一个 3x3 九宫格的多机位联系表"], [80, "story_pitch_four_grid", "剧情推演四宫格", "生成一个 2x2 四宫格的剧情推演联系表"], [81, "character_face_three_view", "角色脸部三视图", "生成一个 3x2 三宫图的角色脸部联系表"], [82, "product_three_view", "产品三视图", "生成一个 3x2 三宫图的产品联系表"], [83, "storyboard_25_grid", "25宫格连贯分镜", "生成一个 5x5 25宫格的连贯分镜联系表"], [84, "cinematic_light_correction", "电影级光影校正", "修正电影灯光，使场景更真实"], [85, "character_three_view_generation", "角色三视图生成", "生成一个 16x9 三宫图的角色角色联系表"], [86, "image_projection_after_3s", "画面推演-3秒后", "创建一个 3秒后投影的图像，作为视频的一帧"], [87, "image_projection_before_5s", "画面推演-5秒前", "创建一个 5秒前投影的图像，作为视频的一帧"]]};
+    const ASSET = "../../research/open-ai-canvas-assets/";
+    const pad3 = (n) => String(n).padStart(3, "0");
+    const STYLE_CAT = { period: "古装", city: "都市", decade: "年代", life: "生活", science_fiction: "科幻", type: "类型", poetic: "写意", animation: "动画", drawing: "绘画", myth: "神话" };
+    const MOTION_CAT = { basic: "基础控制", follow: "人物跟拍", reveal: "揭示转场", emotion: "情绪强化", aerial: "空间航拍" };
+    /* 模板：分组与图标 */
+    const TPL_META = {
+      storyboard_25_grid: ["分镜叙事", "film"],
+      story_pitch_four_grid: ["分镜叙事", "grid"],
+      image_projection_after_3s: ["分镜叙事", "clock"],
+      image_projection_before_5s: ["分镜叙事", "history"],
+      cinematic_light_correction: ["质感调节", "sun"],
+      multi_camera_nine_grid: ["空间与机位", "grid"],
+      character_face_three_view: ["设定图", "user"],
+      character_three_view_generation: ["设定图", "user"],
+      product_three_view: ["设定图", "box"],
+    };
+    const TPL_ORDER = ["storyboard_25_grid", "story_pitch_four_grid", "image_projection_after_3s", "image_projection_before_5s", "cinematic_light_correction", "multi_camera_nine_grid", "character_face_three_view", "character_three_view_generation", "product_three_view"];
+    const PRESET = {
+      style: PRESET_RAW.style.map(([n, id, name, cat, p]) => ({
+        kind: "style", id, n, name, cat, p,
+        img: `${ASSET}style/${pad3(n)}-${id}.webp`,
+        refs: ["male", "female", "youth", "elder"].map((r) => `${ASSET}style-reference/${pad3(n)}-${r}.webp`),
+      })),
+      motion: PRESET_RAW.motion.map(([n, id, name, cat, use, p]) => ({
+        kind: "motion", id, n, name, cat, use, p, img: `${ASSET}motion/${pad3(n)}-${id}.webp`,
+      })),
+      tpl: TPL_ORDER.map((id) => {
+        const r = PRESET_RAW.tpl.find((x) => x[1] === id);
+        return { kind: "tpl", id, n: r[0], name: id === "character_three_view_generation" ? "角色三视图" : r[2], use: r[3], p: r[3], group: TPL_META[id][0], icon: TPL_META[id][1] };
+      }),
+    };
+    const PKIND = {
+      style: { label: "风格", icon: "box", multi: false },
+      motion: { label: "运镜", icon: "camera", multi: true },
+      tpl: { label: "预设模板", icon: "shapes", multi: false },
+    };
+    /* 方向相反的运镜：同时选了只提醒，不拦 */
+    const OPPOSITE = { tilt_up: "tilt_down", tilt_down: "tilt_up", pan_left: "pan_right", pan_right: "pan_left", crane_up: "crane_down", crane_down: "crane_up", truck_left: "truck_right", truck_right: "truck_left", dolly_in: "dolly_out", dolly_out: "dolly_in", zoom_in: "zoom_out", zoom_out: "zoom_in" };
+    const findPreset = (kind, id) => PRESET[kind].find((x) => x.id === id);
+    /* 这个节点能用哪几类：图片 = 风格 + 模板，视频 = 运镜 */
+    const presetKinds = (n) => (n.kind === "image" ? ["style", "tpl"] : n.kind === "video" ? ["motion"] : []);
+    const PTOKEN = /#\[(style|motion|tpl):(\w+)\]/g;
+    const ANYTOKEN = /@\[([\w-]+)\]|#\[(style|motion|tpl):(\w+)\]/g;
+
+    /* 提示词存成纯文本，引用写成 @[节点 id]，预设写成 #[种类:id]；编辑器里渲染成 chip */
+    const TOKEN = /@\[([\w-]+)\]/g;
+    function chipHTML(id, n) {
+      const s = byId(id),
+        ok = !!s && isUp(n, id),
+        label = s ? s.label : "已删除的素材";
+      const tip = ok ? `引用「${label}」` : "引用已断开：重新连线，或删掉这个引用";
+      return `<span class="mention${ok ? "" : " gone"}" contenteditable="false" data-ref="${id}" title="${esc(tip)}">${s ? thumbHTML(s, "mi-ic") : `<span class="mi-ic">${ic("x")}</span>`}<span class="ml">${esc(label)}</span></span>`;
+    }
+    function pchipHTML(kind, id) {
+      const p = findPreset(kind, id),
+        k = PKIND[kind];
+      const tip = p
+        ? `${k.label}「${p.name}」· 发送时展开为：${p.p}${p.p.length >= 90 ? "…" : ""}`
+        : "这个预设已不存在，发送时按普通文字处理";
+      return `<span class="pchip${p ? "" : " gone"}" contenteditable="false" data-pk="${kind}" data-pid="${id}" title="${esc(tip)}"><span class="pi">${ic(k.icon)}</span><span class="ml">${esc(p ? p.name : "已下架的预设")}</span></span>`;
+    }
+    const textHTML = (t) => esc(t).replace(/\n/g, "<br>");
+    function promptHTML(str, n) {
+      let out = "",
+        last = 0;
+      for (const m of str.matchAll(ANYTOKEN)) {
+        out += textHTML(str.slice(last, m.index)) + (m[1] ? chipHTML(m[1], n) : pchipHTML(m[2], m[3]));
+        last = m.index + m[0].length;
+      }
+      out += textHTML(str.slice(last));
+      return str.endsWith("\n") ? out + "<br>" : out;
+    }
+    function readPrompt(el) {
+      let s = "";
+      const walk = (node) =>
+        node.childNodes.forEach((c) => {
+          if (c.nodeType === 3) s += c.nodeValue;
+          else if (c.classList?.contains("mention")) s += `@[${c.dataset.ref}]`;
+          else if (c.classList?.contains("pchip")) s += `#[${c.dataset.pk}:${c.dataset.pid}]`;
+          else if (c.tagName === "BR") s += "\n";
+          else {
+            if (c.tagName === "DIV" && s && !s.endsWith("\n")) s += "\n";
+            walk(c);
+          }
+        });
+      walk(el);
+      return s.replace(/\n$/, "");
+    }
+    /* 字数：chip 按素材名计 */
+    const promptLen = (str) =>
+      (str || "")
+        .replace(TOKEN, (_, id) => byId(id)?.label || "")
+        .replace(PTOKEN, (_, k, id) => findPreset(k, id)?.name || "").length;
+    const syncEmpty = (el) => {
+      el.classList.toggle("is-empty", !el.textContent && !el.querySelector(".mention, .pchip"));
+      /* 只有模板 chip、没写字：占位文字跟在 chip 后面 */
+      const free = readPrompt(el).replace(ANYTOKEN, "").trim();
+      el.classList.toggle("tpl-only", !free && !!el.querySelector('.pchip[data-pk="tpl"]'));
+    };
+    function setEditor(el, n) {
+      el.innerHTML = promptHTML(n.prompt || "", n);
+      syncEmpty(el);
+    }
+
+    let lastRange = null,
+      hovered = null;
+    document.addEventListener("selectionchange", () => {
+      const s = getSelection();
+      if (s.rangeCount && s.anchorNode && s.anchorNode.parentElement?.closest(".pe"))
+        lastRange = s.getRangeAt(0).cloneRange();
+    });
+    function bindEditor(el, onChange) {
+      el.addEventListener("input", () => {
+        syncEmpty(el);
+        onChange();
+        detectMention(el);
+      });
+      el.addEventListener("keydown", (e) => {
+        if (mention && mention.el === el) {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            moveAct(e.key === "ArrowDown" ? 1 : -1);
+            return;
+          }
+          if ((e.key === "Enter" && !(e.metaKey || e.ctrlKey)) || e.key === "Tab") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            pickMention(mention.act);
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            closeMention();
+            return;
+          }
+        }
+        if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          document.execCommand("insertLineBreak");
+        }
+      });
+      el.addEventListener("keyup", (e) => {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") detectMention(el);
+      });
+      el.addEventListener("paste", (e) => {
+        e.preventDefault();
+        document.execCommand("insertText", false, e.clipboardData.getData("text/plain"));
+      });
+      el.addEventListener("blur", () =>
+        setTimeout(() => {
+          if (mention?.el === el && document.activeElement !== el) closeMention();
+        }, 0),
+      );
+    }
+    /* 悬停引用条缩略图 / 提示词 chip：两边同一个素材一起描边，画布上的源节点也虚线圈出来 */
+    function hlRef(id, on) {
+      $$(`.ref[data-ref="${id}"], .mention[data-ref="${id}"]`).forEach((x) =>
+        x.classList.toggle("hl", on),
+      );
+      els.get(id)?.classList.toggle("ref-hl", on);
+    }
+    function bindHover(root) {
+      root.addEventListener("mouseover", (e) => {
+        const t = e.target.closest("[data-ref]");
+        if (t === hovered) return;
+        if (hovered) hlRef(hovered.dataset.ref, false);
+        hovered = t;
+        if (t) hlRef(t.dataset.ref, true);
+      });
+      root.addEventListener("mouseleave", () => {
+        if (hovered) hlRef(hovered.dataset.ref, false);
+        hovered = null;
+      });
+    }
+
+    /* 引用条：列出所有接进来的上游，不分节点种类；当前生成方式用不到的变淡 */
+    let refsSig = "";
+    function refTile(s, n) {
+      const o = activeOut(s),
+        used = accepts(n).includes(s.kind),
+        has = hasMaterial(s);
+      const tip = `${s.label}${!has ? " · 还没生成" : !used ? " · 当前生成方式用不到" : ""}\n点击插入到提示词；断开连线即可移除`;
+      let cls = "ref",
+        inner = "",
+        bg = "";
+      if (!has) {
+        cls += " none";
+        inner = ic(KIND[s.kind].icon, 18);
+      } else if (s.kind === "text") {
+        cls += " txt";
+        inner = `<span>${esc(s.text.slice(0, 40))}</span>`;
+      } else if (s.kind === "audio") {
+        cls += " aud";
+        inner = ic("music");
+      } else {
+        bg = ` style="background-image:${art(o.seed)}"`;
+        if (s.kind === "video") inner = `<span class="kb">${ic("video")}</span>`;
+      }
+      if (!used) cls += " unused";
+      return `<button class="${cls}" data-ref="${s.id}" title="${esc(tip)}" aria-label="引用：${esc(s.label)}"${bg}><span class="lk">${ic("link")}</span>${inner}</button>`;
+    }
+    function renderRefs(force) {
+      const n = sel(),
+        box = $("#refs");
+      if (!n || !box) return;
+      const ups = upstream(n);
+      const sig = [
+        n.id,
+        n.params.op,
+        ...ups.map((s) => s.id + ":" + (s.kind === "text" ? !!s.text : s.active)),
+      ].join("|");
+      if (!force && sig === refsSig) return;
+      refsSig = sig;
+      const prev = new Set($$(".ref", box).map((b) => b.dataset.ref));
+      box.innerHTML =
+        ups.map((s) => refTile(s, n)).join("") +
+        `<button class="addref" aria-label="引用画布里的素材" title="引用画布里的素材（会自动连线）">${ic("plus", 20)}</button>`;
+      if (!force)
+        $$(".ref", box)
+          .filter((b) => !prev.has(b.dataset.ref))
+          .forEach((b) => {
+            b.scrollIntoView({ block: "nearest", inline: "nearest" });
+            if (M && !REDUCE) M.animate(b, { opacity: [0, 1], scale: [0.6, 1] }, SPRING);
+          });
+      $$("#prompt .mention").forEach((c) => c.classList.toggle("gone", !isUp(n, c.dataset.ref)));
+    }
+
+    /* 把素材 chip 插到 range 处，后面跟一个空格，光标落在空格后 */
+    function placeChip(el, range, s, n) {
+      const tmp = document.createElement("span");
+      tmp.innerHTML = chipHTML(s.id, n);
+      const chip = tmp.firstChild,
+        sp = document.createTextNode(" ");
+      range.deleteContents();
+      range.insertNode(sp);
+      range.insertNode(chip);
+      const c = document.createRange();
+      c.setStart(sp, 1);
+      c.collapse(true);
+      const sl = getSelection();
+      sl.removeAllRanges();
+      sl.addRange(c);
+      syncEmpty(el);
+      if (M && !REDUCE)
+        M.animate(
+          chip,
+          { opacity: [0, 1], scale: [0.9, 1] },
+          { duration: 0.12, ease: [0.2, 0, 0, 1] },
+        );
+    }
+    function takeBefore() {
+      const b = typingBefore || snap();
+      clearTimeout(typingT);
+      typingBefore = null;
+      return b;
+    }
+    function insertChipFromTile(id) {
+      const n = sel(),
+        s = byId(id),
+        el = $("#prompt");
+      if (!n || !s || !el) return;
+      const before = takeBefore();
+      el.focus();
+      let r = lastRange && el.contains(lastRange.startContainer) ? lastRange : null;
+      if (!r) {
+        r = document.createRange();
+        r.selectNodeContents(el);
+        r.collapse(false);
+      }
+      placeChip(el, r, s, n);
+      n.prompt = readPrompt(el);
+      commit(before);
+    }
+
+    /* @ 菜单：insert 模式由提示词里的 @ 触发，link 模式由引用条的「+」触发（只连线不插 chip） */
+    let mention = null;
+    const mpop = $("#pop-mention");
+    function detectMention(el) {
+      const s = getSelection();
+      if (!s.rangeCount || !s.isCollapsed) return closeMention();
+      const r = s.getRangeAt(0),
+        tn = r.startContainer;
+      if (tn.nodeType !== 3 || !el.contains(tn)) return closeMention();
+      const m = tn.nodeValue.slice(0, r.startOffset).match(/@([^\s@]{0,24})$/);
+      if (!m) return closeMention();
+      const rect = r.getClientRects()[0] || r.getBoundingClientRect();
+      openMention({
+        el,
+        n: sel(),
+        mode: "insert",
+        node: tn,
+        start: r.startOffset - m[0].length,
+        end: r.startOffset,
+        q: m[1],
+        rect,
+      });
+    }
+    function openMention(st) {
+      if (!st.n) return;
+      if (openPopEl && openPopEl !== mpop) closePops();
+      const isNew = !mention || mention.el !== st.el || mention.mode !== st.mode;
+      mention = { ...st, act: 0 };
+      drawMention();
+      placeMention();
+      if (isNew) {
+        mpop.classList.remove("open");
+        void mpop.offsetWidth;
+        mpop.classList.add("open");
+      }
+      openPopEl = mpop;
+      openAnchor = null;
+      if (st.mode === "link") $(".mi.act", mpop)?.focus();
+    }
+    function closeMention() {
+      if (!mention) return;
+      mention = null;
+      mpop.classList.remove("open");
+      if (openPopEl === mpop) openPopEl = null;
+    }
+    function drawMention() {
+      const { n, q, mode } = mention,
+        ql = q.toLowerCase(),
+        { linked, canvas } = mentionables(n);
+      const f = (s) => !ql || s.label.toLowerCase().includes(ql);
+      const L = mode === "insert" ? linked.filter(f) : [],
+        C = canvas.filter(f);
+      const items = [];
+      let html = "";
+      const row = (it, inner) => {
+        items.push(it);
+        return `<button class="mi" role="option" data-i="${items.length - 1}">${inner}</button>`;
+      };
+      if (mode === "insert" && !q)
+        html += row(
+          { type: "preset" },
+          `<span class="th p">P</span><span class="nm">选择预设提示词</span>`,
+        );
+      if (L.length)
+        html +=
+          `<div class="mlabel">已引用</div>` +
+          L.map((s) =>
+            row(
+              { type: "node", s },
+              `${thumbHTML(s, "th")}<span class="nm">${esc(s.label)}</span>`,
+            ),
+          ).join("");
+      if (C.length)
+        html +=
+          `<div class="mlabel">${mode === "insert" ? "画布中 · 选中后自动连线" : "画布中可引用"}</div>` +
+          C.map((s) =>
+            row(
+              { type: "node", s },
+              `${thumbHTML(s, "th")}<span class="nm">${esc(s.label)}</span><span class="r">${ic("link")}连线</span>`,
+            ),
+          ).join("");
+      if (!L.length && !C.length)
+        html += `<div class="none">${q ? `没有匹配「${esc(q)}」的素材` : mode === "link" ? "画布里没有能接进来的素材" : "画布里还没有能引用的素材"}</div>`;
+      html +=
+        `<div class="msep"></div>` +
+        row(
+          { type: "lib" },
+          `<span class="th">${ic("folder")}</span><span class="nm">素材库</span><span class="r">二期</span>`,
+        );
+      mention.items = items;
+      mpop.innerHTML = html;
+      setAct(Math.min(mention.act, items.length - 1));
+    }
+    function setAct(i) {
+      mention.act = i;
+      $$(".mi", mpop).forEach((b) => {
+        const on = +b.dataset.i === i;
+        b.classList.toggle("act", on);
+        b.setAttribute("aria-selected", on);
+      });
+      $(".mi.act", mpop)?.scrollIntoView({ block: "nearest" });
+    }
+    function moveAct(d) {
+      const len = mention.items.length;
+      setAct((mention.act + d + len) % len);
+      if (mention.mode === "link") $(".mi.act", mpop)?.focus();
+    }
+    function placeMention() {
+      const r = mention.rect,
+        pw = mpop.offsetWidth,
+        ph = mpop.offsetHeight;
+      const below = r.bottom + 6,
+        up = below + ph > innerHeight - 8 && r.top - ph - 6 > 8;
+      const left = Math.min(Math.max(8, r.left - 14), innerWidth - pw - 8);
+      mpop.style.left = left + "px";
+      mpop.style.top = (up ? r.top - ph - 6 : below) + "px";
+      mpop.style.setProperty("--dy", up ? "6px" : "-6px");
+      mpop.style.transformOrigin = `${r.left - left}px ${up ? "100%" : "0"}`;
+    }
+    function pickMention(i) {
+      const it = mention?.items[i];
+      if (!it) return;
+      if (it.type === "preset") {
+        closeMention();
+        return toast("原型：打开预设提示词库，选中后插到光标处", "info");
+      }
+      if (it.type === "lib") {
+        closeMention();
+        return toast("原型：素材库按文件夹（人物 / 场景 / 道具）浏览，二期接入", "info");
+      }
+      const { n, mode, el, node, start, end } = mention,
+        s = it.s;
+      const before = takeBefore(),
+        linkNow = !isUp(n, s.id);
+      if (linkNow) edges.push({ id: "e" + ++uid, source: s.id, target: n.id });
+      if (mode === "insert") {
+        const r = document.createRange();
+        r.setStart(node, start);
+        r.setEnd(node, Math.min(end, node.length));
+        placeChip(el, r, s, n);
+        n.prompt = readPrompt(el);
+        if (el.id === "big-prompt") $("#big-counter").textContent = `${promptLen(n.prompt)}/16000`;
+      }
+      closeMention();
+      commit(before);
+      if (linkNow) toast(`已连线「${s.label}」，它出现在引用条里了`, "info");
+    }
+    mpop.addEventListener("pointerdown", (e) => {
+      if (mention?.mode === "insert") e.preventDefault();
+    });
+    mpop.addEventListener("mousemove", (e) => {
+      const b = e.target.closest("[data-i]");
+      if (b && +b.dataset.i !== mention?.act) setAct(+b.dataset.i);
+    });
+    mpop.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-i]");
+      if (b) pickMention(+b.dataset.i);
+    });
+    mpop.addEventListener("keydown", (e) => {
+      if (!mention || mention.mode !== "link") return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        moveAct(e.key === "ArrowDown" ? 1 : -1);
+      }
+    });
+
+    /* ---------- 生成面板 ---------- */
+    const panel = $("#panel");
+    bindHover(panel);
+    let panelFor = null,
+      flipped = false;
+    function buildPanel() {
+      const n = sel();
+      if (!n) {
+        panel.classList.remove("show");
+        panelFor = null;
+        hist.classList.remove("show");
+        return;
+      }
+      const k = KIND[n.kind],
+        model = MODELS[n.kind].find((m) => m.id === n.params.model) || MODELS[n.kind][0];
+      const ops = model.ops || [];
+      if (ops.length && !ops.includes(n.params.op)) n.params.op = ops[0];
+      panel.innerHTML = `
+    ${
+      ops.length > 1
+        ? `<div class="p-top"><div class="tabs seg" id="seg-op"><span class="seg-ind"></span>${ops.map((o) => `<button data-op="${o}" class="${o === n.params.op ? "on" : ""}">${o}</button>`).join("")}</div>
+      <button class="expand" id="btn-expand" title="放大编辑" aria-label="放大编辑">${ic("expand")}</button></div>`
+        : ""
+    }
+    <div class="p-top"><div class="refs" id="refs"></div>
+      ${ops.length > 1 ? "" : `<button class="expand" id="btn-expand" title="放大编辑" aria-label="放大编辑">${ic("expand")}</button>`}</div>
+    <div class="ta-wrap"><div class="pe" id="prompt" contenteditable="true" role="textbox" aria-multiline="true" aria-label="提示词" data-ph="${k.ph}输入 @ 引用画布里的素材"></div></div>
+    <div class="counter num" id="counter"></div>
+    <div class="p-bar">
+      <button class="pc" id="chip-model"><span class="vendor">${model.v}</span>${model.name}</button>
+      ${
+        n.kind === "video"
+          ? `<button class="pc" id="chip-param">${n.params.res} · ${n.params.ratio} · ${n.params.dur}s</button>
+        <button class="pc hide-sm" aria-disabled="true" title="二期：分镜栏编辑">${ic("grid", 15)}分镜栏编辑</button>`
+          : ""
+      }
+      ${n.kind === "image" ? `<button class="pc" id="chip-param">${ic("crop", 15)}比例 ${n.params.ratio}</button><button class="pc" id="chip-size">${ic("image", 15)}${n.params.size}</button>` : ""}
+      ${presetKinds(n).map((k) => `<button class="pt" id="pt-${k}" data-pk="${k}" aria-haspopup="dialog" aria-expanded="false" aria-label="${PKIND[k].label}"></button>`).join("")}
+      <span class="grow"></span>
+      <button class="pc" id="chip-batch" title="一次生成多张，结果都进节点历史">${ic("copy", 15)}批量${n.params.batch > 1 ? ` ×${n.params.batch}` : ""}</button>
+      <span class="send" id="send"><span class="cost num">${ic("spark")}<span id="cost">${fmt(cost(n))}</span></span><button class="go" id="go" aria-label="发送生成 ⌘↵" title="发送生成 ⌘↵">${ic("up")}</button></span>
+    </div>`;
+      const ta = $("#prompt");
+      setEditor(ta, n);
+      bindEditor(ta, () => {
+        n.prompt = readPrompt(ta);
+        autosize();
+        refreshPanel();
+        debounceCommit();
+      });
+      ta.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          send(n);
+        }
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          ta.blur();
+        }
+      });
+      renderRefs(true);
+      autosize();
+      const seg = $("#seg-op");
+      if (seg) requestAnimationFrame(() => segTo(seg, $("button.on", seg), true));
+      const isNew = panelFor !== n.id;
+      panelFor = n.id;
+      refreshPanel();
+      layoutOverlay();
+      if (isNew) {
+        panel.classList.remove("show");
+        void panel.offsetWidth;
+      }
+      panel.classList.add("show");
+    }
+    /* 编辑器自己长高，最多 8 行（CSS max-height），这里只负责让面板重新贴位 */
+    function autosize() {
+      layoutOverlay();
+    }
+    function refreshPanel() {
+      const n = sel();
+      if (!n || panelFor !== n.id) return buildPanel();
+      const len = promptLen(n.prompt),
+        c = cost(n);
+      const ctr = $("#counter");
+      ctr.textContent = `${len}/16000`;
+      ctr.classList.toggle("warn", len > 15000);
+      $("#cost").textContent = fmt(c);
+      const s = $("#send"),
+        go = $("#go");
+      const reason =
+        n.status === "running"
+          ? "正在生成，完成后可以再次发送"
+          : !len
+            ? "先写提示词"
+            : credits < c
+              ? `积分不足，还差 ${fmt(c - credits)}`
+              : "";
+      syncPresetUI(n);
+      s.classList.toggle("off", !!reason);
+      go.title = reason || "发送生成 ⌘↵";
+      s.title = reason;
+      renderRefs();
+      renderHist();
+    }
+    let typingT,
+      typingBefore = null;
+    function debounceCommit() {
+      if (typingBefore === null) {
+        const s = JSON.parse(snap());
+        const n = s.nodes.find((x) => x.id === selId);
+        if (n) n.prompt = n.prompt;
+        typingBefore = snap();
+      }
+      clearTimeout(typingT);
+      typingT = setTimeout(() => {
+        if (typingBefore) {
+          past.push(typingBefore);
+          future.length = 0;
+          typingBefore = null;
+          syncUndo();
+          markDirty();
+        }
+      }, 800);
+    }
+    panel.addEventListener("click", (e) => {
+      const n = sel();
+      if (!n) return;
+      const op = e.target.closest("[data-op]");
+      if (op) {
+        n.params.op = op.dataset.op;
+        $$("#seg-op button").forEach((b) => b.classList.toggle("on", b === op));
+        segTo($("#seg-op"), op);
+        renderRefs();
+        markDirty();
+        return;
+      }
+      if (e.target.closest("#go")) return send(n);
+      if (e.target.closest("#chip-batch")) {
+        const order = [1, 2, 4];
+        n.params.batch = order[(order.indexOf(n.params.batch) + 1) % 3];
+        e.target.closest("#chip-batch").innerHTML =
+          ic("copy", 15) + "批量" + (n.params.batch > 1 ? ` ×${n.params.batch}` : "");
+        refreshPanel();
+        return;
+      }
+      if (e.target.closest("#chip-model")) return openModelPop(n, e.target.closest("#chip-model"));
+      if (e.target.closest("#chip-param")) return openParamPop(n, e.target.closest("#chip-param"));
+      if (e.target.closest("#chip-size")) {
+        const o = ["1K", "2K", "4K"];
+        n.params.size = o[(o.indexOf(n.params.size) + 1) % 3];
+        buildPanel();
+        return;
+      }
+      if (e.target.closest("#btn-expand")) return openPromptDialog();
+      const add = e.target.closest(".addref");
+      if (add)
+        return openMention({ el: null, n, mode: "link", rect: add.getBoundingClientRect(), q: "" });
+      const tile = e.target.closest(".ref[data-ref]");
+      if (tile) return insertChipFromTile(tile.dataset.ref);
+      const pt = e.target.closest(".pt[data-pk]");
+      if (pt) return openPresetPop(n, pt.dataset.pk, pt);
+      if (e.target.closest('[aria-disabled="true"]')) return toast("分镜栏编辑放在二期", "info");
+    });
+    /* ---------- 节点预设：入口状态、插入 / 替换 / 取消 chip、选择器 ---------- */
+    const chipsOf = (el, kind) => $$(`.pchip[data-pk="${kind}"]`, el);
+    /* 入口按钮的选中态（高亮 + 小点，运镜选了 2 条以上显示数量）和模板的占位文字 */
+    function syncPresetUI(n) {
+      const el = $("#prompt");
+      if (!el) return;
+      presetKinds(n).forEach((k) => {
+        const b = $("#pt-" + k);
+        if (!b) return;
+        const cs = chipsOf(el, k),
+          running = n.status === "running";
+        b.classList.toggle("on", cs.length > 0);
+        b.setAttribute("aria-disabled", running ? "true" : "false");
+        const names = cs.map((c) => findPreset(k, c.dataset.pid)?.name).filter(Boolean);
+        b.title = running ? "生成中，暂时不能改预设" : `${PKIND[k].label}${names.length ? "：" + names.join("、") : ""}`;
+        b.innerHTML = ic(PKIND[k].icon) + (cs.length > 1 ? `<span class="cnt num">${cs.length}</span>` : cs.length ? '<i class="dot"></i>' : "");
+      });
+      const t = chipsOf(el, "tpl")[0];
+      el.dataset.ph2 = t ? `${findPreset("tpl", t.dataset.pid)?.use || ""}。可以补充说明，也可以直接发送` : "";
+      syncEmpty(el);
+    }
+    function makeChip(kind, id) {
+      const tmp = document.createElement("span");
+      tmp.innerHTML = pchipHTML(kind, id);
+      return tmp.firstChild;
+    }
+    const popIn = (el) =>
+      M && !REDUCE && M.animate(el, { opacity: [0, 1], scale: [0.9, 1] }, { duration: 0.12, ease: [0.2, 0, 0, 1] });
+    /* 选中一个预设：同类单选的原位替换，运镜点一下加、再点取消；再点已选的单选项也是取消 */
+    function applyPreset(kind, id, target) {
+      const n = sel(),
+        el = $("#prompt");
+      if (!n || !el || n.status === "running") return;
+      const before = takeBefore(),
+        cur = chipsOf(el, kind),
+        same = cur.find((c) => c.dataset.pid === id);
+      const drop = (c) => {
+        const nx = c.nextSibling;
+        if (nx && nx.nodeType === 3 && nx.nodeValue.startsWith(" ")) nx.nodeValue = nx.nodeValue.slice(1);
+        c.remove();
+      };
+      if (same) drop(same);
+      else if (target?.isConnected) {
+        /* 从 chip 点进来的：原位换成选中的这一个 */
+        const nc = makeChip(kind, id);
+        target.replaceWith(nc);
+        popIn(nc);
+      } else if (!PKIND[kind].multi && cur.length) {
+        const nc = makeChip(kind, id);
+        cur[0].replaceWith(nc);
+        popIn(nc);
+      } else {
+        const chip = makeChip(kind, id),
+          sp = document.createTextNode(" ");
+        let r;
+        if (kind === "tpl") {
+          /* 模板是整条任务的说明，永远排在最前面 */
+          r = document.createRange();
+          r.setStart(el, 0);
+          r.collapse(true);
+        } else {
+          r = lastRange && el.contains(lastRange.startContainer) ? lastRange : null;
+          if (!r) {
+            r = document.createRange();
+            r.selectNodeContents(el);
+            r.collapse(false);
+          }
+        }
+        r.deleteContents();
+        r.insertNode(sp);
+        r.insertNode(chip);
+        popIn(chip);
+      }
+      n.prompt = readPrompt(el);
+      syncEmpty(el);
+      commit(before);
+    }
+    const stateText = (kind, p) => {
+      const el = $("#prompt");
+      const opp = kind === "motion" && OPPOSITE[p.id] && chipsOf(el, "motion").find((c) => c.dataset.pid === OPPOSITE[p.id]);
+      return opp ? `<div class="warn">与已选的「${findPreset("motion", opp.dataset.pid).name}」方向相反，模型可能只执行其中一个</div>` : "";
+    };
+    function openPresetPop(n, kind, anchor, target) {
+      if (n.status === "running") return;
+      const pop = $("#pop-preset"),
+        el = $("#prompt");
+      const selected = () => new Set(chipsOf(el, kind).map((c) => c.dataset.pid));
+      const hint = {
+        style: "悬停卡片查看人物参考图；点击选用，再点一次取消",
+        motion: "可多选，点卡片加入或取消，按光标位置写进提示词；悬停播放示意动图",
+        tpl: "预设模板会改写整个任务，只能选一个",
+      }[kind];
+      const foot = (html) => ($("#pk-foot").innerHTML = html || `<div class="tx">${hint}</div>`);
+      let body = "",
+        cat = "all";
+      if (kind === "tpl") {
+        const groups = ["分镜叙事", "质感调节", "空间与机位", "设定图"];
+        const col = (gs) =>
+          `<div>${gs.map((g, i) => `<div class="gl">${g}</div>` + PRESET.tpl.filter((t) => t.group === g).map((t) => `<button class="tpl-item${selected().has(t.id) ? " on" : ""}" data-pid="${t.id}"><span class="ti">${ic(t.icon)}</span>${t.name}</button>`).join("") + (i < gs.length - 1 ? '<div class="gap"></div>' : "")).join("")}</div>`;
+        body = `<div class="tpl-cols">${col([groups[0]])}${col([groups[1], groups[2]])}${col([groups[3]])}</div>`;
+      } else {
+        const cats = kind === "style" ? STYLE_CAT : MOTION_CAT;
+        body = `<div class="pk-tabs" role="tablist"><button class="pk-tab on" data-cat="all">全部</button>${Object.entries(cats).map(([c, l]) => `<button class="pk-tab" data-cat="${c}">${l}</button>`).join("")}</div><div class="pk-grid${kind === "motion" ? " sq" : ""}" id="pk-grid"></div>`;
+      }
+      pop.innerHTML = body + '<div class="pk-foot" id="pk-foot"></div>';
+      foot();
+      const paintGrid = () => {
+        const g = $("#pk-grid");
+        if (!g) return;
+        const sels = selected();
+        g.innerHTML = PRESET[kind].filter((p) => cat === "all" || p.cat === cat).map((p) => `<button class="pk-card${sels.has(p.id) ? " on" : ""}" data-pid="${p.id}" aria-pressed="${sels.has(p.id)}" aria-label="${p.name}">${kind === "style" ? `<img src="${p.img}" alt="" loading="lazy" draggable="false">` : `<canvas width="256" height="256"></canvas>`}<span class="nm">${p.name}</span><span class="ck">${ic("check")}</span></button>`).join("");
+        if (kind === "motion")
+          $$(".pk-card", g).forEach((c) => {
+            /* 动图不能暂停：先解一帧画到 canvas 当静态首帧，悬停才换成真的动图 */
+            const im = new Image();
+            im.onload = () => c.querySelector("canvas")?.getContext("2d").drawImage(im, 0, 0, 256, 256);
+            im.src = findPreset("motion", c.dataset.pid).img;
+          });
+      };
+      const sync = () => {
+        const sels = selected();
+        $$(".pk-card, .tpl-item", pop).forEach((c) => {
+          const on = sels.has(c.dataset.pid);
+          c.classList.toggle("on", on);
+          c.setAttribute("aria-pressed", on);
+        });
+      };
+      paintGrid();
+      const show = (c) => {
+        const p = findPreset(kind, c.dataset.pid);
+        if (!p) return;
+        if (kind === "style")
+          foot(`<div class="tx"><b>${p.name}</b><span class="sn">${esc(p.p)}…</span></div><div class="refs">${p.refs.map((r) => `<span style="background-image:url(${r})"></span>`).join("")}</div>`);
+        else if (kind === "motion")
+          foot(`<div class="tx"><b>${p.name} · ${p.use}</b><span class="sn">${esc(p.p.replace(/^运镜：/, ""))}</span>${stateText(kind, p)}</div>`);
+        else foot(`<div class="tx"><b>${p.name}</b><span class="sn">${esc(p.use)}</span></div>`);
+        if (kind === "motion") {
+          const cv = c.querySelector("canvas");
+          if (cv && !c.querySelector("img")) {
+            const im = document.createElement("img");
+            im.alt = "";
+            im.draggable = false;
+            im.src = p.img + "?r=" + Date.now();
+            c.prepend(im);
+          }
+        }
+      };
+      const leave = (c) => {
+        c.querySelector("img")?.remove();
+        foot();
+      };
+      pop.onmouseover = (e) => {
+        const c = e.target.closest("[data-pid]");
+        if (c && !c.dataset.hot) {
+          c.dataset.hot = "1";
+          show(c);
+        }
+      };
+      pop.onmouseout = (e) => {
+        const c = e.target.closest("[data-pid]");
+        if (c && !c.contains(e.relatedTarget)) {
+          delete c.dataset.hot;
+          leave(c);
+        }
+      };
+      pop.onfocusin = (e) => e.target.dataset?.pid && show(e.target);
+      pop.onfocusout = (e) => e.target.dataset?.pid && leave(e.target);
+      pop.onclick = (e) => {
+        const tab = e.target.closest(".pk-tab");
+        if (tab) {
+          cat = tab.dataset.cat;
+          $$(".pk-tab", pop).forEach((t) => t.classList.toggle("on", t === tab));
+          return paintGrid();
+        }
+        const c = e.target.closest("[data-pid]");
+        if (!c) return;
+        /* 替换模式下，运镜已经在别处选过的那一条不能再选 */
+        if (target && c.dataset.pid !== target.dataset.pid && selected().has(c.dataset.pid)) {
+          foot('<div class="tx" style="color:var(--warn)">这一条已经选过了，换一条别的</div>');
+          return;
+        }
+        applyPreset(kind, c.dataset.pid, target);
+        if (PKIND[kind].multi && !target) {
+          sync();
+          show(c);
+        } else {
+          closePops();
+          el.focus();
+        }
+      };
+      /* 方向键在卡片间移动 */
+      pop.onkeydown = (e) => {
+        const items = $$("[data-pid]:not([aria-disabled='true'])", pop),
+          i = items.indexOf(document.activeElement);
+        if (i < 0 || !e.key.startsWith("Arrow")) return;
+        const cols = kind === "tpl" ? 1 : getComputedStyle($("#pk-grid")).gridTemplateColumns.split(" ").length;
+        const d = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.key];
+        const t = items[i + d];
+        if (t) {
+          e.preventDefault();
+          t.focus();
+        }
+      };
+      openPop(pop, anchor);
+    }
+    /* 点提示词里的预设 chip：在 chip 旁边弹出同类选择器，选另一个就原位替换，点自己就取消 */
+    document.addEventListener("click", (e) => {
+      const chip = e.target.closest("#prompt .pchip[data-pk]");
+      const n = sel();
+      if (chip && n && presetKinds(n).includes(chip.dataset.pk)) openPresetPop(n, chip.dataset.pk, chip, chip);
+    });
+    function openModelPop(n, anchor) {
+      const pop = $("#pop-model");
+      pop.innerHTML =
+        `<div class="mlabel">${KIND[n.kind].name}模型</div>` +
+        MODELS[n.kind]
+          .map(
+            (m) =>
+              `<button class="mi${m.id === n.params.model ? " checked" : ""}" data-model="${m.id}"><span class="pc vendor" style="height:22px;width:22px;padding:0;justify-content:center;box-shadow:none;background:var(--surface-3);font-size:11px;font-weight:700">${m.v}</span><span>${m.name}<span class="sub">${m.sub}</span></span>${ic("check", 16, "ck")}</button>`,
+          )
+          .join("");
+      pop.onclick = (e) => {
+        const b = e.target.closest("[data-model]");
+        if (!b) return;
+        const m = MODELS[n.kind].find((x) => x.id === b.dataset.model);
+        n.params.model = m.id;
+        if (m.ops && !m.ops.includes(n.params.op)) n.params.op = m.ops[0];
+        closePops();
+        buildPanel();
+        markDirty();
+      };
+      openPop(pop, anchor);
+    }
+    function openParamPop(n, anchor) {
+      const pop = $("#pop-param");
+      const rows =
+        n.kind === "video"
+          ? [
+              ["分辨率", "res", ["480p", "720p", "1080p"]],
+              ["比例", "ratio", ["16:9", "9:16", "1:1"]],
+              ["时长", "dur", [4, 6, 8]],
+            ]
+          : [["比例", "ratio", ["16:9", "4:3", "1:1", "9:16"]]];
+      const draw = () => {
+        pop.innerHTML =
+          rows
+            .map(
+              ([lab, key, opts]) =>
+                `<div class="prow"><span class="k">${lab}</span><div class="chips">${opts.map((o) => `<button class="chip-o${n.params[key] === o ? " on" : ""}" data-k="${key}" data-v="${o}">${o}${key === "dur" ? "s" : ""}</button>`).join("")}</div></div>`,
+            )
+            .join("") +
+          `<div class="msep"></div><div class="prow" style="grid-template-columns:1fr auto;align-items:center"><span class="k">本次消耗</span><span class="num" style="font-family:var(--mono);color:var(--credit)">✦ ${fmt(cost(n))}</span></div>`;
+      };
+      draw();
+      pop.onclick = (e) => {
+        const b = e.target.closest("[data-k]");
+        if (!b) return;
+        const v = b.dataset.k === "dur" ? +b.dataset.v : b.dataset.v;
+        n.params[b.dataset.k] = v;
+        draw();
+        markDirty();
+        const chip = $("#chip-param");
+        if (chip)
+          chip.innerHTML =
+            n.kind === "video"
+              ? `${n.params.res} · ${n.params.ratio} · ${n.params.dur}s`
+              : ic("crop", 15) + "比例 " + n.params.ratio;
+        refreshPanel();
+      };
+      openPop(pop, anchor);
+    }
+
+    /* 面板与浮条定位：宽度跟随节点但不随缩放变小；下方放不下就翻到上方 */
+    function layoutOverlay() {
+      const n = sel();
+      if (!n) return;
+      const k = KIND[n.kind],
+        W = innerWidth,
+        H = innerHeight;
+      const sx = n.x * view.k + view.x,
+        sy = n.y * view.k + view.y,
+        sw = k.w * view.k,
+        sh = k.h * view.k;
+      const pw = Math.min(W - 24, Math.max(480, Math.min(720, sw + 160)));
+      panel.style.width = pw + "px";
+      const ph = panel.offsetHeight,
+        bottomLimit = H - 80;
+      const below = sy + sh + 16,
+        above = sy - 34 - 16 - ph;
+      flipped = below + ph > bottomLimit && above > 60;
+      const top = flipped ? above : below;
+      const left = Math.min(Math.max(12, sx + sw / 2 - pw / 2), W - pw - 12);
+      panel.style.left = left + "px";
+      panel.style.top = top + "px";
+      panel.style.setProperty("--pdy", flipped ? "6px" : "-6px");
+      const hw = hist.offsetWidth;
+      hist.style.left = Math.min(Math.max(12, sx + sw / 2 - hw / 2), W - hw - 12) + "px";
+      hist.style.top = (flipped ? sy + sh + 14 : sy - 34 - 12 - 40) + "px";
+    }
+
+    /* ---------- 生成（模拟异步任务 + 积分冻结/退回） ---------- */
+    function setCredits(v) {
+      const from = credits;
+      credits = v;
+      roll($("#credits"), from, v);
+      roll($("#bal-big"), from, v);
+      refreshPanel();
+    }
+    function roll(el, from, to) {
+      const t0 = performance.now(),
+        d = REDUCE ? 0 : 520;
+      (function f(t) {
+        const p = d ? Math.min(1, (t - t0) / d) : 1,
+          e = 1 - Math.pow(1 - p, 3);
+        el.textContent = fmt(Math.round(from + (to - from) * e));
+        if (p < 1) requestAnimationFrame(f);
+      })(t0);
+    }
+    function addLedger(label, amt) {
+      ledger.unshift({ label, amt });
+      $("#ledger").innerHTML = ledger
+        .slice(0, 6)
+        .map(
+          (l) =>
+            `<div><span>${esc(l.label)}</span><span class="${l.amt < 0 ? "neg" : "pos"}">${l.amt < 0 ? "−" : "+"}${fmt(Math.abs(l.amt))}</span></div>`,
+        )
+        .join("");
+    }
+    function send(n) {
+      const ta = $("#prompt");
+      if (n.status === "running") return;
+      if (!(n.prompt || "").trim()) {
+        ta?.classList.remove("shake");
+        void ta?.offsetWidth;
+        ta?.classList.add("shake");
+        ta?.focus();
+        return;
+      }
+      const np = [...(n.prompt || "").matchAll(PTOKEN)].length;
+      if (np) toast(`已把 ${np} 个预设展开成完整提示词`, "info");
+      const c = cost(n);
+      if (credits < c) {
+        toast(`积分不足，还差 ${fmt(c - credits)}`, "bad");
+        return;
+      }
+      setCredits(credits - c);
+      addLedger(`${n.label} · ${KIND[n.kind].name}`, -c);
+      n.status = "running";
+      n.progress = 0;
+      n.error = null;
+      const willFail = demo.failGen;
+      demo.failGen = false;
+      syncDemo();
+      const dur = (n.kind === "video" ? 3200 : 2200) * (REDUCE ? 0.5 : 1),
+        t0 = performance.now();
+      render();
+      refreshPanel();
+      (function tick(t) {
+        if (!byId(n.id)) return;
+        const p = Math.min(1, (t - t0) / dur);
+        n.progress = Math.min(99, (1 - Math.pow(1 - p, 2)) * 100);
+        if (willFail && p > 0.55) {
+          n.status = "failed";
+          n.error = "上游服务繁忙，请稍后重试";
+          n.progress = 0;
+          setCredits(credits + c);
+          addLedger(`${n.label} · 失败退回`, c);
+          toast(`生成失败，已退回 ${fmt(c)} 积分`, "bad");
+          render();
+          refreshPanel();
+          markDirty();
+          return;
+        }
+        if (p < 1) {
+          render();
+          requestAnimationFrame(tick);
+          return;
+        }
+        const b = n.params.batch || 1;
+        for (let i = 0; i < b; i++) n.outputs.push({ id: "o" + ++uid, seed: ++seedN });
+        if (n.kind === "text") n.text = SAMPLE_TEXT;
+        if (n.outputs.length > 20) n.outputs.splice(0, n.outputs.length - 20);
+        n.active = n.outputs[n.outputs.length - 1]?.id || null;
+        n.status = "done";
+        n.progress = 0;
+        hist.dataset.sig = "";
+        render();
+        refreshPanel();
+        markDirty();
+        toast(
+          n.outputs.length > 1
+            ? `生成完成，已加入节点历史（共 ${n.outputs.length} 版）`
+            : "生成完成",
+          "ok",
+        );
+      })(t0);
+    }
+
+    /* ---------- 节点操作 ---------- */
+    function defaults(kind) {
+      const m = MODELS[kind][0];
+      return {
+        model: m.id,
+        op: m.ops?.[0],
+        res: "480p",
+        ratio: "16:9",
+        dur: 4,
+        size: "2K",
+        batch: 1,
+      };
+    }
+    function addNode(kind, at, opts = {}) {
+      const before = snap(),
+        k = KIND[kind];
+      const c = at || {
+        x: (innerWidth / 2 - view.x) / view.k - k.w / 2,
+        y: (innerHeight * 0.36 - view.y) / view.k - k.h / 2,
+      };
+      const n = {
+        id: "n" + ++uid,
+        kind,
+        label: k.name,
+        x: Math.round(c.x),
+        y: Math.round(c.y),
+        outputs: [],
+        active: null,
+        status: "idle",
+        params: defaults(kind),
+        prompt: "",
+      };
+      nodes.push(n);
+      if (opts.from) edges.push({ id: "e" + ++uid, source: opts.from, target: n.id });
+      if (opts.to) edges.push({ id: "e" + ++uid, source: n.id, target: opts.to });
+      selId = n.id;
+      histOpen = false;
+      commit(before);
+      buildPanel();
+      const el = els.get(n.id);
+      if (M && !REDUCE)
+        M.animate(
+          el,
+          { opacity: [0, 1], scale: [0.94, 1] },
+          { duration: 0.22, ease: [0.2, 0, 0, 1] },
+        );
+      setTimeout(() => $("#prompt")?.focus(), 60);
+      return n;
+    }
+    function deleteSel() {
+      const n = sel();
+      if (!n) return;
+      const before = snap();
+      nodes = nodes.filter((x) => x.id !== n.id);
+      edges = edges.filter((e) => e.source !== n.id && e.target !== n.id);
+      selId = null;
+      commit(before);
+      buildPanel();
+      toast("已删除节点，⌘Z 可恢复", "info");
+    }
+    function duplicate(src, offset = 32) {
+      const before = snap();
+      const n = JSON.parse(JSON.stringify(src));
+      n.id = "n" + ++uid;
+      n.x += offset;
+      n.y += offset;
+      n.status = n.outputs.length ? "done" : "idle";
+      n.progress = 0;
+      nodes.push(n);
+      selId = n.id;
+      commit(before);
+      buildPanel();
+    }
+    function select(id) {
+      if (selId === id) return;
+      selId = id;
+      histOpen = false;
+      hist.dataset.sig = "";
+      render();
+      buildPanel();
+    }
+
+    /* ---------- 指针：选择、拖拽、平移 ---------- */
+    let drag = null;
+    stage.addEventListener("pointerdown", (e) => {
+      closePops();
+      const port = e.target.closest(".port"),
+        nodeE = e.target.closest(".node");
+      const panMode = tool === "hand" || spaceHeld || e.button === 1;
+      if (e.target.closest("[data-retry]")) {
+        const n = byId(e.target.closest("[data-retry]").dataset.retry);
+        select(n.id);
+        send(n);
+        return;
+      }
+      if (port && !panMode) {
+        const n = byId(nodeE.dataset.id),
+          k = KIND[n.kind],
+          right = port.classList.contains("r");
+        const kind = right
+          ? n.kind === "image"
+            ? "video"
+            : n.kind === "text"
+              ? "image"
+              : "video"
+          : n.kind === "video"
+            ? "image"
+            : "text";
+        const nk = KIND[kind];
+        addNode(
+          kind,
+          { x: right ? n.x + k.w + 140 : n.x - nk.w - 140, y: n.y + (k.h - nk.h) / 2 },
+          right ? { from: n.id } : { to: n.id },
+        );
+        return;
+      }
+      stage.setPointerCapture(e.pointerId);
+      if (nodeE && !panMode) {
+        const n = byId(nodeE.dataset.id);
+        select(n.id);
+        drag = {
+          type: "node",
+          n,
+          sx: e.clientX,
+          sy: e.clientY,
+          ox: n.x,
+          oy: n.y,
+          moved: false,
+          before: snap(),
+        };
+      } else {
+        if (!panMode && !nodeE) select(null);
+        drag = { type: "pan", sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y, moved: false };
+        stage.classList.add("panning");
+      }
+    });
+    stage.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.sx,
+        dy = e.clientY - drag.sy;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        interacting = true;
+        hist.classList.add("dim");
+        panel.classList.add("dim");
+      }
+      if (drag.type === "node") {
+        drag.n.x = Math.round(drag.ox + dx / view.k);
+        drag.n.y = Math.round(drag.oy + dy / view.k);
+        const el = els.get(drag.n.id);
+        el.style.left = drag.n.x + "px";
+        el.style.top = drag.n.y + "px";
+        renderEdges();
+        layoutOverlay();
+      } else {
+        view.x = drag.ox + dx;
+        view.y = drag.oy + dy;
+        apply();
+      }
+    });
+    const endDrag = () => {
+      if (!drag) return;
+      if (drag.type === "node" && drag.moved) commit(drag.before);
+      drag = null;
+      interacting = false;
+      stage.classList.remove("panning");
+      hist.classList.remove("dim");
+      panel.classList.remove("dim");
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+    stage.addEventListener("dblclick", (e) => {
+      if (e.target.closest(".node")) return;
+      const p = { x: (e.clientX - view.x) / view.k - 210, y: (e.clientY - view.y) / view.k - 118 };
+      openPopAt($("#pop-add"), e.clientX, e.clientY);
+      $("#pop-add").dataset.at = JSON.stringify(p);
+    });
+    stage.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey)
+          zoomAt(view.k * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+        else {
+          view.x -= e.deltaX;
+          view.y -= e.deltaY;
+          apply();
+        }
+      },
+      { passive: false },
+    );
+
+    /* ---------- 弹出层 ---------- */
+    let openPopEl = null,
+      openAnchor = null;
+    function openPop(pop, anchor) {
+      if (openPopEl === pop && openAnchor === anchor) return closePops();
+      closePops();
+      const r = anchor.getBoundingClientRect();
+      pop.style.visibility = "hidden";
+      pop.classList.add("measure");
+      const pw = pop.offsetWidth,
+        ph = pop.offsetHeight;
+      pop.classList.remove("measure");
+      pop.style.visibility = "";
+      const up = r.top > innerHeight / 2;
+      let left = r.left + r.width / 2 - pw / 2;
+      if (r.left < 120) left = r.left;
+      else if (r.right > innerWidth - 120) left = r.right - pw;
+      left = Math.min(Math.max(8, left), innerWidth - pw - 8);
+      pop.style.left = left + "px";
+      pop.style.top = (up ? r.top - ph - 8 : r.bottom + 8) + "px";
+      pop.style.setProperty("--dy", up ? "6px" : "-6px");
+      pop.style.transformOrigin = `${r.left + r.width / 2 - left}px ${up ? "100%" : "0"}`;
+      pop.classList.add("open");
+      openPopEl = pop;
+      openAnchor = anchor;
+      anchor.setAttribute?.("aria-expanded", "true");
+    }
+    function openPopAt(pop, x, y) {
+      closePops();
+      const pw = pop.offsetWidth || 240,
+        ph = pop.offsetHeight || 300;
+      pop.style.left = Math.min(x, innerWidth - pw - 8) + "px";
+      pop.style.top = Math.min(y, innerHeight - ph - 8) + "px";
+      pop.style.setProperty("--dy", "-6px");
+      pop.style.transformOrigin = "0 0";
+      pop.classList.add("open");
+      openPopEl = pop;
+      openAnchor = null;
+    }
+    function closePops() {
+      mention = null;
+      if (openAnchor?.setAttribute) openAnchor.setAttribute("aria-expanded", "false");
+      $$(".pop.open").forEach((p) => p.classList.remove("open"));
+      openPopEl = null;
+      openAnchor = null;
+    }
+    document.addEventListener("pointerdown", (e) => {
+      if (openPopEl && !e.target.closest(".pop") && !e.target.closest("button")) closePops();
+    });
+
+    $("#btn-logo").onclick = (e) => openPop($("#pop-logo"), e.currentTarget);
+    $("#btn-more").onclick = (e) => openPop($("#pop-more"), e.currentTarget);
+    $("#btn-credits").onclick = (e) => openPop($("#pop-credits"), e.currentTarget);
+    $("#btn-avatar").onclick = (e) => openPop($("#pop-avatar"), e.currentTarget);
+    $("#btn-add").onclick = (e) => {
+      $("#pop-add").dataset.at = "";
+      openPop($("#pop-add"), e.currentTarget);
+    };
+    $("#btn-zoom").onclick = (e) => openPop($("#pop-zoom"), e.currentTarget);
+    $("#btn-undo").onclick = undo;
+    $("#btn-redo").onclick = redo;
+    $("#btn-help").onclick = () => openDialog($("#dlg-keys"));
+    $("#btn-assets").onclick = () => toast("原型：素材库会从底部升起抽屉", "info");
+    $("#btn-tasks").onclick = () => toast("原型：任务历史抽屉列出全部生成记录", "info");
+    $("#st-warn").onclick = () => {
+      const f = nodes.filter((n) => n.status === "failed");
+      if (!f.length) return toast("没有失败的节点", "info");
+      const n = f[(f.indexOf(sel()) + 1) % f.length];
+      select(n.id);
+      centerOn(n);
+    };
+    document.addEventListener("click", (e) => {
+      const nw = e.target.closest("[data-new]");
+      if (nw) {
+        const at = $("#pop-add").dataset.at;
+        closePops();
+        addNode(nw.dataset.new, at ? JSON.parse(at) : null);
+        $("#pop-add").dataset.at = "";
+        return;
+      }
+      const z = e.target.closest("[data-zoom]");
+      if (z) {
+        const v = z.dataset.zoom,
+          cx = innerWidth / 2,
+          cy = innerHeight / 2;
+        if (v === "fit") fitView();
+        else if (v === "100") flyTo(cx - (cx - view.x) / view.k, cy - (cy - view.y) / view.k, 1);
+        else zoomAt(view.k * (v === "in" ? 1.2 : 1 / 1.2), cx, cy);
+        return;
+      }
+      const d = e.target.closest("[data-demo]");
+      if (d) {
+        demo[d.dataset.demo] = !demo[d.dataset.demo];
+        syncDemo();
+        if (d.dataset.demo === "failSave") markDirty();
+        return;
+      }
+      const a = e.target.closest("[data-act]");
+      if (a) {
+        closePops();
+        const act = a.dataset.act;
+        if (act === "keys") openDialog($("#dlg-keys"));
+        else if (act === "clear") {
+          const b = snap();
+          nodes = [];
+          edges = [];
+          selId = null;
+          commit(b);
+          buildPanel();
+          toast("已清空，⌘Z 可恢复", "info");
+        } else if (act === "upload") toast("原型：打开文件选择，上传后生成素材节点", "info");
+        else
+          toast(
+            {
+              back: "原型：返回项目列表",
+              newcanvas: "原型：新建画布",
+              settings: "原型：打开画布设置",
+              admin: "原型：进入管理后台",
+              logout: "原型：退出登录",
+            }[act],
+            "info",
+          );
+      }
+      if (e.target.closest("[data-close]") || e.target.id === "backdrop") closeDialog();
+    });
+    function syncDemo() {
+      $$("[data-demo]").forEach((b) => b.classList.toggle("checked", demo[b.dataset.demo]));
+      const ws = $("#ws");
+      ws.classList.toggle("down", demo.wsDown);
+      ws.title = demo.wsDown ? "实时进度已断开，正在重连" : "实时进度已连接";
+    }
+
+    /* ---------- 底部分段：工具 / 背景 ---------- */
+    function setTool(t) {
+      tool = t;
+      stage.classList.toggle("hand", t === "hand");
+      const seg = $("#seg-tool"),
+        b = $(`[data-tool="${t}"]`, seg);
+      $$("button", seg).forEach((x) => x.classList.toggle("on", x === b));
+      segTo(seg, b);
+    }
+    $("#seg-tool").onclick = (e) => {
+      const b = e.target.closest("[data-tool]");
+      if (b) setTool(b.dataset.tool);
+    };
+    $("#seg-view").onclick = (e) => {
+      const b = e.target.closest("[data-view]");
+      if (!b) return;
+      stage.classList.toggle("grid", b.dataset.view === "grid");
+      $$("#seg-view button").forEach((x) => x.classList.toggle("on", x === b));
+      segTo($("#seg-view"), b);
+    };
+
+    /* ---------- 标题 ---------- */
+    const title = $("#title");
+    const sizeTitle = () => {
+      title.style.width =
+        Math.max(
+          4,
+          [...title.value].reduce((s, c) => s + (c.charCodeAt(0) > 255 ? 2 : 1.05), 0) + 1,
+        ) + "ch";
+    };
+    let titleBefore = title.value;
+    title.addEventListener("input", sizeTitle);
+    title.addEventListener("focus", () => {
+      titleBefore = title.value;
+      title.select();
+    });
+    title.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") title.blur();
+      if (e.key === "Escape") {
+        title.value = titleBefore;
+        sizeTitle();
+        title.blur();
+      }
+    });
+    title.addEventListener("blur", () => {
+      if (!title.value.trim()) title.value = titleBefore;
+      sizeTitle();
+      if (title.value !== titleBefore) markDirty();
+    });
+    sizeTitle();
+
+    /* ---------- 对话框（放大编辑提示词，从面板位置展开） ---------- */
+    let dlgOpen = null,
+      flipFrom = null;
+    function openDialog(dlg, fromEl) {
+      closePops();
+      dlgOpen = dlg;
+      $("#backdrop").classList.add("open");
+      dlg.classList.add("open");
+      if (REDUCE) return;
+      if (fromEl && M) {
+        const a = fromEl.getBoundingClientRect(),
+          b = dlg.getBoundingClientRect();
+        flipFrom = {
+          x: a.left + a.width / 2 - (b.left + b.width / 2),
+          y: a.top + a.height / 2 - (b.top + b.height / 2),
+          s: a.width / b.width,
+        };
+        M.animate(
+          dlg,
+          { x: [flipFrom.x, 0], y: [flipFrom.y, 0], scale: [flipFrom.s, 1], opacity: [0.4, 1] },
+          SPRING,
+        );
+      } else if (M) {
+        flipFrom = null;
+        M.animate(
+          dlg,
+          { scale: [0.96, 1], opacity: [0, 1] },
+          { duration: 0.24, ease: [0.2, 0, 0, 1] },
+        );
+      }
+    }
+    function closeDialog() {
+      if (!dlgOpen) return;
+      const dlg = dlgOpen;
+      dlgOpen = null;
+      $("#backdrop").classList.remove("open");
+      if (dlg.id === "dlg-prompt") {
+        const n = sel();
+        if (n) {
+          n.prompt = readPrompt($("#big-prompt"));
+          buildPanel();
+          markDirty();
+        }
+      }
+      const done = () => {
+        dlg.classList.remove("open");
+        dlg.style.transform = "";
+        dlg.style.opacity = "";
+      };
+      if (M && !REDUCE) {
+        const to =
+          flipFrom && dlg.id === "dlg-prompt"
+            ? { x: flipFrom.x, y: flipFrom.y, scale: flipFrom.s, opacity: 0 }
+            : { scale: 0.97, opacity: 0 };
+        M.animate(dlg, to, { duration: 0.17, ease: [0.4, 0, 1, 1] }).then(done);
+      } else done();
+    }
+    function openPromptDialog() {
+      const n = sel();
+      if (!n) return;
+      const big = $("#big-prompt");
+      setEditor(big, n);
+      $("#big-counter").textContent = `${promptLen(n.prompt)}/16000`;
+      openDialog($("#dlg-prompt"), panel);
+      setTimeout(() => big.focus(), 80);
+    }
+    bindHover($("#dlg-prompt"));
+    bindEditor($("#big-prompt"), () => {
+      $("#big-counter").textContent = `${promptLen(readPrompt($("#big-prompt")))}/16000`;
+    });
+    $("#big-prompt").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const n = sel();
+        closeDialog();
+        if (n) send(n);
+      }
+    });
+
+    /* ---------- 键盘 ---------- */
+    const typing = (el) =>
+      el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+    document.addEventListener("keydown", (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (e.key === "Escape") {
+        if (dlgOpen) return closeDialog();
+        if (openPopEl) return closePops();
+        if (!typing(document.activeElement)) select(null);
+        return;
+      }
+      if (typing(document.activeElement) || dlgOpen) return;
+      const k = e.key.toLowerCase();
+      if (mod && k === "z") {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+        return;
+      }
+      if (mod && k === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (mod && k === "d") {
+        e.preventDefault();
+        if (sel()) duplicate(sel());
+        return;
+      }
+      if (mod && k === "c") {
+        if (sel()) {
+          clipboard = JSON.stringify(sel());
+          toast("已复制节点", "info");
+        }
+        return;
+      }
+      if (mod && k === "v") {
+        if (clipboard) {
+          const src = JSON.parse(clipboard);
+          src.x += 48;
+          src.y += 48;
+          duplicate(src, 0);
+          clipboard = JSON.stringify(src);
+        }
+        return;
+      }
+      if (mod && (k === "=" || k === "+")) {
+        e.preventDefault();
+        zoomAt(view.k * 1.2, innerWidth / 2, innerHeight / 2);
+        return;
+      }
+      if (mod && k === "-") {
+        e.preventDefault();
+        zoomAt(view.k / 1.2, innerWidth / 2, innerHeight / 2);
+        return;
+      }
+      if (mod) return;
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        deleteSel();
+        return;
+      }
+      if (e.key === "Enter" && sel()) {
+        e.preventDefault();
+        $("#prompt")?.focus();
+        return;
+      }
+      if (e.shiftKey && e.code === "Digit1") {
+        fitView();
+        return;
+      }
+      if (e.shiftKey && e.code === "Digit0") {
+        const cx = innerWidth / 2,
+          cy = innerHeight / 2;
+        flyTo(cx - (cx - view.x) / view.k, cy - (cy - view.y) / view.k, 1);
+        return;
+      }
+      if (k === "v") setTool("select");
+      if (k === "h") setTool("hand");
+      if (k === "?") openDialog($("#dlg-keys"));
+      if (e.code === "Space" && !spaceHeld) {
+        spaceHeld = true;
+        stage.classList.add("hand");
+        e.preventDefault();
+      }
+    });
+    document.addEventListener("keyup", (e) => {
+      if (e.code === "Space") {
+        spaceHeld = false;
+        stage.classList.toggle("hand", tool === "hand");
+      }
+    });
+
+    /* ---------- toast ---------- */
+    function toast(msg, kind = "ok") {
+      const t = document.createElement("div");
+      t.className = "toast " + kind;
+      t.innerHTML = `<span class="d"></span>${esc(msg)}`;
+      const box = $("#toasts");
+      box.appendChild(t);
+      while (box.children.length > 3) box.firstChild.remove();
+      requestAnimationFrame(() => t.classList.add("in"));
+      setTimeout(() => {
+        t.classList.remove("in");
+        setTimeout(() => t.remove(), 200);
+      }, 2400);
+    }
+
+    /* ---------- 进入画布：加载层 + 内容入场（三种效果） ---------- */
+    const MARK_SVG = `<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.5" y="4" width="8" height="8" rx="2" stroke="#0d0d0e" stroke-width="1.6"/><path d="M10.5 7.2 13.5 5.5v5l-3-1.7" fill="#0d0d0e" stroke="#0d0d0e" stroke-width=".8" stroke-linejoin="round"/></svg>`;
+    let loaderStyle = "a",
+      booting = false;
+    const loaderEl = $("#loader");
+
+    function boot() {
+      if (booting) return;
+      booting = true;
+      closePops();
+      document.body.classList.remove("revealing", "no-brand");
+      document.body.classList.add("booting");
+      loaderEl.className = "ld-" + loaderStyle;
+      loaderEl.hidden = false;
+      loaderEl.innerHTML =
+        `<div class="ld-mark">${MARK_SVG}</div><div class="ld-name">Video Canvas</div>` +
+        (loaderStyle === "b" ? `<div class="ld-sub">正在打开「${esc(title.value)}」</div>` : "") +
+        (loaderStyle === "c" ? `<div class="ld-bar"><i></i></div>` : "");
+      // 模拟拉取画布数据：进度分几步走，C 的进度条跟着动
+      const bar = $(".ld-bar i", loaderEl);
+      [22, 48, 76, 100].forEach((p, i) =>
+        setTimeout(() => bar && (bar.style.width = p + "%"), 160 + i * 260),
+      );
+      setTimeout(reveal, REDUCE ? 150 : 1350);
+    }
+
+    function reveal() {
+      const body = document.body;
+      // 节点按画布上的先后（先上后下、先左后右）依次出现
+      [...nodes]
+        .sort((p, q) => p.y - q.y || p.x - q.x)
+        .forEach((n, i) => els.get(n.id)?.style.setProperty("--i", i));
+      if (loaderStyle === "c") {
+        // 品牌归位：大 logo 飞到左上角品牌标的位置并缩成它，落地后真品牌标接上
+        const mark = $(".ld-mark", loaderEl),
+          target = $("#btn-logo .logo");
+        const a = mark.getBoundingClientRect(),
+          b = target.getBoundingClientRect();
+        body.classList.add("no-brand");
+        loaderEl.classList.add("out");
+        body.classList.remove("booting");
+        body.classList.add("revealing");
+        const scale = b.width / a.width;
+        const flight = mark.animate(
+          [
+            { transform: "none", borderRadius: "22px" },
+            {
+              transform: `translate(${b.left + b.width / 2 - (a.left + a.width / 2)}px, ${b.top + b.height / 2 - (a.top + a.height / 2)}px) scale(${scale})`,
+              borderRadius: `${7 / scale}px`,
+            },
+          ],
+          { duration: REDUCE ? 0 : 640, easing: "cubic-bezier(.65,0,.25,1)", fill: "forwards" },
+        );
+        flight.finished.then(() => {
+          body.classList.remove("no-brand");
+          finishBoot();
+        });
+        return;
+      }
+      loaderEl.classList.add("out");
+      body.classList.remove("booting");
+      body.classList.add("revealing");
+      setTimeout(finishBoot, REDUCE ? 0 : loaderStyle === "b" ? 760 : 520);
+    }
+
+    function finishBoot() {
+      loaderEl.hidden = true;
+      loaderEl.className = "";
+      loaderEl.innerHTML = "";
+      booting = false;
+      // 入场动画都播完再摘掉，免得之后 render 新节点也跟着播一遍
+      setTimeout(() => document.body.classList.remove("revealing"), 1200);
+    }
+
+    /* 演示面板：切换加载动画（切了就重播）和连线流光 */
+    function pickOption(group, btn) {
+      $$("button", group).forEach((x) => x.classList.toggle("on", x === btn));
+    }
+    $("#opt-loader").onclick = (e) => {
+      const b = e.target.closest("button[data-v]");
+      if (!b) return;
+      pickOption($("#opt-loader"), b);
+      loaderStyle = b.dataset.v;
+      boot();
+    };
+    $("#btn-replay").onclick = () => boot();
+    $("#opt-edge").onclick = (e) => {
+      const b = e.target.closest("button[data-v]");
+      if (!b) return;
+      pickOption($("#opt-edge"), b);
+      edgeFx = b.dataset.v;
+      renderEdges();
+    };
+
+    /* ---------- 启动 ---------- */
+    addEventListener("resize", () => {
+      layoutOverlay();
+      segTo($("#seg-tool"), $("#seg-tool .on"), true);
+      segTo($("#seg-view"), $("#seg-view .on"), true);
+    });
+    render();
+    const W = innerWidth,
+      H = innerHeight;
+    view.k = clampK(Math.min(1, (W - 140) / 1120));
+    view.x = W / 2 - 490 * view.k;
+    view.y = Math.max(110, H * 0.3 - 118 * view.k);
+    apply();
+    buildPanel();
+    syncUndo();
+    syncDemo();
+    setSave("idle");
+    boot();
+    requestAnimationFrame(() => {
+      segTo($("#seg-tool"), $("#seg-tool .on"), true);
+      segTo($("#seg-view"), $("#seg-view .on"), true);
+      layoutOverlay();
+    });
+  })();
+</script>

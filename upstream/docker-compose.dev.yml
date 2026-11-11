@@ -1,0 +1,132 @@
+name: video-canvas-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: video_canvas
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d video_canvas"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    working_dir: /app
+    # 依赖缓存卷会跨容器保留，因此每次启动先按 go.mod/go.sum 同步模块。
+    command: ["sh", "-c", "go mod download && exec air -c .air.toml"]
+    environment:
+      APP_DATABASE_DSN: "host=postgres user=postgres password=root dbname=video_canvas port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+      APP_REDIS_ENABLED: "true"
+      APP_REDIS_ADDR: "redis:6379"
+      APP_JWT_SECRET: "change-me-in-dev"
+      APP_AI_SECRET_KEY: "video-canvas-dev-ai-secret"
+      # 开发机常开着代理工具的 Fake-IP 模式（所有域名被解析到 198.18.0.0/15），不放行就连不上任何外部接口；线上不要设
+      APP_AI_ALLOW_FAKE_IP: "true"
+      APP_STORAGE_LOCAL_DIR: "/app/data/assets"
+      # 画布 Agent：默认开启，需要 AGENT_SERVICE_TOKEN（见下）。不用 Agent：APP_AGENT_ENABLED=false docker compose -f docker-compose.dev.yml up -d
+      APP_AGENT_ENABLED: ${APP_AGENT_ENABLED:-true}
+      # 画布 Agent 是独立的服务（下方 agent），backend 负责登录校验、反向代理和平台能力。AGENT_SERVICE_TOKEN 是 backend 和 agent 互相认的凭据，开发环境有固定的默认值（只在本机 compose 内网用）
+      APP_AGENT_URL: http://agent:8090
+      APP_AGENT_BRIDGE_URL: http://backend:47001
+      APP_AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:-dev-agent-service-token-0123456789abcdef0123456789}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    volumes:
+      - ./backend:/app
+      - go_build_cache:/root/.cache/go-build
+      - go_mod_cache:/go/pkg/mod
+      - backend_assets:/app/data/assets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Agent 服务：直接跑仓库里的 TypeScript 源码（Node 22.19+ 的类型剥离），不用构建；用宿主机上 agent/ 里 npm ci 装好的依赖。
+  # 改了 agent/src 后 docker compose -f docker-compose.dev.yml restart agent
+  agent:
+    image: node:22-alpine
+    working_dir: /agent
+    command: ["npm", "run", "serve"]
+    environment:
+      AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:-dev-agent-service-token-0123456789abcdef0123456789}
+      AGENT_LISTEN: 0.0.0.0:8090
+      AGENT_DB_PATH: /data/agent.sqlite
+      AGENT_BRIDGE_URL: http://backend:47001
+      # 对外 ID 的编码密钥：要和 backend 的一致（backend 默认用配置文件里的 id_key）
+      AGENT_ID_KEY: ${AGENT_ID_KEY:-id_key}
+      # 联网由 Agent 的 pi-web-access MCP 执行；开发代理 Fake-IP 与 backend 保持一致
+      AGENT_WEB_ALLOW_FAKE_IP: "true"
+      EXA_API_KEY: ${EXA_API_KEY:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      SEARXNG_BASE_URL: ${APP_AGENT_SEARXNG_URL:-}
+    expose:
+      - "8090"
+    volumes:
+      - ./agent:/agent
+      - agent_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    working_dir: /app
+    # node_modules 是命名卷，启动时同步可确保新增依赖立即生效。
+    command: ["sh", "-c", "bun install --frozen-lockfile && exec npm run dev -- --host 0.0.0.0"]
+    environment:
+      VITE_PROXY_TARGET: "http://backend:8080"
+      VITE_API_BASE_URL: "/api/v1"
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  go_build_cache:
+  go_mod_cache:
+  backend_assets:
+  agent_data:
+  web_node_modules:

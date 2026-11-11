@@ -1,0 +1,268 @@
+package errcode
+
+import (
+	"fmt"
+	"net/http"
+)
+
+// Error 是业务错误：Code 返回给前端，status 决定 HTTP 状态码。
+type Error struct {
+	Code   int
+	Msg    string
+	status int
+}
+
+func New(code int, msg string, status int) *Error {
+	return &Error{Code: code, Msg: msg, status: status}
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("code=%d msg=%s", e.Code, e.Msg)
+}
+
+func (e *Error) HTTPStatus() int { return e.status }
+
+// WithMsg 返回一个替换了提示文案的副本，不修改预定义的错误。
+func (e *Error) WithMsg(msg string) *Error {
+	return &Error{Code: e.Code, Msg: msg, status: e.status}
+}
+
+// 通用错误 1xxxx
+var (
+	ErrInternal      = New(10000, "服务内部错误", http.StatusInternalServerError)
+	ErrInvalidParams = New(10001, "参数错误", http.StatusBadRequest)
+	ErrNotFound      = New(10002, "资源不存在", http.StatusNotFound)
+	ErrUnauthorized  = New(10003, "未登录或登录已过期", http.StatusUnauthorized)
+	ErrForbidden     = New(10004, "没有权限", http.StatusForbidden)
+	ErrTooManyReqs   = New(10005, "请求过于频繁", http.StatusTooManyRequests)
+	ErrTokenExpired  = New(10006, "登录已过期，请重新登录", http.StatusUnauthorized)
+)
+
+// 用户模块 2xxxx
+var (
+	ErrUserNotFound      = New(20001, "用户不存在", http.StatusNotFound)
+	ErrUserExists        = New(20002, "用户名已存在", http.StatusConflict)
+	ErrInvalidCredential = New(20003, "用户名或密码错误", http.StatusUnauthorized)
+)
+
+// 画布模块 3xxxx
+var (
+	ErrCanvasNotFound = New(30001, "画布不存在", http.StatusNotFound)
+	ErrCanvasConflict = New(30002, "画布已被修改，请刷新后重试", http.StatusConflict)
+	ErrCanvasPayload  = New(30003, "画布内容必须是 JSON 对象", http.StatusBadRequest)
+	ErrCanvasNoChange = New(30004, "title 和 payload_json 至少传一个", http.StatusBadRequest)
+	// 画布导入：具体原因用 WithMsg 给出
+	ErrCanvasImportInvalid  = New(30005, "导入文件格式不对", http.StatusBadRequest)
+	ErrCanvasImportTooNew   = New(30006, "导入文件来自更新版本，请升级后再导入", http.StatusBadRequest)
+	ErrCanvasImportTooLarge = New(30007, "导入文件或素材数量超限", http.StatusRequestEntityTooLarge)
+	// 画布导出：导出的文件超出导入上限时拒绝导出（导出了也导不回来），具体原因用 WithMsg 给出
+	ErrCanvasExportTooLarge = New(30008, "画布太大，超过导入上限，无法导出", http.StatusRequestEntityTooLarge)
+)
+
+// 生成任务 / 积分 / 素材 / AI 配置模块 4xxxx
+var (
+	ErrInsufficientCredits = New(40001, "积分不足", http.StatusPaymentRequired)
+	ErrTooManyTasks        = New(40002, "排队中的任务已达上限，请等前面的任务完成后再试", http.StatusTooManyRequests)
+	ErrModelUnavailable    = New(40003, "模型不可用或已下线", http.StatusBadRequest)
+	ErrTaskNotFound        = New(40004, "任务不存在", http.StatusNotFound)
+	ErrTaskNotCancelable   = New(40005, "任务已结束，无法取消", http.StatusConflict)
+	ErrTaskInput           = New(40006, "生成参数不合法", http.StatusBadRequest) // 字段级错误写进 Msg
+	ErrAssetNotFound       = New(40007, "素材不存在", http.StatusNotFound)
+	ErrAssetInvalid        = New(40008, "素材不合法", http.StatusBadRequest)
+	ErrAssetTooLarge       = New(40009, "素材超过大小限制", http.StatusRequestEntityTooLarge)
+	ErrConfigInvalid       = New(40010, "配置校验未通过", http.StatusBadRequest) // 错误列表写进 Msg
+	ErrConfigNotFound      = New(40011, "配置不存在", http.StatusNotFound)
+	ErrSecretNotSet        = New(40013, "凭证尚未设置", http.StatusConflict)
+	ErrWSTicketInvalid     = New(40014, "连接凭证无效或已过期", http.StatusUnauthorized)
+)
+
+// 协议插件 / 渠道 / 模型删除 5xxxx
+var (
+	ErrPluginNotFound     = New(50001, "插件不存在", http.StatusNotFound)
+	ErrPluginPrecheck     = New(50002, "插件预检未通过", http.StatusBadRequest) // 问题列表写进上传响应的 issues
+	ErrPluginVersionDup   = New(50003, "该插件版本号已存在，请修改 meta.version", http.StatusConflict)
+	ErrPluginDisabled     = New(50004, "插件已停用", http.StatusConflict)
+	ErrPluginInUse        = New(50005, "插件版本仍被模型或进行中的任务使用，无法删除", http.StatusConflict)
+	ErrPluginBuiltin      = New(50006, "内置插件不能被删除或覆盖", http.StatusConflict)
+	ErrPluginTooLarge     = New(50007, "插件文件超过大小限制", http.StatusRequestEntityTooLarge)
+	ErrPluginBuiltinDel   = New(50008, "内置插件不能删除，只能停用", http.StatusConflict)
+	ErrChannelNotFound    = New(50011, "渠道不存在", http.StatusNotFound)
+	ErrChannelExists      = New(50012, "渠道 key 已存在", http.StatusConflict)
+	ErrChannelInvalid     = New(50013, "渠道配置不合法", http.StatusBadRequest) // 具体原因写进 Msg
+	ErrChannelDisabled    = New(50014, "渠道已停用", http.StatusConflict)
+	ErrChannelSecretUnset = New(50015, "渠道 Key 尚未设置", http.StatusConflict)
+	ErrChannelInUse       = New(50016, "渠道仍被模型或进行中的任务使用，无法删除", http.StatusConflict) // 带数量的原因写进 Msg
+	ErrRunnerUnavailable  = New(50021, "插件运行时暂不可用，请稍后重试", http.StatusServiceUnavailable)
+	ErrPluginOpFailed     = New(50022, "插件调用失败", http.StatusBadGateway)   // 历史：连通性检查 / 导入失败，原因写进 Msg（已脱敏）
+	ErrChannelPullFailed  = New(50023, "拉取上游模型失败", http.StatusBadGateway) // 上游不通 / 401 / 返回格式不符 / 超时，原因写进 Msg（已脱敏）
+	ErrModelEnabled       = New(50031, "模型还在上线，先下线再删除", http.StatusConflict)
+)
+
+// 存储配置 / 浏览器直传 51xxx
+var (
+	ErrStorageNotFound        = New(51001, "存储不存在", http.StatusNotFound)
+	ErrStorageNameDup         = New(51002, "存储名称已存在", http.StatusConflict)
+	ErrStorageInvalid         = New(51003, "存储配置不合法", http.StatusBadRequest) // 具体原因写进 Msg
+	ErrStorageInUse           = New(51004, "存储仍被素材或进行中的上传使用，无法删除", http.StatusConflict)
+	ErrStorageFieldLocked     = New(51005, "该存储已有素材引用，定位字段不能修改", http.StatusConflict) // 被锁字段写进 Msg
+	ErrStorageBuiltin         = New(51006, "内置存储不能修改或删除", http.StatusConflict)
+	ErrStorageCheckFailed     = New(51007, "存储连接测试未通过", http.StatusBadRequest) // 失败步骤与原因写进 Msg
+	ErrStorageUnavailable     = New(51008, "存储暂不可用，请稍后重试", http.StatusBadGateway)
+	ErrStorageVersionConflict = New(51009, "存储配置已被其他人修改，请刷新后重试", http.StatusConflict)
+	ErrStorageNotChecked      = New(51010, "最近一次连接测试未通过，不能设为默认存储", http.StatusConflict)
+	ErrStorageIsDefault       = New(51011, "默认存储不能删除，请先把其他存储设为默认", http.StatusConflict)
+	ErrStorageSecretUnset     = New(51012, "存储密钥尚未设置", http.StatusConflict)
+	ErrUploadIntentNotFound   = New(51021, "上传申请不存在或已过期", http.StatusNotFound)
+	ErrUploadSizeMismatch     = New(51022, "上传的文件大小与申请不一致", http.StatusBadRequest)
+	ErrUploadDirectDisabled   = New(51023, "当前存储未开启浏览器直传", http.StatusConflict)
+)
+
+// 图片处理服务 52xxx
+var (
+	ErrProcessorNotFound        = New(52001, "图片处理服务不存在", http.StatusNotFound)
+	ErrProcessorNameDup         = New(52002, "图片处理服务名称已存在", http.StatusConflict)
+	ErrProcessorInvalid         = New(52003, "图片处理服务配置不合法", http.StatusBadRequest) // 具体原因写进 Msg
+	ErrProcessorVersionConflict = New(52004, "图片处理服务已被其他人修改，请刷新后重试", http.StatusConflict)
+	ErrProcessorStorageMismatch = New(52005, "处理服务厂商与存储不匹配", http.StatusBadRequest) // 具体原因写进 Msg
+	ErrProcessorStorageBound    = New(52006, "该存储已被另一个已发布的图片处理服务绑定", http.StatusConflict)
+	ErrProcessorNotChecked      = New(52007, "当前草稿还没有通过校验与试跑，不能发布", http.StatusConflict)
+	ErrProcessorPublished       = New(52008, "已发布的图片处理服务不能删除，请先停用", http.StatusConflict)
+	ErrProcessorNoPrevious      = New(52009, "没有可回滚的版本", http.StatusConflict)
+	ErrProcessorNotPublished    = New(52010, "图片处理服务不是已发布状态", http.StatusConflict)
+)
+
+// 用户管理与注册 53xxx
+var (
+	ErrRegisterClosed      = New(53001, "暂未开放注册", http.StatusForbidden)
+	ErrEmailExists         = New(53002, "该邮箱已注册", http.StatusConflict)
+	ErrCodeInvalid         = New(53003, "验证码错误或已过期", http.StatusBadRequest)
+	ErrAccountDisabled     = New(53004, "账号已被停用，请联系管理员", http.StatusForbidden)
+	ErrCreditAdjustInvalid = New(53005, "积分调整不合法", http.StatusBadRequest)   // 原因写进 Msg
+	ErrSMTPInvalid         = New(53006, "邮件服务配置不合法", http.StatusBadRequest) // 原因写进 Msg
+	ErrSMTPSendFailed      = New(53007, "邮件发送失败", http.StatusBadGateway)    // 原因写进 Msg（已脱敏）
+	ErrSMTPNotConfigured   = New(53008, "邮件服务未配置", http.StatusConflict)
+)
+
+// 登录页展示 54xxx
+var (
+	ErrShowcaseNotFound      = New(54001, "登录页展示条目不存在", http.StatusNotFound)
+	ErrShowcaseInvalid       = New(54002, "登录页展示参数不合法", http.StatusBadRequest)          // 具体原因写进 Msg
+	ErrShowcaseOrderMismatch = New(54003, "排序列表与现有条目不一致，请刷新后重试", http.StatusBadRequest) // 多了、少了或重复了条目
+)
+
+// 个人中心 55xxx
+var (
+	ErrOldPasswordWrong    = New(55001, "当前密码错误", http.StatusBadRequest) // 剩余尝试次数写进 Msg
+	ErrPasswordSame        = New(55002, "新密码不能与当前密码相同", http.StatusBadRequest)
+	ErrPasswordWeak        = New(55003, "密码过于常见，请换一个", http.StatusBadRequest) // 等于用户名也归入此码，Msg 为“密码不能与用户名相同”
+	ErrPasswordTooFrequent = New(55004, "尝试过于频繁，请稍后再试", http.StatusTooManyRequests)
+	ErrAvatarFormat        = New(55005, "头像格式不支持，请上传 PNG / JPEG / WebP / GIF", http.StatusBadRequest)
+	ErrAvatarTooLarge      = New(55006, "头像文件过大", http.StatusBadRequest) // 文件超过 2MB 或尺寸超过 2048×2048，原因写进 Msg
+)
+
+// 画布 Agent 模块 6xxxx
+var (
+	ErrAgentRunActive      = New(60001, "这个画布上已有运行中的 Agent", http.StatusConflict)
+	ErrAgentModelNA        = New(60002, "Agent 模型不可用", http.StatusBadRequest)
+	ErrAgentState          = New(60003, "当前状态不允许这个操作", http.StatusConflict)
+	ErrAgentApprovalGone   = New(60004, "审批已处理或已过期", http.StatusConflict)
+	ErrAgentUnavailable    = New(60005, "Agent 暂不可用，请稍后重试", http.StatusServiceUnavailable)
+	ErrAgentWriteConflict  = New(60006, "画布写入冲突，重试仍未成功", http.StatusConflict)
+	ErrAgentAlreadyUndone  = New(60007, "本轮已撤销", http.StatusConflict)
+	ErrAgentOverBudget     = New(60008, "超出本轮积分预算", http.StatusPaymentRequired)
+	ErrAgentSessionLimit   = New(60010, "这个画布的会话数量已达上限", http.StatusConflict)
+	ErrAgentSessionMissing = New(60011, "会话不存在", http.StatusNotFound)
+	ErrAgentRunMissing     = New(60012, "运行不存在", http.StatusNotFound)
+	ErrAgentApprovalMiss   = New(60013, "审批不存在", http.StatusNotFound)
+	ErrAgentRunNotEnded    = New(60014, "运行还没结束，结束后才能评价", http.StatusConflict)
+	ErrAgentNodeUnread     = New(60015, "修改已有节点前必须先读取详情", http.StatusConflict)
+)
+
+// Agent 技能管理 61xxx
+var (
+	ErrSkillImportGone     = New(61001, "导入已过期或不存在，请重新上传", http.StatusNotFound)
+	ErrSkillPrecheckFailed = New(61002, "预检未通过，不能导入", http.StatusConflict)
+	ErrSkillBuiltinName    = New(61003, "与内置技能同名，不能导入", http.StatusConflict)
+	ErrSkillNotFound       = New(61004, "技能不存在", http.StatusNotFound)
+	ErrSkillVersionMissing = New(61005, "技能版本不存在", http.StatusNotFound)
+	ErrSkillSameContent    = New(61006, "内容与已有版本相同", http.StatusConflict)
+	ErrSkillBuiltin        = New(61007, "内置技能不可修改", http.StatusConflict)
+	ErrSkillActiveVersion  = New(61008, "生效版本不能删除", http.StatusConflict)
+	ErrSkillCannotEnable   = New(61009, "无法启用", http.StatusConflict) // 原因写进 Msg
+	ErrSkillNeedDisable    = New(61010, "技能需先停用才能删除", http.StatusConflict)
+	ErrSkillTooLarge       = New(61011, "技能包超过大小限制", http.StatusRequestEntityTooLarge)
+)
+
+// 首页对话 62xxx（62003 原「默认创作不能删除」已随默认创作取消而废弃，62004 留给「发到画布」）
+var (
+	ErrConversationNotFound = New(62001, "对话不存在", http.StatusNotFound)
+	ErrConversationLimit    = New(62002, "对话数量已达上限，请先删除不用的对话", http.StatusConflict)
+	ErrRecordNotFound       = New(62005, "记录不存在", http.StatusNotFound)
+)
+
+// 系统升级 63xxx
+var (
+	ErrUpdaterUnavailable = New(63001, "一键升级未启用或无法连接", http.StatusConflict) // 原因写进 Msg
+	ErrUpgradeRunning     = New(63002, "已有升级在进行中", http.StatusConflict)
+	ErrUpgradeTarget      = New(63003, "不能升级或回退到这个版本", http.StatusBadRequest) // 原因写进 Msg
+	ErrUpgradeLatestTag   = New(63004, "部署使用 latest 镜像，不能一键升级", http.StatusConflict)
+)
+
+// 资产库 64xxx
+var (
+	ErrAssetFolderInvalid  = New(64001, "文件夹名称不合法", http.StatusBadRequest) // 具体原因写进 Msg
+	ErrAssetFolderDup      = New(64002, "已有同名文件夹", http.StatusConflict)
+	ErrAssetFolderLimit    = New(64003, "文件夹数量已达上限", http.StatusConflict)
+	ErrAssetFolderNotFound = New(64004, "文件夹不存在", http.StatusNotFound)
+	ErrLibraryItemNotFound = New(64005, "资产库条目不存在", http.StatusNotFound)
+)
+
+// 支付（积分充值）65xxx
+var (
+	ErrPaymentDisabled     = New(65001, "支付功能未开启", http.StatusForbidden)
+	ErrPayMethodUnavail    = New(65002, "该支付方式暂不可用", http.StatusConflict) // 原因写进 Msg
+	ErrProductUnavailable  = New(65003, "商品不存在或已下架", http.StatusNotFound)
+	ErrTooManyPendingOrder = New(65004, "未完成的订单过多，请先完成或取消", http.StatusTooManyRequests)
+	ErrPayCreateFailed     = New(65005, "渠道下单失败，请稍后重试或换一种支付方式", http.StatusBadGateway)
+	ErrPayOrderNotFound    = New(65006, "订单不存在", http.StatusNotFound)
+	ErrPayOrderState       = New(65007, "订单当前状态不允许该操作", http.StatusConflict)
+	ErrPayQueryUnsupported = New(65008, "该渠道不支持查单", http.StatusConflict)
+	ErrPayChannelConfig    = New(65009, "渠道配置校验失败", http.StatusBadRequest) // 具体原因写进 Msg（已脱敏）
+	ErrPayChannelLocked    = New(65010, "渠道有未完成订单，暂不能修改商户身份或密钥", http.StatusConflict)
+	ErrPayVersionConflict  = New(65011, "配置已被他人修改，请刷新后重试", http.StatusConflict)
+	ErrProductHasOrders    = New(65012, "商品已有订单，只能下架不能删除", http.StatusConflict)
+	ErrPayBaseURLMissing   = New(65013, "请先配置站点公网地址", http.StatusBadRequest)
+	ErrPayTooFrequent      = New(65014, "操作过于频繁，请稍后再试", http.StatusTooManyRequests)
+	ErrPayUpstream         = New(65015, "渠道请求失败，请稍后重试", http.StatusBadGateway)
+)
+
+// 短剧工作室 67xxx。
+var (
+	ErrDramaNotFound             = New(67001, "短剧不存在", http.StatusNotFound)
+	ErrDramaSourceInvalid        = New(67002, "原文格式不支持或内容为空", http.StatusBadRequest)
+	ErrDramaSourceTooLong        = New(67003, "原文超过 500 万字", http.StatusBadRequest)
+	ErrDramaJobBusy              = New(67004, "已有进行中的任务，完成后再试", http.StatusConflict)
+	ErrDramaEpisodeLocked        = New(67005, "这一集已拆解资产，剧本已锁定", http.StatusConflict)
+	ErrDramaStepNotReady         = New(67006, "前置步骤未完成", http.StatusBadRequest)
+	ErrDramaNoTextModel          = New(67007, "没有可用的 Agent 模型", http.StatusBadRequest)
+	ErrDramaOutputInvalid        = New(67008, "模型输出无法解析", http.StatusBadGateway)
+	ErrDramaSegmentNotFound      = New(67009, "片段不存在", http.StatusNotFound)
+	ErrDramaNothingToCompose     = New(67010, "这一集还没有可合成的片段", http.StatusBadRequest)
+	ErrDramaTakeInvalid          = New(67011, "只能采用本片段已成功的结果", http.StatusBadRequest)
+	ErrDramaSegmentOrderInvalid  = New(67012, "排序必须包含该集全部片段", http.StatusBadRequest)
+	ErrDramaStoryboardHasTakes   = New(67013, "这一集已有生成结果，重新生成分镜会清空片段", http.StatusConflict)
+	ErrDramaSourceExpired        = New(67014, "文件已过期，请重新上传", http.StatusNotFound)
+	ErrDramaCustomPrompt         = New(67015, "自定义提示词或技能导致输出不合格", http.StatusBadGateway)
+	ErrDramaPromptNotFound       = New(67016, "我的提示词不存在", http.StatusNotFound)
+	ErrDramaPromptInvalid        = New(67017, "提示词正文为空、超长或名称重复", http.StatusBadRequest)
+	ErrDramaSkillUnavailable     = New(67018, "技能不可用", http.StatusBadRequest)
+	ErrDramaPhase                = New(67019, "当前阶段不允许这个操作", http.StatusConflict)
+	ErrDramaEpisodeSourceTooLong = New(67020, "单集对应原文过长", http.StatusBadRequest)
+	ErrDramaReserved             = New(67021, "预留错误码", http.StatusBadRequest)
+	ErrDramaContext              = New(67022, "模型上下文不足", http.StatusBadRequest)
+	ErrDramaAdaptFormat          = New(67023, "不支持转写为这种格式", http.StatusBadRequest)
+	ErrDramaAdaptEmpty           = New(67024, "原稿是空的", http.StatusBadRequest)
+	ErrDramaAdaptBusy            = New(67025, "这个片段正在转写", http.StatusConflict)
+	ErrDramaAdaptFailed          = New(67026, "转写结果不合格，请重试", http.StatusBadGateway)
+	ErrDramaAdaptMissing         = New(67027, "还没有这个格式的转写稿", http.StatusBadRequest)
+)

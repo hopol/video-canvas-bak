@@ -1,0 +1,387 @@
+import type { ConfigIssue } from "@/api/admin/ai/type.d";
+import type { Capabilities, GenerationOp, ParamField, RefKind, RefSpec } from "@/api/model/type.d";
+import { FormField } from "@/components/admin-ui/form-field";
+import {
+  FormSection,
+  FormSectionHeader,
+  FormSectionTitle,
+} from "@/components/admin-ui/form-section";
+import { ToggleChip } from "@/components/admin-ui/toggle-chip";
+import { OptionSelect } from "@/components/admin-ui/option-select";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  checkDeadline,
+  checkIdleTimeout,
+  readModelApiFormat,
+  readModelChannel,
+  readModelKind,
+  readModelString,
+  withModelField,
+} from "@/utils/admin/model-body";
+import { suggestedMediaCapabilities } from "@/utils/admin/model-limits";
+import { PROMPT_FORMATS, withPromptFormat } from "@/utils/tasks/capabilities";
+
+import { ContextLimitsAssist } from "./context-limits-assist";
+import {
+  ContextEditor,
+  LIMITS,
+  OPS_OF_KIND,
+  OpsEditor,
+  paramSetOps,
+  ParamRowEditor,
+  RefCardEditor,
+} from "./capability-editors";
+import { issueFor } from "./model-fields";
+
+type BodyMutator = (body: Record<string, unknown>) => Record<string, unknown> | null;
+
+const DEADLINES: Array<[string, string]> = [
+  ["5m", "5 分钟"],
+  ["10m", "10 分钟"],
+  ["20m", "20 分钟"],
+  ["30m", "30 分钟"],
+  ["60m", "60 分钟"],
+];
+
+/** 上游响应超时的预设；值为空串表示不写，用平台默认的 90 秒 */
+const IDLE_TIMEOUTS: Array<[string, string]> = [
+  ["30s", "30 秒"],
+  ["60s", "60 秒"],
+  ["", "默认（90 秒）"],
+  ["2m", "2 分钟"],
+  ["3m", "3 分钟"],
+  ["5m", "5 分钟"],
+];
+
+const REF_OFF: RefSpec = { on: false, max: 0, max_mb: 0 };
+
+/** 读正文里的 capabilities；缺失的部分补成空值，表单可以直接渲染 */
+function readCaps(body: Record<string, unknown>): Capabilities {
+  const raw = body.capabilities;
+  const caps = (
+    raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+  ) as Partial<Capabilities>;
+  return {
+    ...caps,
+    refs: { image: REF_OFF, video: REF_OFF, audio: REF_OFF, ...caps.refs },
+    prompt: caps.prompt ?? { max_length: 0 },
+  };
+}
+
+/**
+ * 能力与参数页签：任务超时，以及模型能力 capabilities 的结构化表单——生成方式、上下文（文本）、
+ * 参考素材、提示词上限、生成参数（每个参数一行）、固定系统提示（文本）。
+ * 所有控件都读写正文里的 capabilities，右侧的模拟节点随它实时变化；模型没有别的配置入口，
+ * 插件只把这里配置的输入翻译成上游请求。
+ */
+export function ModelParamsForm({
+  body,
+  issues,
+  warnings,
+  onChange,
+}: {
+  body: Record<string, unknown>;
+  issues: ConfigIssue[];
+  warnings: ConfigIssue[];
+  onChange: (mutate: BodyMutator) => void;
+}) {
+  const deadline = readModelString(body, "deadline");
+  const custom = !!deadline && !DEADLINES.some(([value]) => value === deadline);
+  const deadlineError = deadline ? checkDeadline(deadline) : null;
+  const idleTimeout = readModelString(body, "idle_timeout");
+  const idleCustom = !!idleTimeout && !IDLE_TIMEOUTS.some(([value]) => value === idleTimeout);
+  const idleTimeoutError = checkIdleTimeout(idleTimeout);
+  const kind = readModelKind(body);
+  const caps = readCaps(body);
+  const params = caps.params ?? {};
+  const hasRefs = kind === "video" || kind === "image" || kind === "audio";
+  const setField = (field: string, value: unknown) =>
+    onChange((body) => withModelField(body, field, value));
+  const setCaps = (next: Capabilities) => setField("capabilities", next);
+  const patch = (partial: Partial<Capabilities>) => setCaps({ ...caps, ...partial });
+  const setRef = (refKind: RefKind, value: RefSpec) =>
+    patch({ refs: { ...caps.refs, [refKind]: value } });
+  const setParams = (next: Record<string, ParamField>) => patch({ params: next });
+  const refKinds: RefKind[] = kind === "video" ? ["image", "audio", "video"] : ["image"];
+  const promptIssue = issueFor(issues, "capabilities.prompt");
+  const promptOut =
+    caps.prompt.max_length < LIMITS.promptLength[0] ||
+    caps.prompt.max_length > LIMITS.promptLength[1];
+
+  const isAgent = kind === "agent";
+  const gemini = readModelApiFormat(body) === "gemini";
+  const upstream = readModelChannel(body);
+
+  return (
+    <>
+      {!isAgent && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>任务设置</FormSectionTitle>
+          </FormSectionHeader>
+          <FormField
+            size="default"
+            label="任务超时"
+            htmlFor="model-deadline"
+            error={deadlineError ?? issueFor(issues, "deadline")}
+            warning={issueFor(warnings, "deadline")}
+          >
+            <div className="flex flex-wrap items-center gap-2" id="model-deadline">
+              {DEADLINES.map(([value, label]) => (
+                <ToggleChip
+                  key={value}
+                  pressed={deadline === value}
+                  onClick={() => setField("deadline", value)}
+                >
+                  {label}
+                </ToggleChip>
+              ))}
+              <Input
+                aria-label="自定义超时"
+                placeholder="自定义，如 90s"
+                className="h-8 w-36 font-mono text-xs"
+                value={custom ? deadline : ""}
+                onChange={(event) => setField("deadline", event.target.value)}
+              />
+            </div>
+          </FormField>
+        </FormSection>
+      )}
+
+      {isAgent && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>调用设置</FormSectionTitle>
+          </FormSectionHeader>
+          <FormField
+            size="default"
+            label="上游响应超时"
+            htmlFor="model-idle-timeout"
+            error={idleTimeoutError ?? issueFor(issues, "idle_timeout")}
+            hint="10 秒 – 10 分钟，超时自动重试一次"
+          >
+            <div className="flex flex-wrap items-center gap-2" id="model-idle-timeout">
+              {IDLE_TIMEOUTS.map(([value, label]) => (
+                <ToggleChip
+                  key={value || "default"}
+                  pressed={idleTimeout === value}
+                  onClick={() => setField("idle_timeout", value)}
+                >
+                  {label}
+                </ToggleChip>
+              ))}
+              <Input
+                aria-label="自定义上游响应超时"
+                placeholder="自定义，如 150s"
+                className="h-8 w-36 font-mono text-xs"
+                value={idleCustom ? idleTimeout : ""}
+                onChange={(event) => setField("idle_timeout", event.target.value)}
+              />
+            </div>
+          </FormField>
+        </FormSection>
+      )}
+
+      {OPS_OF_KIND[kind] && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>生成方式</FormSectionTitle>
+          </FormSectionHeader>
+          <OpsEditor
+            kind={kind}
+            ops={(caps.ops ?? []) as GenerationOp[]}
+            onChange={(ops) => patch({ ops })}
+          />
+          {issueFor(issues, "capabilities.ops") && (
+            <p className="text-destructive mt-2 text-xs">{issueFor(issues, "capabilities.ops")}</p>
+          )}
+        </FormSection>
+      )}
+
+      {(kind === "text" || isAgent) && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>上下文能力</FormSectionTitle>
+          </FormSectionHeader>
+          <ContextEditor value={caps.context} onChange={(context) => patch({ context })} />
+          <ContextLimitsAssist
+            channel={upstream.channel}
+            upstreamModel={upstream.upstreamModel}
+            current={caps.context}
+            media={isAgent ? caps : undefined}
+            gemini={gemini}
+            onApply={(context, limits) =>
+              patch({
+                context,
+                ...(isAgent && limits ? suggestedMediaCapabilities(limits, gemini) : {}),
+              })
+            }
+          />
+          {isAgent && (
+            <FormField
+              size="default"
+              className="mt-4"
+              label="看图"
+              error={issueFor(issues, "capabilities.vision")}
+            >
+              <div className="flex">
+                <ToggleChip pressed={!!caps.vision} onClick={() => patch({ vision: !caps.vision })}>
+                  能看图
+                </ToggleChip>
+              </div>
+            </FormField>
+          )}
+          {isAgent && (
+            <FormField
+              size="default"
+              className="mt-4"
+              label="看视频"
+              htmlFor="model-video"
+              error={issueFor(issues, "capabilities.video")}
+              hint={gemini ? undefined : "仅 Gemini 原生接口格式支持"}
+            >
+              <div className="flex">
+                <ToggleChip
+                  id="model-video"
+                  pressed={!!caps.video}
+                  disabled={!gemini && !caps.video}
+                  onClick={() => patch({ video: !caps.video })}
+                >
+                  能看视频
+                </ToggleChip>
+              </div>
+            </FormField>
+          )}
+          {issueFor(issues, "capabilities.context") && (
+            <p className="text-destructive mt-2 text-xs">
+              {issueFor(issues, "capabilities.context")}
+            </p>
+          )}
+        </FormSection>
+      )}
+
+      {hasRefs && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>参考素材</FormSectionTitle>
+          </FormSectionHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {refKinds.map((refKind) => (
+              <RefCardEditor
+                key={refKind}
+                kind={refKind}
+                value={caps.refs[refKind]}
+                onChange={(value) => setRef(refKind, value)}
+              />
+            ))}
+          </div>
+          {(["refs", ...refKinds.map((k) => `refs.${k}`)] as const).map((path) => {
+            const message = issueFor(issues, `capabilities.${path}`);
+            return message ? (
+              <p key={path} className="text-destructive mt-2 text-xs">
+                {message}
+              </p>
+            ) : null;
+          })}
+        </FormSection>
+      )}
+
+      <FormSection>
+        <FormSectionHeader>
+          <FormSectionTitle>提示词</FormSectionTitle>
+        </FormSectionHeader>
+        <FormField
+          size="default"
+          label={isAgent ? "单条消息字数上限" : "字数上限"}
+          htmlFor="model-prompt-length"
+          error={promptIssue}
+          hint={isAgent ? `${LIMITS.promptLength[0]} – ${LIMITS.promptLength[1]}` : undefined}
+        >
+          <Input
+            id="model-prompt-length"
+            type="number"
+            className="w-36 tabular-nums"
+            aria-invalid={promptOut}
+            value={caps.prompt.max_length || ""}
+            onChange={(event) =>
+              patch({ prompt: { max_length: Math.trunc(Number(event.target.value)) || 0 } })
+            }
+          />
+        </FormField>
+        {kind === "video" && (
+          <FormField
+            size="default"
+            className="mt-4"
+            label="提示词格式"
+            htmlFor="model-prompt-format"
+            hint="短剧片场按这里判断提示词写法，不看模型名称：选 Seedance 直接用分镜原稿；选 H3 或通用，要先在片场把原稿转写成对应格式再生成。"
+            error={issueFor(issues, "capabilities.prompt_format")}
+          >
+            <OptionSelect
+              id="model-prompt-format"
+              className="w-48"
+              value={caps.prompt_format ?? ""}
+              options={PROMPT_FORMATS}
+              onValueChange={(value) =>
+                setCaps(withPromptFormat(caps, value as NonNullable<Capabilities["prompt_format"]>))
+              }
+            />
+          </FormField>
+        )}
+      </FormSection>
+
+      {!isAgent && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>生成参数</FormSectionTitle>
+          </FormSectionHeader>
+          <div id="model-capabilities-params" className="space-y-3">
+            {Object.keys(params).length === 0 && (
+              <p className="text-muted-foreground rounded-md border border-dashed p-3 text-center text-xs">
+                暂无生成参数
+              </p>
+            )}
+            {Object.entries(params).map(([name, field], index, all) => (
+              <ParamRowEditor
+                key={name}
+                name={name}
+                field={field}
+                first={index === 0}
+                last={index === all.length - 1}
+                error={issueFor(issues, `capabilities.params.${name}`)}
+                onChange={(next) => setParams(paramSetOps.patch(params, name, next))}
+                onMove={(direction) => setParams(paramSetOps.move(params, name, direction))}
+                onRemove={() => setParams(paramSetOps.remove(params, name))}
+              />
+            ))}
+            {issueFor(issues, "capabilities.params") && (
+              <p className="text-destructive text-xs">{issueFor(issues, "capabilities.params")}</p>
+            )}
+          </div>
+        </FormSection>
+      )}
+
+      {kind === "text" && (
+        <FormSection>
+          <FormSectionHeader>
+            <FormSectionTitle>固定系统提示</FormSectionTitle>
+          </FormSectionHeader>
+          <Textarea
+            id="model-system"
+            rows={4}
+            aria-label="固定系统提示"
+            placeholder="例如：你是一名资深分镜师，回答使用中文。"
+            value={caps.system ?? ""}
+            onChange={(event) => patch({ system: event.target.value || undefined })}
+          />
+          {issueFor(issues, "capabilities.system") && (
+            <p className="text-destructive mt-2 text-xs">
+              {issueFor(issues, "capabilities.system")}
+            </p>
+          )}
+        </FormSection>
+      )}
+    </>
+  );
+}

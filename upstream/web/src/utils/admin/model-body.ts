@@ -1,0 +1,217 @@
+import type { Pricing } from "@/api/model/type";
+
+/**
+ * 模型配置正文（admin-ai-api.md「模型配置正文」）的小工具。
+ * 编辑器是 JSON 文本、键顺序是刻意保留的（capabilities.params 的书写顺序就是画布参数面板的渲染顺序），
+ * 这里的函数只读或只改个别字段，JSON.parse / stringify 本身保留对象键顺序。
+ */
+
+/** 模型 kind */
+export const MODEL_KINDS = ["text", "video", "image", "audio"] as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** 正文里的 kind；没有或不是字符串返回空串 */
+export const readModelKind = (body: unknown) =>
+  isRecord(body) && typeof body.kind === "string" ? body.kind : "";
+
+/** 正文里 channels[0]；缺失返回空串 */
+export function readModelChannel(body: unknown): {
+  channel: string;
+  upstreamModel: string;
+} {
+  const first = isRecord(body) && Array.isArray(body.channels) ? body.channels[0] : undefined;
+  return {
+    channel: isRecord(first) && typeof first.channel === "string" ? first.channel : "",
+    upstreamModel:
+      isRecord(first) && typeof first.upstream_model === "string" ? first.upstream_model : "",
+  };
+}
+
+/** Agent 模型接口格式；旧配置与非法值按 OpenAI 兼容读取 */
+export function readModelApiFormat(body: unknown): "openai" | "gemini" {
+  const first = isRecord(body) && Array.isArray(body.channels) ? body.channels[0] : undefined;
+  return isRecord(first) && first.api_format === "gemini" ? "gemini" : "openai";
+}
+
+/** 改首渠道的接口格式；切回 OpenAI 同时关闭看视频，避免保存不兼容的能力组合。 */
+export function withModelApiFormat(
+  body: unknown,
+  format: "openai" | "gemini",
+): Record<string, unknown> {
+  let current = isRecord(body) ? body : {};
+  if (format === "openai" && isRecord(current.capabilities) && "video" in current.capabilities) {
+    const capabilities = { ...current.capabilities };
+    delete capabilities.video;
+    current = { ...current, capabilities };
+  }
+  const channels = Array.isArray(current.channels) ? [...current.channels] : [];
+  if (format === "openai" && !isRecord(channels[0])) return current;
+  const first = isRecord(channels[0]) ? { ...channels[0] } : {};
+  if (format === "openai") delete first.api_format;
+  else first.api_format = format;
+  channels[0] = first;
+  return { ...current, channels };
+}
+
+/**
+ * 把 channels[0].channel 改成指定渠道，其余字段和键顺序不动。
+ * 正文没有 channels 时追加一项（upstream_model 留空待填）。正文不是对象时返回 null。
+ */
+export function withModelChannel(
+  body: unknown,
+  channelKey: string,
+): Record<string, unknown> | null {
+  if (!isRecord(body)) return null;
+  const channels = Array.isArray(body.channels) ? [...body.channels] : [];
+  const first = isRecord(channels[0]) ? channels[0] : {};
+  channels[0] = {
+    ...first,
+    channel: channelKey,
+    upstream_model: first.upstream_model ?? "",
+  };
+  if ("channels" in body)
+    return Object.fromEntries(
+      Object.entries(body).map(([key, value]) => [key, key === "channels" ? channels : value]),
+    );
+  return { ...body, channels };
+}
+
+/** kind 的中文名 */
+export const MODEL_KIND_LABEL: Record<string, string> = {
+  text: "文本",
+  video: "视频",
+  image: "图片",
+  audio: "音频",
+  agent: "Agent",
+};
+
+/**
+ * 改正文里的一个顶层字段：字段已存在就原位替换（键顺序不动），不存在就追加到末尾。
+ * 正文不是对象时返回 null。
+ */
+export function withModelField(
+  body: unknown,
+  field: string,
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!isRecord(body)) return null;
+  if (field in body)
+    return Object.fromEntries(
+      Object.entries(body).map(([key, current]) => [key, key === field ? value : current]),
+    );
+  return { ...body, [field]: value };
+}
+
+/** 把 channels[0].upstream_model 改成指定值，其余字段与键顺序不动；没有 channels 时追加一项 */
+export function withModelUpstream(
+  body: unknown,
+  upstreamModel: string,
+): Record<string, unknown> | null {
+  if (!isRecord(body)) return null;
+  const channels = Array.isArray(body.channels) ? [...body.channels] : [];
+  const first = isRecord(channels[0]) ? channels[0] : {};
+  channels[0] = {
+    channel: first.channel ?? "",
+    ...first,
+    upstream_model: upstreamModel,
+  };
+  return withModelField(body, "channels", channels);
+}
+
+/** 正文里的 pricing；缺失或不是对象返回 null */
+export const readModelPricing = (body: unknown): Pricing | null =>
+  isRecord(body) && isRecord(body.pricing) ? (body.pricing as unknown as Pricing) : null;
+
+/** 默认价格的字段名：按次 unit、按秒 per_second；Token 计费没有单一默认价，返回 null */
+export const defaultPriceField = (pricing: Pricing | null) =>
+  pricing?.billing === "per_second" ? "per_second" : pricing?.billing === "token" ? null : "unit";
+
+/** 默认价格的文案：「10 积分 / 次」「2 积分 / 秒」「输入 2 / 输出 8（积分 / 百万 Token）」 */
+export function describeDefaultPrice(pricing: Pricing | null) {
+  if (!pricing) return "-";
+  if (pricing.pending) return "待定价";
+  if (pricing.billing === "token")
+    return `输入 ${pricing.token?.in ?? 0} / 输出 ${pricing.token?.out ?? 0}（积分 / 百万 Token）`;
+  return pricing.billing === "per_second"
+    ? `${pricing.per_second ?? 0} 积分 / 秒`
+    : `${pricing.unit ?? 0} 积分 / 次`;
+}
+
+/** 管理员填写有效售价后结束待定价状态，修改成本等其他字段时保留草稿标识。 */
+export function patchPricing(pricing: Pricing, patch: Partial<Pricing>): Pricing {
+  const next = { ...pricing, ...patch };
+  const price =
+    next.billing === "token"
+      ? Math.max(next.token?.in ?? 0, next.token?.out ?? 0)
+      : next.billing === "per_second"
+        ? next.per_second
+        : next.unit;
+  if (typeof price === "number" && Number.isFinite(price) && price > 0) delete next.pending;
+  return next;
+}
+
+/** 把默认价格改成指定值（键顺序不动）；Token 计费或没有 pricing 时返回 null，表示不适用 */
+export function withDefaultPrice(body: unknown, value: number): Record<string, unknown> | null {
+  const pricing = readModelPricing(body);
+  const field = defaultPriceField(pricing);
+  if (!pricing || !field) return null;
+  return withModelField(body, "pricing", patchPricing(pricing, { [field]: value }));
+}
+
+/** 正文里的数字字段（sort 等）；不是数字返回 null */
+export const readModelNumber = (body: unknown, field: string) =>
+  isRecord(body) && typeof body[field] === "number" && Number.isFinite(body[field])
+    ? (body[field] as number)
+    : null;
+
+/** 正文里的字符串字段；缺失返回空串 */
+export const readModelString = (body: unknown, field: string) =>
+  isRecord(body) && typeof body[field] === "string" ? (body[field] as string) : "";
+
+/** 正文里的字符串数组字段（tags）；缺失或不是数组返回空数组，非字符串元素丢弃 */
+export const readModelStrings = (body: unknown, field: string): string[] =>
+  isRecord(body) && Array.isArray(body[field])
+    ? body[field].filter((item): item is string => typeof item === "string")
+    : [];
+
+/** 模型描述的字数上限（和后端 maxHintLen 一致） */
+export const MODEL_HINT_MAX = 500;
+/** 展示标签的个数与单个字数上限（和后端 maxTags / maxTagLen 一致） */
+export const MODEL_TAGS_MAX = 5;
+export const MODEL_TAG_MAX_LENGTH = 12;
+
+/** 正文里的布尔字段 */
+export const readModelBool = (body: unknown, field: string) =>
+  isRecord(body) && body[field] === true;
+
+/** 时限格式（Go 的 time.Duration 写法，如 30m、1h30m、90s）；通过返回 null，前端只校验格式 */
+export function checkDeadline(value: string): string | null {
+  const text = value.trim();
+  if (!text) return "请填写时限，例如 30m";
+  return /^(\d+(\.\d+)?(ms|s|m|h))+$/.test(text) ? null : "时限格式不对，示例：90s、30m、1h";
+}
+
+/** Agent 模型「上游响应超时」的合法范围（毫秒），和后端 minIdleTimeout / maxIdleTimeout 一致 */
+const IDLE_TIMEOUT_MIN_MS = 10_000;
+const IDLE_TIMEOUT_MAX_MS = 600_000;
+const DURATION_UNIT_MS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+
+/** 时长文本换成毫秒；格式不对返回 null */
+function durationMs(text: string): number | null {
+  if (!/^(\d+(\.\d+)?(ms|s|m|h))+$/.test(text)) return null;
+  let total = 0;
+  for (const [, num, unit] of text.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/g))
+    total += Number(num) * DURATION_UNIT_MS[unit];
+  return total;
+}
+
+/** 上游响应超时：留空表示用平台默认值；填了要是合法时长且在 10s – 10m 之间。通过返回 null */
+export function checkIdleTimeout(value: string): string | null {
+  const text = value.trim();
+  if (!text) return null;
+  const ms = durationMs(text);
+  if (ms === null) return "时长格式不对，示例：90s、2m";
+  return ms < IDLE_TIMEOUT_MIN_MS || ms > IDLE_TIMEOUT_MAX_MS ? "必须在 10s – 10m 之间" : null;
+}

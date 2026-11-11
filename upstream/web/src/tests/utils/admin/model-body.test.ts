@@ -1,0 +1,249 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  checkDeadline,
+  checkIdleTimeout,
+  describeDefaultPrice,
+  patchPricing,
+  readModelApiFormat,
+  readModelBool,
+  readModelChannel,
+  readModelKind,
+  readModelNumber,
+  readModelString,
+  withDefaultPrice,
+  withModelChannel,
+  withModelApiFormat,
+  withModelField,
+  withModelUpstream,
+} from "@/utils/admin/model-body";
+import { withModelKind } from "@/utils/admin/model-protocol";
+import { blankModelBody } from "@/utils/admin/model-template";
+
+const body = {
+  key: "kling-i2v",
+  kind: "video",
+  label: "可灵",
+  credits: 10,
+  channels: [{ channel: "old", upstream_model: "v1" }],
+  params: { b: 1, a: 2 },
+  capabilities: { ops: [], refs: {}, prompt: {}, params: { b: {}, a: {} } },
+};
+
+test("未定价草稿显示待定价，设置正式售价后移除待确认标识", () => {
+  const draft = { pricing: { billing: "per_call" as const, pending: true } };
+  expect(describeDefaultPrice(draft.pricing)).toBe("待定价");
+  expect(withDefaultPrice(draft, 5)?.pricing).toEqual({ billing: "per_call", unit: 5 });
+  expect(patchPricing(draft.pricing, { cost: { on: true, unit: 2 } }).pending).toBe(true);
+  expect(draft.pricing.pending).toBe(true);
+});
+
+describe("读取正文字段", () => {
+  test("kind 与 channels[0]；缺失返回空串", () => {
+    expect(readModelKind(body)).toBe("video");
+    expect(readModelKind(null)).toBe("");
+    expect(readModelChannel(body)).toEqual({ channel: "old", upstreamModel: "v1" });
+    expect(readModelChannel({})).toEqual({ channel: "", upstreamModel: "" });
+    expect(readModelChannel({ channels: [null] })).toEqual({ channel: "", upstreamModel: "" });
+  });
+
+  test("数字、字符串、布尔字段的读取", () => {
+    expect(readModelNumber(body, "credits")).toBe(10);
+    expect(readModelNumber(body, "label")).toBeNull();
+    expect(readModelNumber({ credits: Number.NaN }, "credits")).toBeNull();
+    expect(readModelString(body, "label")).toBe("可灵");
+    expect(readModelString(body, "nope")).toBe("");
+    expect(readModelBool({ enabled: true }, "enabled")).toBe(true);
+    expect(readModelBool({}, "enabled")).toBe(false);
+  });
+});
+
+describe("withModelChannel", () => {
+  test("只改渠道，其余字段与键顺序不动", () => {
+    const next = withModelChannel(body, "new");
+    expect(next).not.toBeNull();
+    expect(Object.keys(next!)).toEqual(Object.keys(body));
+    expect(next!.channels).toEqual([{ channel: "new", upstream_model: "v1" }]);
+    expect(Object.keys(next!.capabilities as object)).toEqual(["ops", "refs", "prompt", "params"]);
+  });
+
+  test("没有 channels 时追加一项，正文不是对象时返回 null", () => {
+    const next = withModelChannel({ key: "a" }, "c");
+    expect(next).toEqual({ key: "a", channels: [{ channel: "c", upstream_model: "" }] });
+    expect(withModelChannel(null, "c")).toBeNull();
+    expect(withModelChannel([], "c")).toBeNull();
+  });
+
+  test("不修改传入的对象", () => {
+    const copy = structuredClone(body);
+    withModelChannel(copy, "x");
+    expect(copy).toEqual(body);
+  });
+});
+
+describe("withModelField / withModelUpstream", () => {
+  test("已有字段原位替换，键顺序不变；新字段追加到末尾", () => {
+    const next = withModelField(body, "credits", 20)!;
+    expect(Object.keys(next)).toEqual(Object.keys(body));
+    expect(next.credits).toBe(20);
+    const added = withModelField(body, "hint", "提示")!;
+    expect(Object.keys(added).at(-1)).toBe("hint");
+    expect(withModelField("x", "a", 1)).toBeNull();
+  });
+
+  test("上游模型只改 upstream_model，渠道保持", () => {
+    const next = withModelUpstream(body, "v2")!;
+    expect(next.channels).toEqual([{ channel: "old", upstream_model: "v2" }]);
+    expect(Object.keys(next)).toEqual(Object.keys(body));
+    expect(withModelUpstream({ key: "a" }, "m")!.channels).toEqual([
+      { channel: "", upstream_model: "m" },
+    ]);
+  });
+
+  test("用 JSON 文本来回转一遍，键顺序仍然保持", () => {
+    const step = withModelField(withModelChannel(body, "n")!, "label", "改")!;
+    const round = JSON.parse(JSON.stringify(step)) as typeof body;
+    expect(Object.keys(round)).toEqual(Object.keys(body));
+    expect(Object.keys(round.params)).toEqual(["b", "a"]);
+  });
+});
+
+describe("checkDeadline", () => {
+  test("Go 时长写法通过", () => {
+    for (const ok of ["30m", "1h", "90s", "1h30m", "1.5h", "500ms"])
+      expect(checkDeadline(ok)).toBeNull();
+  });
+
+  test("空值与错误格式给出提示", () => {
+    expect(checkDeadline("")).toContain("请填写");
+    for (const bad of ["30", "m", "30 分钟", "-5m", "1d"])
+      expect(checkDeadline(bad)).toContain("格式");
+  });
+});
+
+describe("checkIdleTimeout", () => {
+  test("留空表示用平台默认值，不报错", () => {
+    expect(checkIdleTimeout("")).toBeNull();
+    expect(checkIdleTimeout("   ")).toBeNull();
+  });
+
+  test("Go 时长写法通过", () => {
+    for (const ok of ["30s", "90s", "2m", "1m30s", "10m"]) expect(checkIdleTimeout(ok)).toBeNull();
+  });
+
+  test("错误格式给出提示，范围 10s – 10m 之外也提示", () => {
+    for (const bad of ["30", "m", "两分钟", "-5s"]) expect(checkIdleTimeout(bad)).toContain("格式");
+    for (const out of ["5s", "9s", "11m", "1h"]) expect(checkIdleTimeout(out)).toContain("10s");
+  });
+});
+
+describe("默认价格读写", () => {
+  test("按次改 unit、按秒改 per_second，其余定价与键顺序不动；Token 计费不适用", () => {
+    const perCall = { key: "a", pricing: { billing: "per_call", unit: 4, tiers: [] } };
+    expect(withDefaultPrice(perCall, 9)?.pricing).toEqual({
+      billing: "per_call",
+      unit: 9,
+      tiers: [],
+    });
+    const perSecond = { pricing: { billing: "per_second", per_second: 2 } };
+    expect(withDefaultPrice(perSecond, 3)?.pricing).toEqual({
+      billing: "per_second",
+      per_second: 3,
+    });
+    expect(
+      withDefaultPrice({ pricing: { billing: "token", token: { in: 1, out: 1 } } }, 3),
+    ).toBeNull();
+    expect(withDefaultPrice({}, 3)).toBeNull();
+  });
+
+  test("describeDefaultPrice", () => {
+    expect(describeDefaultPrice({ billing: "per_call", unit: 4 })).toBe("4 积分 / 次");
+    expect(describeDefaultPrice({ billing: "per_second", per_second: 2 })).toBe("2 积分 / 秒");
+    expect(describeDefaultPrice({ billing: "token", token: { in: 2, out: 8 } })).toContain(
+      "输入 2",
+    );
+    expect(describeDefaultPrice(null)).toBe("-");
+  });
+});
+
+describe("换渠道不动协议", () => {
+  test("协议与渠道无关：withModelChannel 保留 channels[0].protocol", () => {
+    const protocol = { plugin: "openai", version: "1.0.0", settings: { api: "responses" } };
+    const next = withModelChannel(
+      { key: "m", channels: [{ channel: "old", upstream_model: "v1", protocol }] },
+      "new",
+    );
+    expect(next?.channels).toEqual([{ channel: "new", upstream_model: "v1", protocol }]);
+  });
+});
+
+describe("Agent 模型接口格式", () => {
+  test("旧配置、缺失字段与非法格式按 OpenAI 兼容读取", () => {
+    for (const value of [
+      null,
+      {},
+      { channels: [] },
+      { channels: [null] },
+      { channels: [{}] },
+      { channels: [{ api_format: "" }] },
+      { channels: [{ api_format: "openai" }] },
+      { channels: [{ api_format: "claude" }] },
+    ])
+      expect(readModelApiFormat(value)).toBe("openai");
+    expect(readModelApiFormat({ channels: [{ api_format: "gemini" }] })).toBe("gemini");
+  });
+
+  test("选择 Gemini 写入首渠道，改回 OpenAI 删除字段并保留其他配置", () => {
+    const original = {
+      ...body,
+      kind: "agent",
+      channels: [
+        { channel: "c", upstream_model: "m", extra: "保留" },
+        { channel: "backup", upstream_model: "other" },
+      ],
+    };
+    const copy = structuredClone(original);
+    const gemini = withModelApiFormat(original, "gemini");
+    expect(gemini).toEqual({
+      ...original,
+      channels: [{ ...original.channels[0], api_format: "gemini" }, original.channels[1]],
+    });
+    expect(withModelApiFormat(gemini, "openai")).toEqual(original);
+    expect(original).toEqual(copy);
+    expect(readModelApiFormat(gemini)).toBe("gemini");
+  });
+
+  test("未配置渠道时可写 Gemini，清除默认格式不凭空新增渠道", () => {
+    expect(withModelApiFormat({ key: "m" }, "gemini")).toEqual({
+      key: "m",
+      channels: [{ api_format: "gemini" }],
+    });
+    expect(withModelApiFormat({ key: "m" }, "openai")).toEqual({ key: "m" });
+  });
+
+  test("新建 Agent 默认 OpenAI，切换其他能力后移除 Gemini 格式", () => {
+    const agent = withModelKind(blankModelBody("c", "m"), "agent", [])!.body;
+    expect(readModelApiFormat(agent)).toBe("openai");
+    expect(agent.channels).toEqual([{ channel: "c", upstream_model: "m" }]);
+    const gemini = withModelApiFormat(agent, "gemini");
+    for (const kind of ["text", "video", "image", "audio", ""]) {
+      const next = withModelKind(gemini, kind, [])!.body;
+      expect(next.channels).toEqual([{ channel: "c", upstream_model: "m" }]);
+    }
+    expect(withModelKind(gemini, "agent", [])!.body.channels).toEqual([
+      { channel: "c", upstream_model: "m", api_format: "gemini" },
+    ]);
+    expect(readModelApiFormat(gemini)).toBe("gemini");
+  });
+
+  test("改回 OpenAI 时关闭看视频，保留看图和其他能力，且不修改原对象", () => {
+    const original = {
+      kind: "agent",
+      channels: [{ api_format: "gemini" }],
+      capabilities: { vision: true, video: true },
+    };
+    const next = withModelApiFormat(original, "openai");
+    expect(next.capabilities).toEqual({ vision: true });
+    expect(original.capabilities.video).toBe(true);
+  });
+});

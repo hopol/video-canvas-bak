@@ -1,0 +1,223 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"go.uber.org/zap"
+	"gorm.io/datatypes"
+
+	"video-canvas/internal/config"
+	"video-canvas/internal/model"
+	"video-canvas/internal/pkg/logger"
+	"video-canvas/internal/pkg/ws"
+	"video-canvas/internal/provider"
+	"video-canvas/internal/provider/modelcfg"
+	"video-canvas/internal/repository"
+)
+
+// GenerationTaskRepo 是生成任务与积分的数据访问接口（真实实现是 repository.GenerationTaskRepository）。
+// 事务内可用的原语来自 repository.GenerationTaskTx；WithTx 把它们绑定到同一个数据库事务，
+// 状态迁移与积分变更的组合逻辑（业务规则）全部写在本层。
+type GenerationTaskRepo interface {
+	repository.GenerationTaskTx
+	// WithTx 在一个事务里执行 fn，fn 返回错误则整体回滚。
+	WithTx(ctx context.Context, fn func(tx repository.GenerationTaskTx) error) error
+	// GetByID 按 id + user_id 查询任务（含 is_test），不存在或不属于该用户返回 repository.ErrNotFound。
+	GetByID(ctx context.Context, userID, id uint64) (*model.GenerationTask, error)
+	// ListByIDs 批量查询该用户的正式任务（排除 is_test）。
+	ListByIDs(ctx context.Context, userID uint64, ids []uint64) ([]model.GenerationTask, error)
+	// ListActive 查询该用户所有非终态的正式任务（排除 is_test）。
+	ListActive(ctx context.Context, userID uint64) ([]model.GenerationTask, error)
+	// ListByNode 查询该用户在某张画布某个节点上的正式任务（排除 is_test），新的在前，最多 limit 个。
+	ListByNode(ctx context.Context, userID, canvasID uint64, nodeID string, limit int) ([]model.GenerationTask, error)
+	// GetCredit 读取积分账户，不存在返回 repository.ErrNotFound。
+	GetCredit(ctx context.Context, userID uint64) (*model.UserCredit, error)
+	// GetByIDAny 只按 id 查询，供系统内部（队列 worker）使用，不做归属过滤。不存在返回 repository.ErrNotFound。
+	GetByIDAny(ctx context.Context, id uint64) (*model.GenerationTask, error)
+	// AcquireSlot 为 pending 任务申请用户名额与渠道名额（见 repository.SlotRequest）。
+	AcquireSlot(ctx context.Context, req repository.SlotRequest) (repository.SlotResult, error)
+	// SaveTrace 写入试跑任务的执行追踪（只更新 is_test 任务），任务不存在或不是试跑任务返回 repository.ErrNotFound。
+	SaveTrace(ctx context.Context, id uint64, trace datatypes.JSON) error
+}
+
+// 任务的统一错误码（error_code 字段）与给用户看的文案。上游原始错误信息只进日志，绝不透给用户。
+const (
+	TaskErrCanceled = "canceled"
+	TaskErrTimeout  = "timeout"
+
+	taskMsgCanceled = "已取消，积分已退回"
+	// 已进入生成后用户取消：平台已经产生费用，冻结的积分照扣
+	taskMsgCanceledCharged = "已取消，已进入生成的积分不退回"
+	taskMsgTimeout         = "生成超时，积分已退回"
+	// taskMsgQueueTimeout 用于一直在排队、从没调用过上游就超时的任务（渠道同时生成数已满，排了很久）
+	taskMsgQueueTimeout = "排队超时，积分已退回"
+)
+
+const (
+	defaultTaskDeadline      = 30 * time.Minute // 模型没配置 deadline 时的默认超时
+	maxReconcileIDs          = 100              // 批量对账一次最多查多少个任务
+	maxNodeTasks             = 20               // 按节点查生成记录一次最多返回多少个（只给详情页看最近的几次）
+	maxIdempotencyKeyLen     = 128              // 与 generation_tasks.idempotency_key 列宽一致
+	executorCancelTimeout    = 5 * time.Second  // 取消时“尽力通知上游”的超时
+	upstreamLimit            = 16 * 1024        // 写进任务事件的上游错误原文上限（字节），只为保护存储
+	taskUserVisibleErrPrefix = "生成参数不合法："
+	taskProgressDone         = 100     // 进入 finalizing 时的进度：上游已出结果，只剩转存
+	syncTaskIDPrefix         = "sync-" // 同步接口没有上游任务 id 时的占位前缀（sync-<任务 id>）
+	emptyJSONArray           = "[]"    // outputs / provider_result 为空时写入的 JSON，前端与 worker 不用处理 null
+	taskFieldProviderState   = "provider_state"
+)
+
+// 用于让事务回滚的内部哨兵：提交时命中了幂等唯一索引（并发的同 key 请求先提交了）。
+var errIdempotentConflict = errors.New("idempotent conflict")
+
+// CanvasCoverSetter 在画布还没有封面时把素材设成封面（由画布仓储实现）。
+type CanvasCoverSetter interface {
+	// SetCoverIfEmpty 画布不存在、不属于该用户或已经有封面都返回 nil，不改 revision 和更新时间。
+	SetCoverIfEmpty(ctx context.Context, userID, canvasID, assetID uint64) error
+}
+
+// GenerationTaskObserver 在任务提交后更新关联业务投影，不参与任务积分结算。
+type GenerationTaskObserver interface {
+	// OnTaskChanged 根据已持久化的任务更新关联业务数据。
+	OnTaskChanged(context.Context, *model.GenerationTask) error
+}
+
+// GenerationTaskDeps 是任务服务的依赖，全部以接口注入。
+type GenerationTaskDeps struct {
+	Repo        GenerationTaskRepo
+	Registry    provider.Registry
+	Executor    provider.Executor
+	Assets      provider.AssetStore
+	Broadcaster ws.Broadcaster // 为 nil 时不推送
+	Config      config.AI
+	Limits      TaskLimits        // 初始积分与并发上限的运行时来源（系统设置 + 单用户覆盖）；为 nil 时只用 Config
+	Covers      CanvasCoverSetter // 任务成功时把第一张生成的图写成画布封面；为 nil 时不写
+}
+
+// GenerationTaskOption 用于替换可注入的部分（主要给测试用）。
+type GenerationTaskOption func(*GenerationTaskService)
+
+// WithInputValidator 替换输入校验函数，默认 modelcfg.ValidateInput。
+func WithInputValidator(fn func(kind string, caps modelcfg.Capabilities, input map[string]any) (map[string]any, []modelcfg.FieldError)) GenerationTaskOption {
+	return func(s *GenerationTaskService) { s.validateInput = fn }
+}
+
+// WithTaskClock 替换时间来源（测试用）。
+func WithTaskClock(now func() time.Time) GenerationTaskOption {
+	return func(s *GenerationTaskService) { s.now = now }
+}
+
+// GenerationTaskService 负责任务的提交、取消、查询、状态迁移与积分事务，并实现 provider.TaskStore。
+// worker（internal/provider/worker）只通过本服务导出的迁移方法改变任务状态，自己不碰事务和积分。
+type GenerationTaskService struct {
+	repo        GenerationTaskRepo
+	registry    provider.Registry
+	executor    provider.Executor
+	assets      provider.AssetStore
+	broadcaster ws.Broadcaster
+	cfg         config.AI
+	limits      TaskLimits
+	covers      CanvasCoverSetter
+	observer    GenerationTaskObserver
+
+	validateInput func(kind string, caps modelcfg.Capabilities, input map[string]any) (map[string]any, []modelcfg.FieldError)
+	now           func() time.Time
+}
+
+// 编译期确认：任务服务满足 worker 的存储契约与试跑任务接口，真实仓储满足本服务声明的仓储接口。
+var (
+	_ provider.TaskStore = (*GenerationTaskService)(nil)
+	_ TestTaskCreator    = (*GenerationTaskService)(nil)
+	_ GenerationTaskRepo = (*repository.GenerationTaskRepository)(nil)
+)
+
+// NewGenerationTaskService 创建任务服务；Broadcaster 为 nil 时换成空实现，调用方不用判空。
+func NewGenerationTaskService(deps GenerationTaskDeps, opts ...GenerationTaskOption) *GenerationTaskService {
+	s := &GenerationTaskService{
+		repo:          deps.Repo,
+		registry:      deps.Registry,
+		executor:      deps.Executor,
+		assets:        deps.Assets,
+		broadcaster:   deps.Broadcaster,
+		cfg:           deps.Config,
+		limits:        deps.Limits,
+		covers:        deps.Covers,
+		validateInput: modelcfg.ValidateInput,
+		now:           time.Now,
+	}
+	if s.broadcaster == nil {
+		s.broadcaster = ws.NopBroadcaster{}
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// SetTaskObserver 在初始化时绑定关联业务观察者，必须在接收请求和启动队列前调用。
+func (s *GenerationTaskService) SetTaskObserver(observer GenerationTaskObserver) {
+	// 1. 关联业务依赖任务服务，通过初始化后注入解除构造顺序的循环。
+	s.observer = observer
+}
+
+// maxActiveTasks 返回用户进行中任务的上限：单用户覆盖 > 系统设置默认 > DefaultMaxActiveTasks。
+// 没有注入 limits 时用 DefaultMaxActiveTasks。
+func (s *GenerationTaskService) maxActiveTasks(ctx context.Context, userID uint64) (int, error) {
+	if s.limits != nil {
+		return s.limits.MaxActiveTasks(ctx, userID)
+	}
+	return DefaultMaxActiveTasks, nil
+}
+
+// queueMultiplier 返回排队倍数：用户非终态任务数达到“并发上限 × 倍数”才拒绝新任务。没有注入 limits 时用 DefaultQueueMultiplier。
+func (s *GenerationTaskService) queueMultiplier(ctx context.Context) (int, error) {
+	if s.limits != nil {
+		return s.limits.QueueMultiplier(ctx)
+	}
+	return DefaultQueueMultiplier, nil
+}
+
+// queueMaxWait 返回任务排队等名额的最长时间：没有注入 limits 时用 DefaultQueueMaxWaitMinutes。
+func (s *GenerationTaskService) queueMaxWait(ctx context.Context) (time.Duration, error) {
+	if s.limits != nil {
+		return s.limits.QueueMaxWait(ctx)
+	}
+	return DefaultQueueMaxWaitMinutes * time.Minute, nil
+}
+
+// defaultMaxActiveTasks 返回全局默认并发上限：没有注入 limits 时用 DefaultMaxActiveTasks。
+func (s *GenerationTaskService) defaultMaxActiveTasks(ctx context.Context) (int, error) {
+	if s.limits != nil {
+		return s.limits.DefaultMaxActiveTasks(ctx)
+	}
+	return DefaultMaxActiveTasks, nil
+}
+
+// initialCredits 返回新积分账户的初始积分：系统设置优先，没有注入 limits 时用 DefaultInitialCredits。
+func (s *GenerationTaskService) initialCredits(ctx context.Context) (int, error) {
+	if s.limits != nil {
+		return s.limits.InitialCredits(ctx)
+	}
+	return DefaultInitialCredits, nil
+}
+
+// publish 在事务提交之后向任务所属用户推送最新快照；is_test 任务不推送。
+func (s *GenerationTaskService) publish(ctx context.Context, t *model.GenerationTask) {
+	if t == nil || t.IsTest {
+		return
+	}
+	channel := ws.UserChannel(t.UserID)
+	s.broadcaster.Publish(ctx, channel, ws.Message{
+		Type:    ws.TypeTaskUpdated,
+		Channel: channel,
+		Data:    taskView(t),
+	})
+	if s.observer != nil {
+		if err := s.observer.OnTaskChanged(ctx, t); err != nil {
+			// 任务与积分已提交，不能回滚或重标为失败；关联业务读取时按任务表重新对账。
+			logger.Warn("更新任务关联业务失败，读取时重新对账", logger.TaskID(t.ID), zap.Error(err))
+		}
+	}
+}

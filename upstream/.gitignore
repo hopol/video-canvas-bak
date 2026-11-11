@@ -1,0 +1,31 @@
+# 根目录运行时配置
+.env
+
+# 后端构建产物与运行时数据
+/backend/bin/
+/backend/tmp/
+/backend/**/*.exe
+/backend/data/
+/backend/logs/
+/backend/configs/*.local.yaml
+
+# Agent 运行时（Node）依赖和构建产物
+/agent/node_modules/
+/agent/dist/
+
+# 前端依赖与构建产物
+/web/node_modules/
+/web/dist/
+
+# IDE
+/.idea/
+/.vscode/
+/backend/.idea/
+/backend/.vscode/
+/web/.idea/
+/web/.vscode/
+
+# Agent 运行观测的本地数据（含用户原文，禁止提交）
+.traces/
+
+.claude/worktrees/
