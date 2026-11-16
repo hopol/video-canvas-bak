@@ -15,6 +15,7 @@ import { planAssetNodes } from "@/utils/canvas/asset-nodes";
 import { newCharacterData } from "@/utils/characters/node-character";
 import { newNodeLabel, uploadLabel } from "@/utils/canvas/node-label";
 import { createDefaultScene } from "@/utils/director/scene";
+import { emptyStoryboard } from "@/utils/storyboard/shots";
 import {
   ANIMATED_EDGE_OPTIONS,
   NODE_LIBRARY,
@@ -250,6 +251,8 @@ export function useCanvasMenu({ setNodes, setEdges, defaultModels }: UseCanvasMe
           model: defaultModels?.[meta.kind],
           // 导演台一建出来就带默认场景：一个人物、一台机位，双击就能用
           ...(meta.kind === "director" ? { scene: createDefaultScene() } : {}),
+          // 分镜表一建出来是空表，镜头由用户在表格里加
+          ...(meta.kind === "storyboard" ? { storyboard: emptyStoryboard() } : {}),
           // 角色卡一建出来就是空角色节点：名字「未命名角色 N」、形象名「基础形象」，等用户补图
           ...(meta.kind === "character"
             ? newCharacterData(getNodes().map((item) => item.data.label))

@@ -137,6 +137,7 @@ func (s *GenerationTaskService) createOne(ctx context.Context, task *model.Gener
 	}
 	// 任务与队列里的 job 已在同一个事务里提交；事务提交之后才推送，避免对方读到还没提交的数据
 	s.publish(ctx, task)
+	logGenCreated(ctx, task)
 	return task, nil
 }
 
@@ -340,6 +341,15 @@ func (s *GenerationTaskService) insertAndFreeze(ctx context.Context, task *model
 				return err
 			}
 			if err := guardDramaGeneration(ctx, tx, task); err != nil {
+				return err
+			}
+		}
+		// 0b. 营销脚本出片：先看幂等，再锁营销项目与脚本行（校验归属、没有在出片或重写、旁白无问题），顺序同删除项目与改脚本。
+		if strings.HasPrefix(task.NodeID, model.MarketingNodePrefix) {
+			if existing, err = s.findIdempotent(ctx, tx, userID, key); err != nil || existing != nil {
+				return err
+			}
+			if err := GuardMarketingGeneration(ctx, tx, task); err != nil {
 				return err
 			}
 		}

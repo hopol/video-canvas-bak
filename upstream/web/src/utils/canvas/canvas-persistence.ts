@@ -10,6 +10,7 @@ import { unflatten, type MergeEdge, type MergeOptions } from "./graph-changes";
 import { isUploading } from "./upload-state";
 import { dropNodeOrigin } from "./placement";
 import { normalizeLegacyCharacter } from "@/utils/characters/node-character";
+import { normalizeStoryboard } from "@/utils/storyboard/shots";
 
 /** 扩图中途被打断（刷新、关页）后，节点上显示的话：合成图还没传好，只能回原图重新扩 */
 export const OUTPAINT_INTERRUPTED = "扩图被中断，请回到原图重新扩图";
@@ -109,6 +110,7 @@ export function serializeGraph(
           ...(rest.outpaintFrom !== undefined ? { outpaintFrom: rest.outpaintFrom } : {}),
           ...(rest.scene !== undefined ? { scene: rest.scene } : {}),
           ...(rest.character !== undefined ? { character: rest.character } : {}),
+          ...(rest.storyboard !== undefined ? { storyboard: rest.storyboard } : {}),
           ...(rest.voiceTaskId !== undefined ? { voiceTaskId: rest.voiceTaskId } : {}),
           ...(rest.voiceAfterImage?.length ? { voiceAfterImage: rest.voiceAfterImage } : {}),
           ...(rest.drama !== undefined ? { drama: rest.drama } : {}),
@@ -145,6 +147,16 @@ function withDirectorScene<T extends { data: unknown }>(node: T): T {
 }
 
 /**
+ * 分镜表节点读档时规整镜头：结构不对读成空表，越界的时长、不认识的景别运镜修正掉；
+ * 别的种类的节点原样返回。
+ */
+function withStoryboard<T extends { data: unknown }>(node: T): T {
+  const data = node.data as { kind?: string; storyboard?: unknown };
+  if (data.kind !== "storyboard") return node;
+  return { ...node, data: { ...data, storyboard: normalizeStoryboard(data.storyboard) } };
+}
+
+/**
  * 读一个节点：只修这个节点自己的数据，不看它的组在不在。
  * parentId 是否有效、组是否排在成员前，要看整张画布才知道，由 normalizeFlowNodes 在整批上统一处理。
  * 所以一次只拿到一个节点的地方（Agent 补丁新建节点）必须用这个，不能用 deserializeGraph：
@@ -172,7 +184,9 @@ export function deserializeNode(node: CanvasGraphDto["nodes"][number]): FlowNode
       ? { ...node, data: { ...node.data, status: "idle" as const } }
       : node;
   // 老存档里带 origin 的节点，position 统一换算成左上角
-  return dropNodeOrigin(normalizeLegacyCharacter(withDirectorScene(fixed)) as FlowNode);
+  return dropNodeOrigin(
+    normalizeLegacyCharacter(withStoryboard(withDirectorScene(fixed))) as FlowNode,
+  );
 }
 
 /** 把 Agent 补丁里拍平的节点字段（"data.x" 路径）造成前端节点。 */

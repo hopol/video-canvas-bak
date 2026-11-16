@@ -105,3 +105,75 @@ describe("deserializeNode：单个节点的读档修整", () => {
     expect((node.data as { status?: string }).status).toBe("idle");
   });
 });
+
+describe("Agent 补丁写分镜表", () => {
+  const shot = (id: string, scene: string) => ({
+    id,
+    scene,
+    shot: "中景",
+    camera: "固定",
+    action: "",
+    dialogue: "",
+    duration: 3,
+  });
+
+  test("补丁新建的分镜表带着镜头，读进来时照样规整", () => {
+    const patch: GraphChange[] = [
+      {
+        kind: "node",
+        op: "create",
+        id: "sb",
+        after: {
+          id: "sb",
+          type: "canvas",
+          position: { x: 0, y: 0 },
+          "data.kind": "storyboard",
+          "data.label": "分镜表",
+          "data.storyboard": { shots: [shot("a", "推门"), { ...shot("b", "看窗"), duration: 99 }] },
+        },
+      },
+    ];
+    const { nodes } = applyChanges({ nodes: [], edges: [] }, patch, merge);
+    const shots = byId(nodes, "sb").data.storyboard?.shots ?? [];
+    expect(shots.map((s) => s.scene)).toEqual(["推门", "看窗"]);
+    expect(shots[1].duration).toBe(60);
+  });
+
+  test("补丁改已有分镜表的镜头：整份 storyboard 换成新的", () => {
+    const local = applyChanges(
+      { nodes: [], edges: [] },
+      [
+        {
+          kind: "node",
+          op: "create",
+          id: "sb",
+          after: {
+            id: "sb",
+            type: "canvas",
+            position: { x: 0, y: 0 },
+            "data.kind": "storyboard",
+            "data.label": "分镜表",
+            "data.storyboard": { shots: [shot("a", "推门"), shot("b", "看窗")] },
+          },
+        },
+      ],
+      merge,
+    );
+    const before = byId(local.nodes, "sb").data.storyboard;
+    const next = { shots: [shot("b", "看窗"), { ...shot("a", "推门"), shot: "特写" }] };
+    const { nodes } = applyChanges(
+      local,
+      [
+        {
+          kind: "node",
+          op: "update",
+          id: "sb",
+          before: { "data.storyboard": before },
+          after: { "data.storyboard": next },
+        },
+      ],
+      merge,
+    );
+    expect(byId(nodes, "sb").data.storyboard).toEqual(next);
+  });
+});

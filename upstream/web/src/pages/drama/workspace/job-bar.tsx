@@ -7,6 +7,7 @@ import { cancelJob, pausePlanning, resumePlanning, retryBuiltin, submitJob } fro
 import { dramaErrorMessage, jobFailureMessage } from "@/api/drama/errors";
 import type { DramaJob } from "@/api/drama/type";
 import { Button } from "@/components/ui/button";
+import { TaskIdTag } from "@/components/task-id-tag";
 import { DURATION, EASE_OUT, SPRING } from "@/lib/motion";
 import { useDramaJobsStore } from "@/store/drama";
 import { cn } from "@/lib/utils";
@@ -19,6 +20,7 @@ import {
   jobTitle,
   planningEtaMinutes,
   planningRow,
+  retryEpisodes,
   userJobs,
   type InPlaceView,
   type PlanningAction,
@@ -66,12 +68,16 @@ function JobRow({ job }: { job: DramaJob }) {
   const active = isActiveJob(job);
 
   const retry = async () => {
+    const episodes = retryEpisodes(job, drama.episodes);
+    // 拆解失败前已把所选集全部写入：没有剩下要拆的，关掉这条即可
+    if (job.step === "breakdown" && episodes.length === 0) {
+      useDramaJobsStore.getState().dismiss(drama.id, job.id);
+      void refresh();
+      return;
+    }
     setBusy(true);
     try {
-      const next = await submitJob(drama.id, {
-        step: job.step,
-        episodes: job.episodes,
-      });
+      const next = await submitJob(drama.id, { step: job.step, episodes });
       useDramaJobsStore.getState().dismiss(drama.id, job.id);
       useDramaJobsStore.getState().applyJob(drama.id, next);
       void refresh();
@@ -115,9 +121,13 @@ function JobRow({ job }: { job: DramaJob }) {
           </>
         ) : (
           <>
-            <span className="text-destructive min-w-0 flex-1 truncate">
-              <b className="font-medium">{jobTitle(job)}失败</b>
-              <span className="ml-2 text-xs">{jobFailureMessage(job)} · 失败不扣积分</span>
+            <span className="text-destructive min-w-0 flex-1">
+              <span className="block truncate">
+                <b className="font-medium">{jobTitle(job)}失败</b>
+                <span className="ml-2 text-xs">{jobFailureMessage(job)} · 失败不扣积分</span>
+              </span>
+              {/* 用户把任务 ID 发给运维，运维按它在服务器日志里查到这次运行（run_id 与它相同） */}
+              <TaskIdTag id={job.id} />
             </span>
             <Button variant="outline" size="xs" disabled={busy} onClick={() => void retry()}>
               <RotateCw />

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"video-canvas/internal/agent/canvasgraph"
 	"video-canvas/internal/drama"
@@ -24,6 +25,14 @@ type DramaCanvasRepo interface {
 type DramaCanvasAsset struct {
 	NodeID string      `json:"node_id"`
 	Asset  drama.Asset `json:"asset"`
+}
+
+// DramaBreakdownBatch 是一批拆解结果：这批集号、模型给出的资产、这次调用的费用、各类资产新建节点的默认图片模型 key（可为 nil）。
+type DramaBreakdownBatch struct {
+	Episodes []int
+	Assets   []drama.Asset
+	Cost     int
+	Models   map[string]string
 }
 
 // DramaCanvasService 提供不依赖 Agent run 的短剧画布写入口，复用公共图差异、CAS 重放和 patch 协议。
@@ -52,23 +61,24 @@ type dramaScope struct {
 	selected                         map[int]bool
 }
 
-// ApplyBreakdown 合并资产并原子锁定选择集；models 是各类资产（character / scene / prop）新建节点的默认图片模型 key，可为 nil；新增角色直接写成带 character 元数据的节点，只返回本次新增节点。
-func (s *DramaCanvasService) ApplyBreakdown(ctx context.Context, userID, dramaID, canvasID, jobID uint64, episodes []int, assets []drama.Asset, models map[string]string) ([]DramaCanvasAsset, error) {
+// ApplyBreakdown 把一批资产合并进画布并原子锁定这批集，同一事务把集号、新节点、资产和费用累加进任务检查点；
+// 新增角色直接写成带 character 元数据的节点，只返回本批新增节点。这批已写入过（重放）时什么都不做。
+func (s *DramaCanvasService) ApplyBreakdown(ctx context.Context, userID, dramaID, canvasID, jobID uint64, batch DramaBreakdownBatch) ([]DramaCanvasAsset, error) {
 	// 1. 先校验真实模型结果与选择范围，避免非法输出造成部分写画布或锁集。
-	if err := (drama.BreakdownOutput{Assets: assets}).Validate(); err != nil {
+	if err := (drama.BreakdownOutput{Assets: batch.Assets}).Validate(); err != nil {
 		return nil, errcode.ErrDramaOutputInvalid
 	}
-	selected, err := dramaEpisodeSet(episodes)
+	selected, err := dramaEpisodeSet(batch.Episodes)
 	if err != nil {
 		return nil, err
 	}
-	sc := dramaScope{userID: userID, dramaID: dramaID, canvasID: canvasID, jobID: jobID, episodes: episodes, selected: selected}
+	sc := dramaScope{userID: userID, dramaID: dramaID, canvasID: canvasID, jobID: jobID, episodes: batch.Episodes, selected: selected}
 	// 2. CAS 冲突重读重放整个事务；失败尝试里的集锁一起回滚。角色数据内嵌在画布 payload 里，
 	//    随画布 CAS 一起提交或丢弃，不再有需要单独回滚的角色卡。
 	out, err := WriteCanvas(ctx, s.repo, userID, canvasID, func(g *canvasgraph.Graph, revision uint64) (breakdownAttempt, error) {
 		attempt := breakdownAttempt{created: []DramaCanvasAsset{}, before: revision, revision: revision}
 		err := s.repo.WithTx(ctx, func(tx repository.DramaCanvasTx) error {
-			return breakdownTx(ctx, tx, g, revision, &attempt, sc, assets, models)
+			return breakdownTx(ctx, tx, g, revision, &attempt, sc, batch)
 		})
 		return attempt, err
 	})
@@ -98,24 +108,32 @@ func dramaEpisodeSet(episodes []int) (map[int]bool, error) {
 	return selected, nil
 }
 
-// lockedJobCheckpoint 读取并校验仍在运行的任务及其崩溃恢复标记。
-func lockedJobCheckpoint(ctx context.Context, tx repository.DramaCanvasTx, userID, canvasID, jobID uint64, step string) (*model.DramaJob, canvasCheckpoint, error) {
+// lockedJobCheckpoint 读取并校验仍在运行的任务及其检查点。
+func lockedJobCheckpoint(ctx context.Context, tx repository.DramaCanvasTx, userID, canvasID, jobID uint64, step string) (*model.DramaJob, dramaCheckpoint, error) {
 	job, err := tx.JobForUpdate(ctx, userID, canvasID, jobID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return nil, canvasCheckpoint{}, errcode.ErrDramaStepNotReady
+		return nil, dramaCheckpoint{}, errcode.ErrDramaStepNotReady
 	}
 	if err != nil {
-		return nil, canvasCheckpoint{}, err
+		return nil, dramaCheckpoint{}, err
 	}
 	if job.Status != "running" || job.Step != step {
-		return nil, canvasCheckpoint{}, errcode.ErrDramaStepNotReady
+		return nil, dramaCheckpoint{}, errcode.ErrDramaStepNotReady
 	}
-	checkpoint, err := readCanvasCheckpoint(job.Output)
-	return job, checkpoint, err
+	return job, readDramaCheckpoint(job.Output), nil
 }
 
-// breakdownTx 在单个事务里完成任务校验、集锁校验、合并、画布 CAS、锁集与提交标记。
-func breakdownTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgraph.Graph, revision uint64, attempt *breakdownAttempt, sc dramaScope, assets []drama.Asset, models map[string]string) error {
+// saveCheckpoint 把累加后的检查点合并进任务 output，与画布写入同一事务。
+func saveCheckpoint(ctx context.Context, tx repository.DramaCanvasTx, userID, jobID uint64, cp dramaCheckpoint) error {
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	return tx.MarkCanvasCommitted(ctx, userID, jobID, raw)
+}
+
+// breakdownTx 在单个事务里完成任务校验、集锁校验、合并、画布 CAS、锁集与检查点累加。
+func breakdownTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgraph.Graph, revision uint64, attempt *breakdownAttempt, sc dramaScope, batch DramaBreakdownBatch) error {
 	job, checkpoint, err := lockedJobCheckpoint(ctx, tx, sc.userID, sc.canvasID, sc.jobID, "breakdown")
 	if err != nil {
 		return err
@@ -123,8 +141,7 @@ func breakdownTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgrap
 	if job.DramaID != sc.dramaID {
 		return errcode.ErrDramaNotFound
 	}
-	if checkpoint.CanvasCommitted {
-		attempt.created = checkpoint.NewAssets
+	if containsAll(checkpoint.Done, sc.episodes) {
 		return nil
 	}
 	if err := checkEpisodesLockable(ctx, tx, sc); err != nil {
@@ -133,11 +150,12 @@ func breakdownTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgrap
 	if err := tx.CheckCanvasRevision(ctx, sc.userID, sc.canvasID, revision); err != nil {
 		return err
 	}
+	assets := batch.Assets
 	graphAssets := make([]canvasgraph.DramaAsset, len(assets))
 	for i, a := range assets {
 		graphAssets[i] = canvasgraph.DramaAsset{Type: a.Type, Name: a.Name, Look: a.Look, Aliases: a.Aliases, Episodes: a.Episodes, Description: a.Description, VoicePrompt: a.VoicePrompt}
 	}
-	merged, err := canvasgraph.MergeDrama(g, graphAssets, canvasgraph.Options{DramaModels: models})
+	merged, err := canvasgraph.MergeDrama(g, graphAssets, canvasgraph.Options{DramaModels: batch.Models})
 	if err != nil {
 		return errcode.ErrDramaOutputInvalid
 	}
@@ -149,11 +167,16 @@ func breakdownTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgrap
 	if err := tx.LockEpisodes(ctx, sc.userID, sc.dramaID, sc.episodes); err != nil {
 		return err
 	}
-	marker, err := json.Marshal(canvasCheckpoint{CanvasCommitted: true, NewAssets: attempt.created})
-	if err != nil {
+	var result drama.BreakdownOutput
+	_ = json.Unmarshal(checkpoint.Result, &result)
+	result.Assets = append(result.Assets, assets...)
+	if checkpoint.Result, err = json.Marshal(result); err != nil {
 		return err
 	}
-	return tx.MarkCanvasCommitted(ctx, sc.userID, sc.jobID, marker)
+	checkpoint.Done = append(checkpoint.Done, sc.episodes...)
+	checkpoint.NewAssets = append(checkpoint.NewAssets, attempt.created...)
+	checkpoint.Cost += batch.Cost
+	return saveCheckpoint(ctx, tx, sc.userID, sc.jobID, checkpoint)
 }
 
 // commitCanvas 有差异时 CAS 写回画布并返回新 revision；无差异保持原 revision。
@@ -200,21 +223,25 @@ func createdAssets(merged *canvasgraph.DramaResult, assets []drama.Asset) []Dram
 	return created
 }
 
-// ApplyPrompts 为本次新增资产写提示词，保留用户其他参数；CAS 冲突时在最新画布上重新应用。
-func (s *DramaCanvasService) ApplyPrompts(ctx context.Context, userID, canvasID, jobID uint64, prompts []drama.AssetPrompt) error {
+// ApplyPrompts 写入一组节点提示词，同一事务把已写节点、被安全过滤的资产（filtered）和费用累加进 step 任务的检查点；
+// 这组已写入过（重放）时什么都不做。
+func (s *DramaCanvasService) ApplyPrompts(ctx context.Context, userID, canvasID, jobID uint64, step string, prompts []drama.AssetPrompt, filtered []DramaCanvasAsset, cost int) error {
 	// 1. 只接受资源层校验通过的节点提示词，不把非法模型输出透传成画布编辑。
-	if err := (drama.AssetPromptsOutput{Prompts: prompts}).Validate(); err != nil {
-		return errcode.ErrDramaOutputInvalid
+	if len(prompts) > 0 {
+		if err := (drama.AssetPromptsOutput{Prompts: prompts}).Validate(); err != nil {
+			return errcode.ErrDramaOutputInvalid
+		}
 	}
-	byID := make(map[string]string, len(prompts))
+	pw := promptWrite{step: step, byID: make(map[string]string, len(prompts)), filtered: filtered, cost: cost}
 	for _, prompt := range prompts {
-		byID[prompt.NodeID] = prompt.Prompt
+		pw.byID[prompt.NodeID] = prompt.Prompt
+		pw.ids = append(pw.ids, prompt.NodeID)
 	}
 	// 2. 用同一公共入口计算差异并事务 CAS，前端同时编辑的字段不会被旧快照覆盖。
 	out, err := WriteCanvas(ctx, s.repo, userID, canvasID, func(g *canvasgraph.Graph, revision uint64) (breakdownAttempt, error) {
 		out := breakdownAttempt{before: revision, revision: revision}
 		err := s.repo.WithTx(ctx, func(tx repository.DramaCanvasTx) error {
-			return promptsTx(ctx, tx, g, revision, &out, userID, canvasID, jobID, byID)
+			return promptsTx(ctx, tx, g, revision, &out, userID, canvasID, jobID, pw)
 		})
 		return out, err
 	})
@@ -225,31 +252,65 @@ func (s *DramaCanvasService) ApplyPrompts(ctx context.Context, userID, canvasID,
 		return err
 	}
 	// 3. 提示词写入成功后发布同格式 patch，不依赖任何 Agent 运行或改动日志。
-	PublishCanvasPatch(ctx, s.bc, userID, CanvasPatch{CanvasID: canvasID, Kind: "asset_prompts", RevisionBefore: out.before, RevisionAfter: out.revision, Changes: out.changes})
+	if len(out.changes) > 0 {
+		PublishCanvasPatch(ctx, s.bc, userID, CanvasPatch{CanvasID: canvasID, Kind: "asset_prompts", RevisionBefore: out.before, RevisionAfter: out.revision, Changes: out.changes})
+	}
 	return nil
 }
 
-// promptsTx 在单个事务里校验任务、写入提示词并标记画布已提交。
-func promptsTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgraph.Graph, revision uint64, out *breakdownAttempt, userID, canvasID, jobID uint64, byID map[string]string) error {
-	_, checkpoint, err := lockedJobCheckpoint(ctx, tx, userID, canvasID, jobID, "asset_prompts")
+// promptWrite 是一次提示词写入：所属步骤、节点提示词（ids 保持模型输出顺序）、被安全过滤的资产和这次调用的费用。
+type promptWrite struct {
+	step     string
+	byID     map[string]string
+	ids      []string
+	filtered []DramaCanvasAsset
+	cost     int
+}
+
+// promptsTx 在单个事务里校验任务、写入提示词并累加检查点。
+func promptsTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgraph.Graph, revision uint64, out *breakdownAttempt, userID, canvasID, jobID uint64, pw promptWrite) error {
+	_, checkpoint, err := lockedJobCheckpoint(ctx, tx, userID, canvasID, jobID, pw.step)
 	if err != nil {
 		return err
 	}
-	if checkpoint.CanvasCommitted {
+	if promptsRecorded(checkpoint, pw) {
 		return nil
 	}
-	if err := tx.CheckCanvasRevision(ctx, userID, canvasID, revision); err != nil {
-		return err
+	if len(pw.byID) > 0 {
+		if err := tx.CheckCanvasRevision(ctx, userID, canvasID, revision); err != nil {
+			return err
+		}
+		ed, err := canvasgraph.ApplyDramaPrompts(g, pw.byID)
+		if err != nil {
+			return errcode.ErrDramaOutputInvalid
+		}
+		out.changes = ed.Changes
+		if out.revision, err = commitCanvas(ctx, tx, userID, canvasID, revision, ed.Graph, ed.Changes); err != nil {
+			return err
+		}
 	}
-	ed, err := canvasgraph.ApplyDramaPrompts(g, byID)
-	if err != nil {
-		return errcode.ErrDramaOutputInvalid
+	checkpoint.Prompted = append(checkpoint.Prompted, pw.ids...)
+	checkpoint.Filtered = append(checkpoint.Filtered, pw.filtered...)
+	checkpoint.Cost += pw.cost
+	return saveCheckpoint(ctx, tx, userID, jobID, checkpoint)
+}
+
+// promptsRecorded 判断这组提示词与被过滤资产是否都已记进检查点（重放）。
+func promptsRecorded(cp dramaCheckpoint, pw promptWrite) bool {
+	if len(pw.ids) == 0 && len(pw.filtered) == 0 {
+		return true
 	}
-	out.changes = ed.Changes
-	if out.revision, err = commitCanvas(ctx, tx, userID, canvasID, revision, ed.Graph, ed.Changes); err != nil {
-		return err
+	for _, id := range pw.ids {
+		if !slices.Contains(cp.Prompted, id) {
+			return false
+		}
 	}
-	return tx.MarkCanvasCommitted(ctx, userID, jobID, []byte(`{"canvas_committed":true}`))
+	for _, f := range pw.filtered {
+		if !slices.ContainsFunc(cp.Filtered, func(a DramaCanvasAsset) bool { return a.NodeID == f.NodeID }) {
+			return false
+		}
+	}
+	return true
 }
 
 // DeleteEpisode 删第 no 集：同一事务里删集和片段、后面的集号补位，并改写资产画布上的出现集数
@@ -302,20 +363,4 @@ func deleteEpisodeTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvas
 	out.changes = ed.Changes
 	out.revision, err = commitCanvas(ctx, tx, userID, canvasID, revision, ed.Graph, ed.Changes)
 	return err
-}
-
-// canvasCheckpoint 与流水线共用持久提交标记；result/cost 由核心写入，仓储只合并这里的字段。
-type canvasCheckpoint struct {
-	CanvasCommitted bool               `json:"canvas_committed"`
-	NewAssets       []DramaCanvasAsset `json:"new_assets"`
-}
-
-// readCanvasCheckpoint 读取崩溃恢复标记，已提交的画布不能因重放再次写节点或锁集。
-func readCanvasCheckpoint(raw []byte) (canvasCheckpoint, error) {
-	var checkpoint canvasCheckpoint
-	if len(raw) == 0 {
-		return checkpoint, nil
-	}
-	err := json.Unmarshal(raw, &checkpoint)
-	return checkpoint, err
 }

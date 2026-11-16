@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,10 +36,40 @@ type dramaMemory struct {
 	segments   []model.DramaSegment
 	hasTakes   bool
 	replaceErr error
+	mu         *sync.Mutex // 并发拆解批次时由 lockedDramaMemory 和假画布共用
+}
+
+// lockedDramaMemory 让并发的拆解批次安全地读写内存仓储：事务和事务外的单次读取共用一把锁，事务内的调用直接落到内层。
+type lockedDramaMemory struct{ *dramaMemory }
+
+func (l lockedDramaMemory) WithTx(ctx context.Context, fn func(repository.DramaTx) error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dramaMemory.WithTx(ctx, fn)
+}
+func (l lockedDramaMemory) Job(ctx context.Context, userID, id, jobID uint64, forUpdate bool) (*model.DramaJob, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dramaMemory.Job(ctx, userID, id, jobID, forUpdate)
+}
+func (l lockedDramaMemory) Jobs(ctx context.Context, userID, id uint64, active bool) ([]model.DramaJob, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dramaMemory.Jobs(ctx, userID, id, active)
+}
+func (l lockedDramaMemory) Project(ctx context.Context, userID, id uint64, forUpdate bool) (*model.DramaProject, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dramaMemory.Project(ctx, userID, id, forUpdate)
+}
+func (l lockedDramaMemory) Episodes(ctx context.Context, userID, id uint64) ([]model.DramaEpisode, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dramaMemory.Episodes(ctx, userID, id)
 }
 
 func newDramaMemory() *dramaMemory {
-	return &dramaMemory{project: model.DramaProject{BaseModel: model.BaseModel{ID: 1}, UserID: 7, CanvasID: 2, Title: "测试", SourceText: "第一章\n小说正文", SourceKind: "novel", SourceSummary: "原文摘要", StyleKey: "custom", StyleCustom: "写实", Revision: 1}, credit: model.UserCredit{UserID: 7, Balance: 1000}, nextID: 10}
+	return &dramaMemory{project: model.DramaProject{BaseModel: model.BaseModel{ID: 1}, UserID: 7, CanvasID: 2, Title: "测试", SourceText: "第一章\n小说正文", SourceKind: "novel", SourceSummary: "原文摘要", StyleKey: "custom", StyleCustom: "写实", Revision: 1}, credit: model.UserCredit{UserID: 7, Balance: 1000}, nextID: 10, mu: &sync.Mutex{}}
 }
 func (r *dramaMemory) WithTx(ctx context.Context, fn func(repository.DramaTx) error) error {
 	before := *r
@@ -307,23 +340,46 @@ func (r *dramaRegistry) Snapshot(_ context.Context, key string) (*provider.Snaps
 
 // dramaTextStreamer 冒充 LLM 网关：按顺序吐出预置文本，并记下每次请求的目标渠道与提示词。
 type dramaTextStreamer struct {
+	mu      sync.Mutex
 	outputs []string
 	prompts []string
 	targets []llmgateway.Target
 	usage   llmgateway.Usage
 	calls   int
 	failAt  int
+	failErr error // failAt 那次返回的错误，空时返回一个普通错误
 	onCall  func()
+	delay   time.Duration // 每次调用先等这么久再出结果，期间 ctx 结束就返回 ctx 的错误
+	// respond 设置后按提示词作答（并发调用时顺序不定），不再使用 outputs / failAt
+	respond func(ctx context.Context, prompt string) (*llmgateway.Result, error)
 }
 
-func (e *dramaTextStreamer) Stream(_ context.Context, tg llmgateway.Target, req llmgateway.Request, _ func(llmgateway.Event)) (*llmgateway.Result, error) {
+func (e *dramaTextStreamer) Stream(ctx context.Context, tg llmgateway.Target, req llmgateway.Request, _ func(llmgateway.Event)) (*llmgateway.Result, error) {
+	e.mu.Lock()
 	e.calls++
+	call := e.calls
 	e.targets = append(e.targets, tg)
 	e.prompts = append(e.prompts, req.Messages[0].Text)
+	e.mu.Unlock()
 	if e.onCall != nil {
 		e.onCall()
 	}
-	if e.calls == e.failAt {
+	if e.delay > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(e.delay):
+		}
+	}
+	if e.respond != nil {
+		return e.respond(ctx, req.Messages[0].Text)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if call == e.failAt {
+		if e.failErr != nil {
+			return nil, e.failErr
+		}
 		return nil, errors.New("上游失败")
 	}
 	if len(e.outputs) == 0 {
@@ -344,10 +400,14 @@ func (s dramaSecrets) Get(_ context.Context, name string) (string, error) {
 }
 
 type dramaPipelineCanvas struct {
+	mem      *dramaMemory // 设置后像真实画布服务一样，在同一把锁里把进度累加进任务检查点
 	applied  int
 	prompted int
-	created  []service.DramaCanvasAsset
+	created  []service.DramaCanvasAsset // 非空时每批都返回它；为空时按资产名生成节点 node-<名字>
 	models   map[string]string
+	assets   []drama.Asset     // 各批收到的资产，按提交顺序
+	prompts  map[string]string // 已写入的节点提示词
+	filtered []service.DramaCanvasAsset
 	// deleted 记录删集调用：短剧 id、画布 id、集号
 	deleted [][3]uint64
 }
@@ -357,20 +417,97 @@ func (c *dramaPipelineCanvas) DeleteEpisode(_ context.Context, _, dramaID, canva
 	return nil
 }
 
-func (c *dramaPipelineCanvas) ApplyBreakdown(_ context.Context, _, _, _, _ uint64, _ []int, _ []drama.Asset, models map[string]string) ([]service.DramaCanvasAsset, error) {
+func (c *dramaPipelineCanvas) ApplyBreakdown(_ context.Context, _, _, _, jobID uint64, batch service.DramaBreakdownBatch) ([]service.DramaCanvasAsset, error) {
+	unlock := c.lock()
+	defer unlock()
 	c.applied++
-	c.models = models
-	return c.created, nil
+	c.assets = append(c.assets, batch.Assets...)
+	c.models = batch.Models
+	created := c.created
+	if created == nil {
+		for _, a := range batch.Assets {
+			created = append(created, service.DramaCanvasAsset{NodeID: "node-" + a.Name, Asset: a})
+		}
+	}
+	c.addProgress(jobID, func(cp map[string]any) {
+		cp["done"] = append(jsonInts(cp["done"]), batch.Episodes...)
+		cp["new_assets"] = append(jsonList(cp["new_assets"]), toJSONList(created)...)
+		cp["cost"] = jsonInt(cp["cost"]) + batch.Cost
+	})
+	return created, nil
 }
-func (c *dramaPipelineCanvas) ApplyPrompts(context.Context, uint64, uint64, uint64, []drama.AssetPrompt) error {
+func (c *dramaPipelineCanvas) ApplyPrompts(_ context.Context, _, _, jobID uint64, _ string, prompts []drama.AssetPrompt, filtered []service.DramaCanvasAsset, cost int) error {
+	unlock := c.lock()
+	defer unlock()
 	c.prompted++
+	if c.prompts == nil {
+		c.prompts = map[string]string{}
+	}
+	ids := []any{}
+	for _, p := range prompts {
+		c.prompts[p.NodeID] = p.Prompt
+		ids = append(ids, p.NodeID)
+	}
+	c.filtered = append(c.filtered, filtered...)
+	c.addProgress(jobID, func(cp map[string]any) {
+		cp["prompted"] = append(jsonList(cp["prompted"]), ids...)
+		cp["filtered"] = append(jsonList(cp["filtered"]), toJSONList(filtered)...)
+		cp["cost"] = jsonInt(cp["cost"]) + cost
+	})
 	return nil
+}
+
+// lock 和内存仓储共用一把锁，模拟画布事务与任务行锁。
+func (c *dramaPipelineCanvas) lock() func() {
+	if c.mem == nil {
+		return func() {}
+	}
+	c.mem.mu.Lock()
+	return c.mem.mu.Unlock
+}
+
+// addProgress 把一次画布提交的进度合并进任务 output，字段与真实检查点一致。
+func (c *dramaPipelineCanvas) addProgress(jobID uint64, edit func(map[string]any)) {
+	if c.mem == nil {
+		return
+	}
+	for i := range c.mem.jobs {
+		if c.mem.jobs[i].ID != jobID {
+			continue
+		}
+		cp := map[string]any{}
+		_ = json.Unmarshal(c.mem.jobs[i].Output, &cp)
+		edit(cp)
+		c.mem.jobs[i].Output, _ = json.Marshal(cp)
+	}
+}
+
+func jsonList(v any) []any {
+	list, _ := v.([]any)
+	return list
+}
+func jsonInt(v any) int {
+	f, _ := v.(float64)
+	return int(f)
+}
+func jsonInts(v any) []int {
+	out := []int{}
+	for _, x := range jsonList(v) {
+		out = append(out, jsonInt(x))
+	}
+	return out
+}
+func toJSONList(v any) []any {
+	raw, _ := json.Marshal(v)
+	out := []any{}
+	_ = json.Unmarshal(raw, &out)
+	return out
 }
 func dramaTestService(r *dramaMemory, e *dramaTextStreamer, c *dramaPipelineCanvas) (*service.DramaService, *dramaRegistry) {
 	snap := &provider.Snapshot{ModelRevisionID: 9, Channel: provider.ChannelSnapshot{Key: "chan", BaseURL: "https://llm.example"}, Model: provider.ModelSnapshot{Key: "text", Kind: "agent", UpstreamModel: "upstream-chat", APIFormat: "openai", Pricing: modelcfg.Pricing{Billing: modelcfg.BillingPerCall, Unit: 5}, Capabilities: modelcfg.Capabilities{Context: &modelcfg.ContextSpec{Window: 128000, Output: 5000}}}}
 	registry := &dramaRegistry{snap: snap, models: []provider.ModelInfo{{Key: "text", Kind: "agent"}}}
 	secrets := dramaSecrets{model.ChannelSecretName("chan"): "sk-test"}
-	return service.NewDramaService(service.DramaDeps{Repo: r, Settings: r, Registry: registry, Streamer: e, Secrets: secrets, Canvas: c, CanvasAssets: r, Segments: r}), registry
+	return service.NewDramaService(service.DramaDeps{Repo: lockedDramaMemory{r}, Settings: r, Registry: registry, Streamer: e, Secrets: secrets, Canvas: c, CanvasAssets: r, Segments: r}), registry
 }
 func dramaCheckCode(t *testing.T, err error, code int) {
 	t.Helper()
@@ -497,6 +634,26 @@ func TestDramaScriptsSerialContinuationAndPartialSuccess(t *testing.T) {
 		t.Fatalf("failed job charged %+v", r.credit)
 	}
 }
+
+// 文本模型返回错误时，任务的失败原因是上游原文，不是“服务器内部错误”。
+func TestDramaJobFailureShowsUpstreamError(t *testing.T) {
+	r := newDramaMemory()
+	dramaAddEpisode(r, 1, "")
+	e := &dramaTextStreamer{failAt: 1, failErr: &llmgateway.UpstreamError{Status: 400, Message: "The model gpt-up does not exist"}}
+	s, _ := dramaTestService(r, e, nil)
+	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "scripts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.HandleDrama(context.Background(), 7, 1, uint64(j.ID))
+	got := r.jobs[len(r.jobs)-1]
+	if got.Status != "failed" || got.ErrorCode != errcode.ErrDramaModelCall.Code || got.ErrorMessage != "The model gpt-up does not exist" {
+		t.Fatalf("任务应带上游原文失败：%s %d %q", got.Status, got.ErrorCode, got.ErrorMessage)
+	}
+	if r.credit.Balance != 1000 || r.credit.Frozen != 0 {
+		t.Fatalf("失败不扣费：%+v", r.credit)
+	}
+}
 func TestDramaRejectsUserAnalyzeAndOutline(t *testing.T) {
 	r := newDramaMemory()
 	s, _ := dramaTestService(r, &dramaTextStreamer{}, nil)
@@ -527,30 +684,303 @@ func TestDramaModelFallbackAndEstimate(t *testing.T) {
 		t.Fatal("余额不足不得入队")
 	}
 }
-func TestDramaBreakdownAutomaticallyPromptsNewAssets(t *testing.T) {
+
+// dramaFakeModel 按提示词作答：拆解调用给这一批的第一集出资产（默认一个「角色<集号>」），提示词调用给每个输入节点写一条；
+// 提示词调用里出现 filtered 中的资产时，整次调用按安全过滤截断返回。并发调用安全，inFlight / peak 记录同时在途的拆解调用数。
+type dramaFakeModel struct {
+	mu       sync.Mutex
+	names    func(first int) []string
+	filtered map[string]bool
+	before   func(ctx context.Context, first int) error // 拆解调用作答前执行，返回错误就以它失败
+	hold     time.Duration                              // 拆解调用在途时停留这么久，用来观察并行
+	inFlight int
+	peak     int
+}
+
+var (
+	dramaNodeRe    = regexp.MustCompile(`"node_id":\s*"(node-[^"]+)"`)
+	dramaEpisodeRe = regexp.MustCompile(`第(\d+)集正文`)
+)
+
+func (m *dramaFakeModel) filter(names ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.filtered = map[string]bool{}
+	for _, n := range names {
+		m.filtered["node-"+n] = true
+	}
+}
+
+func (m *dramaFakeModel) respond(ctx context.Context, prompt string) (*llmgateway.Result, error) {
+	if ids := dramaNodeRe.FindAllStringSubmatch(prompt, -1); len(ids) > 0 {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		out := drama.AssetPromptsOutput{}
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if seen[id[1]] {
+				continue
+			}
+			seen[id[1]] = true
+			if m.filtered[id[1]] {
+				return &llmgateway.Result{Text: `{"prompts":[{"node_id":"`, FinishReason: "content_filter"}, nil
+			}
+			out.Prompts = append(out.Prompts, drama.AssetPrompt{NodeID: id[1], Prompt: "提示词：" + id[1]})
+		}
+		raw, _ := json.Marshal(out)
+		return &llmgateway.Result{Text: string(raw)}, nil
+	}
+	first, _ := strconv.Atoi(dramaEpisodeRe.FindStringSubmatch(prompt)[1])
+	m.mu.Lock()
+	m.inFlight++
+	m.peak = max(m.peak, m.inFlight)
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.inFlight--
+		m.mu.Unlock()
+	}()
+	time.Sleep(m.hold)
+	if m.before != nil {
+		if err := m.before(ctx, first); err != nil {
+			return nil, err
+		}
+	}
+	names := []string{fmt.Sprintf("角色%d", first)}
+	if m.names != nil {
+		names = m.names(first)
+	}
+	out := drama.BreakdownOutput{Assets: []drama.Asset{}}
+	for _, n := range names {
+		out.Assets = append(out.Assets, drama.Asset{Type: "character", Name: n, Aliases: []string{}, Episodes: []int{first}, Description: "人物"})
+	}
+	raw, _ := json.Marshal(out)
+	return &llmgateway.Result{Text: string(raw)}, nil
+}
+
+// dramaBreakdownJob 建 n 集带剧本的短剧并创建全集拆解任务；超过 12 集会分成多批调用模型。
+func dramaBreakdownJob(t *testing.T, n int, e *dramaTextStreamer, deadline time.Duration) (*service.DramaService, *dramaMemory, *dramaPipelineCanvas, uint64) {
+	t.Helper()
 	r := newDramaMemory()
 	r.project.Ratio = "9:16"
-	dramaAddEpisode(r, 1, "正文")
-	asset := drama.Asset{Type: "character", Name: "林川", Aliases: []string{}, Episodes: []int{1}, Description: "人物", VoicePrompt: "低沉"}
-	raw, _ := json.Marshal(drama.BreakdownOutput{Assets: []drama.Asset{asset}})
-	prompts, _ := json.Marshal(drama.AssetPromptsOutput{Prompts: []drama.AssetPrompt{{NodeID: "new", Prompt: "角色正向描述"}}})
-	e := &dramaTextStreamer{outputs: []string{string(raw), string(prompts)}}
-	c := &dramaPipelineCanvas{created: []service.DramaCanvasAsset{{NodeID: "new", Asset: asset}}}
-	s, _ := dramaTestService(r, e, c)
-	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "breakdown", Episodes: []int{1}})
+	episodes := []int{}
+	for no := 1; no <= n; no++ {
+		dramaAddEpisode(r, no, fmt.Sprintf("第%d集正文", no))
+		episodes = append(episodes, no)
+	}
+	c := &dramaPipelineCanvas{mem: r}
+	s, registry := dramaTestService(r, e, c)
+	registry.snap.Model.Deadline = modelcfg.Duration(deadline)
+	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "breakdown", Episodes: episodes})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.HandleDrama(context.Background(), 7, 1, uint64(j.ID)); err != nil {
+	return s, r, c, uint64(j.ID)
+}
+
+// prompted 读出假画布上已写入的提示词节点。
+func (c *dramaPipelineCanvas) hasPrompt(id string) bool {
+	unlock := c.lock()
+	defer unlock()
+	_, ok := c.prompts[id]
+	return ok
+}
+
+// waitDrama 轮询直到 cond 成立，超时判失败。
+func waitDrama(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("等待超时")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// 模型的 deadline 限的是单次调用：多批拆解加起来超过它也要能跑完，不能每次都在半路超时重来。
+func TestDramaBreakdownDeadlineLimitsEachCallNotWholeJob(t *testing.T) {
+	m := &dramaFakeModel{}
+	e := &dramaTextStreamer{respond: m.respond, delay: 150 * time.Millisecond}
+	s, r, c, jobID := dramaBreakdownJob(t, 25, e, 250*time.Millisecond)
+	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
 		t.Fatal(err)
 	}
-	if c.applied != 1 || len(r.jobs) != 2 || r.jobs[1].Step != "asset_prompts" {
-		t.Fatalf("canvas=%+v jobs=%+v", c, r.jobs)
+	if got := r.jobs[0]; got.Status != "succeeded" || len(c.assets) != 3 {
+		t.Fatalf("三批拆解加提示词各 150ms、单次时限 250ms 应跑完：status=%s assets=%d err=%q", got.Status, len(c.assets), got.ErrorMessage)
 	}
-	if err = s.HandleDrama(context.Background(), 7, 1, r.jobs[1].ID); err != nil {
+}
+
+// 单次调用超过 deadline：任务直接失败退款，告诉用户是模型响应超时，不交给队列反复重试。
+func TestDramaCallTimeoutFailsJobWithTimeoutMessage(t *testing.T) {
+	e := &dramaTextStreamer{respond: (&dramaFakeModel{}).respond, delay: time.Second}
+	s, r, _, jobID := dramaBreakdownJob(t, 1, e, 50*time.Millisecond)
+	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
+		t.Fatalf("超时应作为业务失败收尾，不返回错误让队列重试：%v", err)
+	}
+	got := r.jobs[0]
+	if got.Status != "failed" || got.ErrorCode != errcode.ErrDramaModelCall.Code || !strings.Contains(got.ErrorMessage, "超时") {
+		t.Fatalf("应以模型超时失败：%s %d %q", got.Status, got.ErrorCode, got.ErrorMessage)
+	}
+	if r.credit.Balance != 1000 || r.credit.Frozen != 0 {
+		t.Fatalf("失败不扣费：%+v", r.credit)
+	}
+}
+
+// 多批拆解并行调用模型；每批完成就写画布并写好这批资产的提示词，全部完成后不再另起提示词任务，按实际调用扣费。
+func TestDramaBreakdownRunsBatchesInParallelAndPromptsEachBatch(t *testing.T) {
+	m := &dramaFakeModel{hold: 50 * time.Millisecond}
+	e := &dramaTextStreamer{respond: m.respond}
+	s, r, c, jobID := dramaBreakdownJob(t, 25, e, 0)
+	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
 		t.Fatal(err)
 	}
-	if c.prompted != 1 || r.jobs[1].Status != "succeeded" {
-		t.Fatalf("canvas=%+v jobs=%+v", c, r.jobs)
+	got := r.jobs[0]
+	if got.Status != "succeeded" || got.Progress != 100 || len(r.jobs) != 1 {
+		t.Fatalf("拆解应成功且不另起任务：status=%s progress=%d jobs=%d", got.Status, got.Progress, len(r.jobs))
+	}
+	if m.peak < 2 {
+		t.Fatalf("三批应并行调用模型，同时在途最多 %d 个", m.peak)
+	}
+	if c.applied != 3 || len(c.prompts) != 3 || c.prompts["node-角色13"] == "" {
+		t.Fatalf("三批各写一次画布并写好提示词：applied=%d prompts=%v", c.applied, c.prompts)
+	}
+	if got.Credits != 30 || r.credit.Balance != 970 || r.credit.Frozen != 0 {
+		t.Fatalf("三次拆解加三次提示词共 30 积分：credits=%d account=%+v", got.Credits, r.credit)
+	}
+}
+
+// 拆解中途被打断（如后端重启）后重跑：已写入画布的批次跳过，只调用剩下的批次，资产不丢也不重复。
+func TestDramaBreakdownResumesFromCommittedBatches(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &dramaFakeModel{}
+	e := &dramaTextStreamer{respond: m.respond}
+	s, r, c, jobID := dramaBreakdownJob(t, 13, e, 0)
+	m.before = func(callCtx context.Context, first int) error {
+		if first == 13 {
+			waitDrama(t, func() bool { return c.hasPrompt("node-角色1") })
+			cancel()
+			return callCtx.Err()
+		}
+		return nil
+	}
+	if err := s.HandleDrama(ctx, 7, 1, jobID); err == nil {
+		t.Fatal("第二批被打断，应返回错误交给队列重试")
+	}
+	if got := r.jobs[0]; got.Status != "running" || c.applied != 1 || got.Progress == 0 {
+		t.Fatalf("第一批应已写入画布并推进进度：status=%s applied=%d progress=%d", got.Status, c.applied, got.Progress)
+	}
+	m.before = nil
+	calls := e.calls
+	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if e.calls-calls != 2 || c.applied != 2 {
+		t.Fatalf("重跑只应调用第二批的拆解和提示词：calls=%d applied=%d", e.calls-calls, c.applied)
+	}
+	for _, p := range e.prompts[calls:] {
+		if strings.Contains(p, "第1集正文") || strings.Contains(p, "node-角色1\"") {
+			t.Fatal("重跑不应再处理第一批")
+		}
+	}
+	if got := r.jobs[0]; got.Status != "succeeded" || got.Credits != 20 || len(c.prompts) != 2 {
+		t.Fatalf("两批各一次拆解加一次提示词共 20 积分：status=%s credits=%d prompts=%v", got.Status, got.Credits, c.prompts)
+	}
+}
+
+// 拆解中途取消：已写入画布的批次保留，只扣这些批次的积分，其余退回。
+func TestDramaBreakdownCancelKeepsCommittedBatchesAndChargesThem(t *testing.T) {
+	m := &dramaFakeModel{}
+	e := &dramaTextStreamer{respond: m.respond}
+	s, r, c, jobID := dramaBreakdownJob(t, 13, e, 0)
+	m.before = func(callCtx context.Context, first int) error {
+		if first == 13 {
+			waitDrama(t, func() bool { return c.hasPrompt("node-角色1") })
+			if _, err := s.CancelJob(context.Background(), 7, 1, jobID); err != nil {
+				t.Error(err)
+			}
+			<-callCtx.Done()
+			return callCtx.Err()
+		}
+		return nil
+	}
+	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
+		t.Fatal(err)
+	}
+	got := r.jobs[0]
+	if got.Status != "canceled" || c.applied != 1 || !c.hasPrompt("node-角色1") {
+		t.Fatalf("取消后保留第一批：status=%s applied=%d", got.Status, c.applied)
+	}
+	if got.Credits != 10 || r.credit.Balance != 990 || r.credit.Frozen != 0 {
+		t.Fatalf("只扣第一批的拆解和提示词 10 积分：credits=%d account=%+v", got.Credits, r.credit)
+	}
+}
+
+// 提示词被安全过滤：对半拆开重试，把出问题的资产隔离出来，其余照常写入；拆解成功后为被过滤的资产接一个提示词任务。
+func TestDramaPromptsIsolateFilteredAssets(t *testing.T) {
+	m := &dramaFakeModel{names: func(int) []string { return []string{"苏晚", "顾北辰", "苏星月", "苏星阳"} }}
+	m.filter("苏星月", "苏星阳")
+	e := &dramaTextStreamer{respond: m.respond}
+	s, r, c, jobID := dramaBreakdownJob(t, 1, e, 0)
+	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if !c.hasPrompt("node-苏晚") || !c.hasPrompt("node-顾北辰") || c.hasPrompt("node-苏星月") || len(c.filtered) != 2 {
+		t.Fatalf("只有被过滤的两个资产没有提示词：prompts=%v filtered=%v", c.prompts, c.filtered)
+	}
+	if r.jobs[0].Status != "succeeded" || len(r.jobs) != 2 || r.jobs[1].Step != "asset_prompts" {
+		t.Fatalf("拆解成功并接一个提示词任务：jobs=%+v", r.jobs)
+	}
+	var input []service.DramaCanvasAsset
+	if err := json.Unmarshal(r.jobs[1].InputJSON, &input); err != nil || len(input) != 2 {
+		t.Fatalf("提示词任务只处理被过滤的资产：%s", r.jobs[1].InputJSON)
+	}
+
+	// 接续任务里苏星阳这次通过、苏星月仍被过滤：写入苏星阳，任务以安全过滤失败并只扣成功的那次。
+	m.filter("苏星月")
+	balance := r.credit.Balance
+	if err := s.HandleDrama(context.Background(), 7, 1, r.jobs[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	follow := r.jobs[1]
+	if !c.hasPrompt("node-苏星阳") || c.hasPrompt("node-苏星月") {
+		t.Fatalf("应写入苏星阳：%v", c.prompts)
+	}
+	if follow.Status != "failed" || follow.ErrorCode != errcode.ErrDramaContentFiltered.Code || !strings.Contains(follow.ErrorMessage, "苏星月") {
+		t.Fatalf("应以安全过滤失败并点名资产：%s %d %q", follow.Status, follow.ErrorCode, follow.ErrorMessage)
+	}
+	if follow.Credits != 5 || r.credit.Balance != balance-5 || r.credit.Frozen != 0 {
+		t.Fatalf("只扣成功写入的那次：credits=%d account=%+v", follow.Credits, r.credit)
+	}
+
+	// 重试只处理仍没有提示词的苏星月。
+	retry, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "asset_prompts", Episodes: []int{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input = nil
+	if err := json.Unmarshal(r.jobs[2].InputJSON, &input); err != nil || len(input) != 1 || input[0].NodeID != "node-苏星月" || uint64(retry.ID) != r.jobs[2].ID {
+		t.Fatalf("重试只处理苏星月：%s", r.jobs[2].InputJSON)
+	}
+}
+
+// 安全过滤是确定性的：不带着「格式不合格」反馈重试，直接告诉用户内容触发了安全过滤。
+func TestDramaContentFilterFailsWithoutRetry(t *testing.T) {
+	r := newDramaMemory()
+	dramaAddEpisode(r, 1, "")
+	e := &dramaTextStreamer{respond: func(context.Context, string) (*llmgateway.Result, error) {
+		return &llmgateway.Result{Text: `{"script_md":"开头`, FinishReason: "content_filter"}, nil
+	}}
+	s, _ := dramaTestService(r, e, nil)
+	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "scripts", Episodes: []int{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HandleDrama(context.Background(), 7, 1, uint64(j.ID)); err != nil {
+		t.Fatal(err)
+	}
+	got := r.jobs[0]
+	if got.Status != "failed" || got.ErrorCode != errcode.ErrDramaContentFiltered.Code || e.calls != 1 {
+		t.Fatalf("应一次调用后以安全过滤失败：%s %d %q calls=%d", got.Status, got.ErrorCode, got.ErrorMessage, e.calls)
 	}
 }

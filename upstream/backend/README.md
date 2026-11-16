@@ -47,6 +47,47 @@ make run
 - 登录记录保留天数固定为 180 天（`service.DefaultLoginLogRetentionDays`，不再可配置）：后台任务在启动后 1~5 分钟内先清理一次，之后每 24 小时一次，每批最多删 1000 行；失败只记日志，不影响服务
 - 并发上限与新用户初始积分不在配置文件里：由后台「注册设置」的库值决定，库里没有值时回落到代码常量 `service.DefaultMaxActiveTasks`（4）与 `service.DefaultInitialCredits`（50）
 
+## 日志与排查
+
+所有用户运行（画布生成、短剧、营销、Agent、环节试跑）走同一套日志，设计见 [统一服务器日志](../docs/design/统一服务器日志/统一服务器日志.md)，写法规范见 [02-错误处理与日志.md](docs/standards/02-错误处理与日志.md) E10。
+
+| 文件 | 内容 | 位置 | 保留 |
+| --- | --- | --- | --- |
+| `app.log` | 过程事件、每次运行一行汇总（`run.finish`）、每个请求一行访问日志（`http.request`）、失败原因；也写标准输出 | 本地 `backend/logs/`；Docker 在 `backend_logs` 卷的 `/app/logs/` | 30 天 |
+| `payload.log` | 每次上游调用（文本模型、供应商插件、其他外部 HTTP）的请求和响应全文，成功的也记；只写文件 | 同上 | 7 天，压缩 |
+
+`payload.log` 里有用户原文、提示词和模型输出，日志目录的访问权限要按数据库同级管理；渠道 Key 和鉴权头一律遮成 `***`。
+
+每行都是一条 JSON，带 `service`（backend / plugin-runner / agent）、`instance`，运行相关的带 `run_kind` + `run_id`（**和界面上显示的编号相同**：生成任务、短剧、营销是十六进制，Agent 是后台「运行记录」里的十进制编号）、`user_id`、`request_id`，上游调用带 `call_id`。
+
+```bash
+# 镜像里有 grep，没有 jq：在容器里过滤，在宿主机上用 jq
+L='docker compose exec -T backend'
+
+# 1. 用户给了编号：这次运行的全过程（最后一行是 run.finish 汇总）
+$L grep '<编号>' /app/logs/app.log | jq -c '{time, level, event, msg, status, error_type, error, call_id, last_call_id}'
+
+# 2. 拿 call_id（或汇总行的 last_call_id）看当时发给上游的完整请求和响应
+$L grep '<call_id>' /app/logs/payload.log | jq .
+
+# 3. 只有用户 ID：他今天的所有运行汇总
+$L grep '"event":"run.finish"' /app/logs/app.log | jq -c 'select(.user_id==42)'
+
+# 4. 巡检：按运行类型和失败类型计数
+$L grep '"event":"run.finish"' /app/logs/app.log | jq -r 'select(.status=="failed") | "\(.run_kind) \(.error_type)"' | sort | uniq -c
+
+# 5. 业务开始了运行却没收尾（中间件兜底的汇总行，看到就要补 run.End）
+$L grep '"finish_fallback":true' /app/logs/app.log
+
+# 6. 已滚动压缩的旧文件
+$L sh -c 'zcat /app/logs/payload-*.log.gz' | grep '<call_id>'
+
+# 7. Agent 服务和 plugin-runner 的日志在各自的标准输出（同样是 JSON 行，同一个编号能 grep 到）
+docker compose logs agent plugin-runner | grep '<编号>'
+```
+
+相关配置（`configs/config.yaml` 的 `log`，环境变量 `APP_LOG_*` 覆盖）：`filename`（主日志文件）、`max_age`、`instance`（默认主机名）、`payload.enabled` / `payload.filename` / `payload.max_age`。Agent 服务的级别用 `AGENT_LOG_LEVEL`。
+
 ## 接口
 
 所有登录后的接口都经过 `JWTAuth` → `RequireActive`：账号被停用返回 403 / 53004，token 的 `token_version` 与用户当前值不符返回 401。用户状态走 Redis 缓存（`user:<id>`，无 Redis 直接查库），`RequireAdmin` / `RequireSuperAdmin` 的角色查询与它共用同一套。原先的 `GET /users`、`GET /users/:id` 已删除。
@@ -90,9 +131,18 @@ make run
 | DELETE              | /api/v1/admin/settings/showcase/items/:id             | super_admin 删除条目（只删条目，不删素材）；不存在 404 / 54001；写审计 |
 | PUT                 | /api/v1/admin/settings/showcase/order                 | super_admin 重排 `{ids:[…]}`：必须恰好包含全部现有条目各一次（多、少、重复都 400 / 54003），在一个事务里按数组顺序把 `sort` 重写为 0..n-1；写审计 |
 | PUT                 | /api/v1/admin/settings/showcase/settings              | super_admin 保存 `{clip_seconds(4..15), show_on_login, poster_only_on_save_data}`（三项必填，秒数越界 400 / 54002），`system_settings` 里 `showcase_*` 三个键一次写入，返回最新设置；库值缺省或非法时回落默认（7 秒 / 展示 / 省流量只显示封面）；写审计 |
+| GET                 | /api/v1/admin/settings/announcements                  | admin 公告列表 `{items:[{id, title, enabled, starts_at, ends_at, sort, status, created_at, updated_at}]}`：含停用，按 `sort`、`id` 升序；`status` 为派生状态 `disabled` / `scheduled` / `expired` / `overflow`（生效中但排在第 5 条之后）/ `live` |
+| POST                | /api/v1/admin/settings/announcements                  | admin 新建 `{title(去空白后 1..60 字), enabled(必填), starts_at?, ends_at?}`：缺 `enabled` 400 / 10001，其余不合法 400 / 56002（原因在 msg），`ends_at` 必须晚于 `starts_at`；新公告排最后；写审计 |
+| PUT                 | /api/v1/admin/settings/announcements/:id              | admin 整体替换（字段同新建，没传的可选字段视为清空），刷新 `version`；不存在 404 / 56001；写审计 |
+| PUT                 | /api/v1/admin/settings/announcements/:id/enabled      | admin 启用 / 停用 `{enabled}`，不刷新 `version`；不存在 404 / 56001；写审计 |
+| DELETE              | /api/v1/admin/settings/announcements/:id              | admin 删除（软删除）；不存在 404 / 56001；写审计 |
+| PUT                 | /api/v1/admin/settings/announcements/order            | admin 重排 `{ids:[…]}`：必须恰好包含全部未删除公告各一次（否则 400 / 56003），在一个事务里把 `sort` 重写为 0..n-1，不刷新 `version`；写审计 |
 | GET/POST/PUT/DELETE | /api/v1/canvas[/:id]                                  | 画布项目（乐观锁 revision；列表、首页最近画布与导出都排除短剧专属画布 `drama_id` 非空的行，短剧画布仍可用 `GET / PUT /canvas/:id` 读写）；更新响应为本次写入的完整快照（revision +1），不包含随后并发写入的内容；列表项带 `cover_url`：画布里第一张生成成功的图的缩略图地址，没有则为空串                                                                                                                                                                                                                                                                                                                                                         |
 | GET                 | /api/v1/canvas/:id/export                             | 导出画布为文档：`{document, report:{skipped_assets}}`；素材 ID 换成内容哈希；角色数据内嵌在角色节点里（`data.character`），随节点导出，其补充图和音频音色同样换成哈希；读不到的素材跳过并计入 `skipped_assets`；不存在或不属于自己 404 / 30001，超出导入上限（节点 2000、素材 200 个、素材总大小 1 GB、文件 10 MB）413 / 30008 |
 | POST                | /api/v1/canvas/import                                 | 从导出文档导入为新画布 `{document}` → `{canvas:{id,title,revision},report:{assets:{total,copied,missing},edges_dropped}}`（角色数据随节点还原，不再新建个人角色卡；角色卡下线前导出的旧文件仍可导入，其 `characters` 字典被忽略），标题加「（导入）」；文件不合法 400 / 30005，版本过高 400 / 30006，请求体或文件超限 413 / 30007（文件上限 10 MB，请求体上限 11 MB） |
+| POST                | /api/v1/canvas/:id/storyboard/split                   | 分镜表「从剧本拆分镜」`{node_id, script, model?}` → 202 返回任务快照 `{id, canvas_id, node_id, status:"pending", model, credits}`，**异步**：任务写进 `storyboard_split_jobs` 并在同一事务里入 River 队列 `storyboard_split`，worker 调 Agent 模型（`model` 空或已下架时用第一个可用的；超时按后台给该模型配的 `Deadline` / 网关 `IdleTimeout`，不写死），输出不合格带原因重写一次，时长截断到 1–60 秒；结果经 WebSocket `storyboard.split` 推给用户（`Data` 同快照，`status` 为 `running / succeeded / failed`，成功带 `shots:[{scene,shot,camera,action,dialogue,duration}]` 与 `credits`，失败带 `error`）；不写画布，前端按覆盖 / 追加写进表格；成功后在同一事务里按实际用量扣费（流水关联 `canvas_id`），失败不扣；同一画布同一节点同时只能有一条进行中的任务（部分唯一索引兜底）。同步校验：剧本为空 400 / 30011，超 2 万字 400 / 30012，没有 Agent 模型 400 / 30013，同一张表正在拆 409 / 30014，积分不足 402 / 40001，画布不存在 404 / 30001；两次都不合格 30015、模型调用失败或超时 30016 作为任务 `failed` 的 `error` 返回 |
+| GET                 | /api/v1/canvas/:id/storyboard/split/active            | `?node_id=` 查这个节点进行中（pending / running）的拆分镜任务快照，没有时 `data` 为 `null`；弹窗打开、刷新页面时用来恢复运行状态 |
+| GET                 | /api/v1/canvas/:id/storyboard/split/:jobId            | 按任务 id 读快照（断线重连后对账；成功时带 `shots`，终态后剧本原文已清除）；不是自己的或不存在 404 / 30017 |
 | GET/POST            | /api/v1/canvas/:id/agent/sessions                     | 画布 Agent 会话列表 / 新建 `{title?, mode?: all\|script\|storyboard\|prompt\|drama, model_key?}`；`drama` 是短剧助手模式，只有短剧画布（`canvas_projects.drama_id` 非空）能建，其他画布 400 / 10001；每个画布最多 50 个会话（60010）；id 与画布一样是十六进制串，其余 Agent 接口同。**这一组 Agent 接口由独立的 Agent 服务实现**，Go 校验登录态后反向代理（路径、方法、响应信封不变）；没启用 Agent 时统一返回 503 / 60005 |
 | POST                | /api/v1/agent/sessions/:sid/runs（`mode: drama`） | 短剧助手：运行 `mode` 传 `drama`（可不带 `viewport`），系统提示词追加短剧段落；除画布工具外多 5 个只在该模式出现的工具：`drama_read {scope: overview\|episode\|segments, episode_no?}` 不审批；`drama_update_outline` / `drama_update_episode` / `drama_update_segment` / `drama_run_job` 必须审批，审批 `kind` 就是工具名，`payload` 含 `title`、`reason`（模型可选传 `reason`）、`before`、`after`、`args`、`estimate`、`signature`，`quote_credits` 为 `drama_run_job` 的积分估算；批准后由 Go 校验 HMAC 签名并复查归属，再调用一 / 二 / 三期同一服务（锁定 67005、revision 冲突、并发 67004 不绕开），用审批 ID 幂等提交任务；不等待任务结束，状态走 `drama.job` / `drama.segment`；非 `drama` 模式的工具集与提示词不变 |
 | PATCH/DELETE        | /api/v1/agent/sessions/:sid                           | 重命名 `{title ≤40}` / 删除（会话占着画布时 409 / 60001）；会话不存在或不属于自己 404 / 60011 |
@@ -113,6 +163,18 @@ make run
 | PUT                 | /api/v1/admin/agent/skills/:name/enabled              | 【admin】启停 `{enabled}`；无生效版本 61009 |
 | PUT                 | /api/v1/admin/agent/skills/:name/active-version       | 【admin】设为生效 `{version}`（回滚也是它）；版本不存在 61005。已在运行的 Agent 按版本固定，不受影响 |
 | GET/DELETE          | /api/v1/admin/agent/skills/:name/versions/:v[...]     | 【admin】版本详情 / `/files?path=` 读包内文本文件（二进制只返回大小）/ `/download` 下载整包 / DELETE 删除版本（生效版本 61008）；全部写操作写 `admin_audit_logs`（`agent_skill.*`） |
+| GET                 | /api/v1/admin/steps                                   | 【admin】环节协议层：环节列表（按注册顺序），每行带当前绑定 `binding`、实际生效方法 `effective`（绑定的技能停用 / 版本删除 / 技能删除时退回内置，`fallback=true` 并带原因）、`newer_version`（绑定技能有更新的生效版本）、`last_trial`、`fail_rate_7d`（由 `StepStats` 提供，未接入时为 0） |
+| GET                 | /api/v1/admin/steps/:key                              | 【admin】环节详情：协议（职责、输入变量、Schema 字符串、校验规则）、样例、绑定历史（`history`）、候选方法（`candidates`：内置 + 全部导入技能，含 `versions` / `active_version` / `has_scripts` / `chars` / `enabled`）；环节不存在 404 / 68012 |
+| POST                | /api/v1/admin/steps/:key/trials                       | 【admin】发起试跑 `{candidate:{source,skill_name?,version?}, sample_key, text_model, compare}`，返回 202 `{trials:[…]}`（`compare=true` 时第二条是当前实际生效的方法，`compare_of` 互指）。按预估冻结操作管理员的积分，结束按用量结算（流水 `step_trial_id`）；环节不存在 68012，技能或版本不可用 68014，该环节已有进行中的试跑 68017，积分不足 40001 |
+| GET                 | /api/v1/admin/step-trials/:id                         | 【admin】试跑结果（前端轮询）：`status`（queued / running / succeeded / failed，failed = 调用本身出错）、`passed`（格式校验是否通过）、`errors` / `flags` / `preview` / `output`、耗时、token、积分 |
+| PUT                 | /api/v1/admin/steps/:key/binding                      | 【admin】设为生效 `{source, skill_name?, version?, trial_id}`，返回最新详情。依据的试跑必须是同环节、同候选、通过、24 小时内，否则 68013；技能或版本不可用 68014；绑定钉死版本，技能发新版本不跟随；写绑定历史和审计（`step.*`） |
+| GET                 | /api/v1/admin/formatters                              | 【admin】视频提示词格式化器只读列表 `[{key,name,description,sample}]`（seedance、h3、generic，代码维护） |
+| GET/POST            | /api/v1/marketing/options、/marketing/quote           | 营销工作室：平台与角度预设 + `ref_video_max_seconds`（15）；写脚本预估 `{project_id?,has_ref,settings}` → `{credits,steps}`（无参考列 facts、create，有参考再加 reverse、follow；项目已有事实卡时 facts 为 0 仍列出）；无可用文本模型 68003 |
+| GET/POST/PUT/DELETE | /api/v1/marketing-projects[/:id]                      | 营销项目（id 十六进制）：POST 201 建项目并开第一轮（商品图 1–4 张、可选模特图和参考视频；素材无效 68002、视频模型不满足 68004、参考视频超 15 秒或模型体积上限 68005、积分不足 40001）；PUT `{title?,product?,revision}` 冲突 68009；DELETE 204，有写脚本中的轮次或进行中的出片任务 68010；不存在或不属于自己 68001 |
+| POST                | /api/v1/marketing-projects/:id/rounds                 | 新一轮 201 `RoundView`；不传 `model_asset_id` 沿用项目模特图，传了就替换；项目正在写脚本 68007 |
+| POST/PUT            | /api/v1/marketing-rounds/:id/{cancel,reverse,reverse/restore,refollow,render} | 取消（排队环节解冻，进行中的被中断）；改拆解（只认 action / dialogue / product_role / key_colors，revision 冲突 68009，不合法 68015，跟拍出片或重写中 68006）；恢复拆解原稿；按拆解重写跟拍版（只重跑 follow，原地更新同一份脚本，无拆解 68016）；全部出片 `{idempotency_key}` → `{round,skipped}` |
+| POST                | /api/v1/marketing-step-runs/:id/retry                 | 重试失败的环节：新建运行记录，连同依赖它且未成功的后续环节一起重跑（重试事实卡等于整轮重试）；方法用当前绑定 |
+| PUT/POST/GET        | /api/v1/marketing-scripts/:id[/restore\|prompt\|render\|to-canvas] | 改旁白 `{narrations,revision}`（服务端重扫 flags，`flags[].shot` 从 0 起）、恢复原稿、提示词预览 `?video_model=`（超长 68008）、出片 `{idempotency_key,video_model?,params?}`（flags 非空 68006；以 `node_id=mkt:{脚本id}` 走生成任务，op=omni、`generate_audio=true`）、发到新画布 `{canvas_id}`（失败 68011）；出片进度走 `task.updated`，脚本与轮次变化推 `marketing.script` / `marketing.round` |
 | PUT/DELETE          | /api/v1/agent/runs/:rid/feedback                      | 对一轮运行打 👍/👎 `{rating: 1\|-1, reasons?: misread\|wrong_edit\|slow\|bad_output\|other（≤5，点赞时忽略）, comment?: ≤500 字}` → `{rating, reasons, comment}`，再调用就是改选；DELETE 取消（幂等）。运行还在跑或在等用户 409 / 60014；别人的运行 404 / 60012。会话里追加 `feedback.set` / `feedback.cleared` 事件 |
 | GET                 | /api/v1/admin/agent/runs                              | 【admin 或分析令牌】Agent 运行摘要列表（创建时间倒序，游标分页）：`since`/`until`（RFC3339 或 YYYY-MM-DD）、`status`（逗号分隔）、`feedback=down\|up\|none\|any`、`undone=true`、`harness_key`、`prompt_version`、`model_key`、`user_id`、`limit`（≤500）、分页二选一：`page`（页码，从 1 起，后台页面用，返回 `{items, total, page, page_size}`）或 `cursor`（本地 CLI 用，返回 `{items, next_cursor}`，不额外计总数），两者同时给 400；run/session/canvas id 是编码串 |
 | GET                 | /api/v1/admin/agent/runs/:rid[/export?format=]        | 【admin 或分析令牌】一次运行的结构化详情（含工具参数和结果）/ 导出给 AI 读：`format=md`（默认，`{format, content}`）、`json`（直接返回结构化对象）、`both`（`{format, content, data}`，本地 CLI 一次拿全）。Markdown 每段 ≤2KB，JSON 完整。结构化数据里的 `timeline`（步骤 `{n, kind, label, text, thinking?, partial?, nested?, at?, tool?}`）与 Markdown 时间线由同一份步骤列表生成，后台详情抽屉直接用它；运行不存在 404 / 60012 |
@@ -129,6 +191,7 @@ make run
 | GET                 | /api/v1/generation-tasks?ids=1,2,3 / ?status=active   | 批量对账（≤100，兼容十进制与编码任务 ID）/ 当前用户进行中的任务；`?node_id=&canvas_project_id=`（两者必须同时传，画布 ID 兼容编码与十进制）查某个节点的生成记录：当前用户的正式任务，新的在前最多 20 个，额外带 `prompt`、`model_label`；三种模式互斥，组合不对返回 400 / 10001 |
 | POST                | /api/v1/generation-tasks/:id/cancel                   | 软取消，退回冻结积分                                                                                                                                                                                                                                                                                                                                                               |
 | GET                 | /api/v1/credits                                       | 积分余额 `{balance, frozen, available}`（新用户初始积分取后台注册设置，缺省 50）                                                                                                                                                                                                                                                                                                   |
+| GET                 | /api/v1/announcements                                 | 首页公告（需登录）→ `{items:[{id, title, ends_at, version}]}`：只返回启用且在生效时间内（`starts_at <= now < ends_at`，空 = 不限）的公告，按 `sort`、`id` 升序，最多 5 条；`version` 是 `updated_at` 毫秒（启停、排序不改它），前端按 `id+version` 记「已关闭」；带 `Cache-Control: private, max-age=60` |
 | GET                 | /api/v1/me                                            | 个人资料 `{id, username, nickname, email, role, avatar_url, created_at, email_verified_at}`；`avatar_url = /files/<avatar_key>`，没有头像为空串 |
 | PATCH               | /api/v1/me                                            | 改昵称 `{nickname}`：去首尾空白后 0..32 字符、不含控制字符 / 换行，否则 10001；空串表示清空 |
 | POST                | /api/v1/me/avatar                                     | 上传头像（multipart `file`，≤2MB）：内容嗅探只允许 png/jpeg/webp/gif（否则 55005），超 2MB 或尺寸 >2048 返回 55006；key 为 `avatars/<uid>/<16 位随机>.<ext>`，不入 assets 表，尽力删除旧头像 |

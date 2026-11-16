@@ -1,4 +1,4 @@
-import type { Drama, DramaJob, DramaStep } from "@/api/drama/type";
+import type { Drama, DramaJob, DramaStep, EpisodeSummary } from "@/api/drama/type";
 
 import type { WorkspaceStage } from "./stages";
 import { unitWord } from "./start-settings";
@@ -6,6 +6,22 @@ import { unitWord } from "./start-settings";
 /** 排队中或进行中 */
 export const isActiveJob = (job: Pick<DramaJob, "status">): boolean =>
   job.status === "queued" || job.status === "running";
+
+/** 重试失败任务时提交的集号：拆解中途失败时已写入的批次已锁集，只重拆还没锁的集；其他步骤原样 */
+export const retryEpisodes = (
+  job: Pick<DramaJob, "step" | "episodes">,
+  episodes: readonly Pick<EpisodeSummary, "no" | "locked">[],
+): number[] => {
+  if (job.step !== "breakdown") return job.episodes;
+  const locked = new Set(episodes.filter((ep) => ep.locked).map((ep) => ep.no));
+  return job.episodes.filter((no) => !locked.has(no));
+};
+
+/** 是否有任务正在写资产提示词：拆解边拆边写，单独的提示词任务也算 */
+export const writingAssetPrompts = (jobs: readonly Pick<DramaJob, "step" | "status">[]): boolean =>
+  jobs.some(
+    (job) => (job.step === "asset_prompts" || job.step === "breakdown") && isActiveJob(job),
+  );
 
 const STATUS_RANK: Record<DramaJob["status"], number> = {
   queued: 0,

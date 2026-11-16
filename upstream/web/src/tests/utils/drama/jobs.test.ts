@@ -18,6 +18,8 @@ import {
   mergeJob,
   pruneFinished,
   reconcileJobs,
+  retryEpisodes,
+  writingAssetPrompts,
 } from "@/utils/drama/jobs";
 
 const job = (patch: Partial<DramaJob> = {}): DramaJob => ({
@@ -394,5 +396,34 @@ describe("规划还要多久 planningEtaMinutes", () => {
     expect(
       planningEtaMinutes({ createdAt: created(now, 1000), planCursor: 99, rangeEnd: 100 }, now),
     ).toBe(1);
+  });
+});
+
+describe("资产提示词是否在写 writingAssetPrompts", () => {
+  test("拆解边拆边写提示词，进行中的拆解和提示词任务都算", () => {
+    expect(writingAssetPrompts([job({ step: "breakdown", status: "running" })])).toBe(true);
+    expect(writingAssetPrompts([job({ step: "asset_prompts", status: "queued" })])).toBe(true);
+  });
+
+  test("已结束的任务和其他步骤不算", () => {
+    expect(writingAssetPrompts([job({ step: "breakdown", status: "succeeded" })])).toBe(false);
+    expect(writingAssetPrompts([job({ step: "scripts", status: "running" })])).toBe(false);
+    expect(writingAssetPrompts([])).toBe(false);
+  });
+});
+
+describe("重试时的集号 retryEpisodes", () => {
+  const eps = [
+    { no: 1, locked: true },
+    { no: 2, locked: false },
+    { no: 3, locked: true },
+  ];
+
+  test("拆解中途失败已写入的批次会锁集，重试只拆还没锁的集", () => {
+    expect(retryEpisodes(job({ step: "breakdown", episodes: [1, 2, 3] }), eps)).toEqual([2]);
+  });
+
+  test("其他步骤原样重试", () => {
+    expect(retryEpisodes(job({ step: "asset_prompts", episodes: [1, 3] }), eps)).toEqual([1, 3]);
   });
 });

@@ -4,6 +4,7 @@ import {
   hasNodeActions,
   registerNodeActions,
   submitNodeById,
+  submitNodeWhenReady,
   submitWithVoiceById,
   type NodeActions,
 } from "@/components/canvas-editor/node-actions";
@@ -155,5 +156,45 @@ describe("按节点 ID 生成形象并在出图后生成音色 submitWithVoiceBy
     }));
     expect(await submitWithVoiceById("v-fail")).toEqual({ image: "积分不足", voice: "积分不足" });
     off();
+  });
+});
+
+describe("等节点就绪再提交 submitNodeWhenReady", () => {
+  test("节点晚几十毫秒才登记（刚建好还没挂载）：等到了再提交", async () => {
+    let submitted = 0;
+    setTimeout(
+      () => registerNodeActions("n-late", () => actions(null, () => (submitted += 1))),
+      60,
+    );
+    expect(await submitNodeWhenReady("n-late", { timeoutMs: 1000, intervalMs: 10 })).toBeNull();
+    expect(submitted).toBe(1);
+  });
+
+  test("模型清单还在加载：等它加载完再提交", async () => {
+    let blocked: string | null = "正在加载模型清单";
+    let submitted = 0;
+    const off = registerNodeActions("n-loading", () => actions(blocked, () => (submitted += 1)));
+    setTimeout(() => (blocked = null), 60);
+    expect(await submitNodeWhenReady("n-loading", { timeoutMs: 1000, intervalMs: 10 })).toBeNull();
+    expect(submitted).toBe(1);
+    off();
+  });
+
+  test("真正的拒绝（积分不足、暂无可用模型）不等，直接把原因交回去", async () => {
+    let submitted = 0;
+    const off = registerNodeActions("n-blocked", () =>
+      actions("暂无可用模型", () => (submitted += 1)),
+    );
+    expect(await submitNodeWhenReady("n-blocked", { timeoutMs: 1000, intervalMs: 10 })).toBe(
+      "暂无可用模型",
+    );
+    expect(submitted).toBe(0);
+    off();
+  });
+
+  test("一直等不到：超时后返回节点还没准备好", async () => {
+    expect(await submitNodeWhenReady("n-never", { timeoutMs: 80, intervalMs: 10 })).toBe(
+      "节点还没准备好",
+    );
   });
 });

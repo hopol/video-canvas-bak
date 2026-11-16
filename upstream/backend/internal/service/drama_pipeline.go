@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"video-canvas/internal/drama"
 	"video-canvas/internal/model"
 	"video-canvas/internal/pkg/errcode"
+	"video-canvas/internal/pkg/idcodec"
+	"video-canvas/internal/pkg/logger"
 	"video-canvas/internal/provider"
 	"video-canvas/internal/repository"
+
+	"go.uber.org/zap"
 )
 
 // dramaRun 汇集一个步骤的持久化输入，不持有数据库事务跨网络请求。
@@ -19,22 +24,75 @@ type dramaRun struct {
 	job      *model.DramaJob
 	snapshot provider.Snapshot
 	episodes []model.DramaEpisode
+	resumed  bool // 之前开始过（崩溃或队列重投后再次执行）
 }
 
-// dramaResult 保存步骤输出与实际费用，画布提交后可从checkpoint恢复。
+// dramaResult 保存步骤输出与实际费用；failure 非空表示部分写入后以它失败，按 cost 结算已写入的部分。
 type dramaResult struct {
 	output    any
 	cost      int
 	next      string
 	newAssets []DramaCanvasAsset
+	failure   error
 }
 
-// dramaCheckpoint 是画布写入与后续业务结算之间的持久化交接。
+// dramaCheckpoint 是画布写入与后续业务结算之间的持久化交接。拆解和资产提示词每写一次画布就在同一事务里累加
+// Done / NewAssets / Prompted / Filtered / Cost，重跑时跳过已写入的部分，失败或取消时按 Cost 结算已写入的部分。
 type dramaCheckpoint struct {
-	Result          json.RawMessage    `json:"result"`
+	Result          json.RawMessage    `json:"result,omitempty"`
 	Cost            int                `json:"cost"`
 	CanvasCommitted bool               `json:"canvas_committed"`
 	NewAssets       []DramaCanvasAsset `json:"new_assets"`
+	Done            []int              `json:"done,omitempty"`     // 已写入画布的拆解集号
+	Prompted        []string           `json:"prompted,omitempty"` // 已写入提示词的节点
+	Filtered        []DramaCanvasAsset `json:"filtered,omitempty"` // 触发安全过滤、没写成提示词的资产
+}
+
+// readDramaCheckpoint 读取任务检查点；空或无法解析时当作没有进度。
+func readDramaCheckpoint(raw []byte) dramaCheckpoint {
+	var cp dramaCheckpoint
+	_ = json.Unmarshal(raw, &cp)
+	return cp
+}
+
+// committedCost 是已写入画布的部分对应的费用，任务失败或取消时照此结算，其余退回。
+func committedCost(j *model.DramaJob) int {
+	cp := readDramaCheckpoint(j.Output)
+	if len(cp.Done) == 0 && len(cp.Prompted) == 0 {
+		return 0
+	}
+	return cp.Cost
+}
+
+// pendingPrompts 是已建节点里还没写提示词的资产（含被安全过滤的），按建节点顺序。
+func (cp dramaCheckpoint) pendingPrompts() []DramaCanvasAsset {
+	out := []DramaCanvasAsset{}
+	for _, a := range cp.NewAssets {
+		if !slices.Contains(cp.Prompted, a.NodeID) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// unattemptedPrompts 是已建节点里既没写提示词、也没被安全过滤过的资产，重跑时先补上。
+func (cp dramaCheckpoint) unattemptedPrompts() []DramaCanvasAsset {
+	out := []DramaCanvasAsset{}
+	for _, a := range cp.pendingPrompts() {
+		if !slices.ContainsFunc(cp.Filtered, func(f DramaCanvasAsset) bool { return f.NodeID == a.NodeID }) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// currentCheckpoint 重新读取任务检查点，汇总各批写入的进度。
+func (s *DramaService) currentCheckpoint(ctx context.Context, j *model.DramaJob) (dramaCheckpoint, error) {
+	current, err := s.repo.Job(ctx, j.UserID, j.DramaID, j.ID, false)
+	if err != nil {
+		return dramaCheckpoint{}, err
+	}
+	return readDramaCheckpoint(current.Output), nil
 }
 
 // HandleDrama 执行一个短剧步骤；模型业务失败退款，数据库错误交给River恢复。
@@ -50,16 +108,18 @@ func (s *DramaService) HandleDrama(ctx context.Context, userID, dramaID, jobID u
 	if run == nil {
 		return nil
 	}
+	ctx, logRun := dramaJobRun(ctx, run.job)
+	startFields := append(dramaFields(run.job), zap.Bool("resumed", run.resumed))
+	if !run.resumed && run.job.StartedAt != nil {
+		startFields = append(startFields, zap.Int64("queue_wait_ms", run.job.StartedAt.Sub(run.job.CreatedAt).Milliseconds()))
+	}
+	logRun.Start(startFields...)
 	s.publish(ctx, run.job)
 	if run.job.Step == "compose" {
 		return s.handleCompose(ctx, run)
 	}
-	// 2. 网络请求在事务外执行；有效输出写入持久checkpoint以支持崩溃恢复。
-	if deadline := run.snapshot.Model.Deadline.D(); deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
-		defer cancel()
-	}
+	// 2. 网络请求在事务外执行；有效输出写入持久checkpoint以支持崩溃恢复。模型 deadline 只限单次调用（见 dramaAttempt），
+	// 多批 / 多集任务的总时长由队列的任务超时兜底。
 	result, err := s.executeDrama(ctx, run)
 	if err != nil {
 		return s.failDrama(ctx, run.job, err)
@@ -96,6 +156,7 @@ func (s *DramaService) startDrama(ctx context.Context, userID, dramaID, jobID ui
 		if e != nil {
 			return e
 		}
+		run.resumed = run.job.StartedAt != nil
 		if run.job.StartedAt == nil {
 			now := time.Now()
 			run.job.StartedAt = &now
@@ -112,11 +173,8 @@ func (s *DramaService) startDrama(ctx context.Context, userID, dramaID, jobID ui
 	return run, nil
 }
 
-// executeDrama 按步骤运行固定流水线；画布已提交时只恢复结算数据。
+// executeDrama 按步骤运行固定流水线；拆解和资产提示词从检查点跳过已写入画布的部分。
 func (s *DramaService) executeDrama(ctx context.Context, run *dramaRun) (*dramaResult, error) {
-	if saved, ok, err := restoreDramaCheckpoint(run.job); ok || err != nil {
-		return saved, err
-	}
 	vars := s.dramaVariables(run.project)
 	selected := selectedEpisodes(run.episodes, run.job.Episodes)
 	result := &dramaResult{}
@@ -129,7 +187,7 @@ func (s *DramaService) executeDrama(ctx context.Context, run *dramaRun) (*dramaR
 		if err = json.Unmarshal(run.job.InputJSON, &vars); err != nil {
 			return nil, err
 		}
-		result.output, result.cost, err = s.callDrama(ctx, run.job, &run.snapshot, "plan", vars, func(v any) error { return v.(drama.PlanOutput).ValidateCoverage(run.job.BatchFrom, run.job.BatchTo) })
+		result.output, result.cost, err = s.callDrama(ctx, run.job, &run.snapshot, "plan", "", vars, func(v any) error { return v.(drama.PlanOutput).ValidateCoverage(run.job.BatchFrom, run.job.BatchTo) })
 	case "scripts":
 		result.output, result.cost, err = s.runScripts(ctx, run.project, run.job, &run.snapshot, run.episodes, selected)
 	case "breakdown":
@@ -144,104 +202,63 @@ func (s *DramaService) executeDrama(ctx context.Context, run *dramaRun) (*dramaR
 	return result, err
 }
 
-// runBreakdown 校验拆解范围，先持久化有效结果，再由画布事务锁集和创建资产。
+// runBreakdown 并行拆解各批并边拆边写画布和提示词；还有没写成提示词的资产（被安全过滤等）时接一个提示词任务。
 func (s *DramaService) runBreakdown(ctx context.Context, run *dramaRun, vars map[string]any, selected []model.DramaEpisode) (*dramaResult, error) {
-	out, cost, err := s.breakdownBatches(ctx, run, vars, selected)
-	if err != nil {
-		return nil, err
-	}
-	result := &dramaResult{output: out, cost: cost}
-	if err = s.prepareCanvasCheckpoint(ctx, run.job, result); err != nil {
-		return nil, err
-	}
 	if s.canvas == nil {
 		return nil, errcode.ErrInternal
 	}
-	result.newAssets, err = s.canvas.ApplyBreakdown(ctx, run.job.UserID, run.job.DramaID, run.project.CanvasID, run.job.ID, run.job.Episodes, out.Assets, dramaImageModels(run.project).ByType())
+	if cp := readDramaCheckpoint(run.job.Output); len(cp.Done) > 0 {
+		logger.Ctx(ctx).Info("短剧任务从检查点恢复", logger.Event(logger.EventRunStep), zap.Ints("done", cp.Done))
+	}
+	if err := s.breakdownBatches(ctx, run, vars, selected); err != nil {
+		return nil, err
+	}
+	cp, err := s.currentCheckpoint(ctx, run.job)
 	if err != nil {
 		return nil, err
 	}
-	if len(result.newAssets) > 0 {
+	out, err := drama.DecodeOutput("breakdown", cp.Result)
+	if err != nil {
+		out = drama.BreakdownOutput{Assets: []drama.Asset{}}
+	}
+	result := &dramaResult{output: out, cost: cp.Cost, newAssets: cp.NewAssets}
+	if len(cp.pendingPrompts()) > 0 {
 		result.next = "asset_prompts"
 	}
 	return result, nil
 }
 
-// runAssetPrompts 只为本次新资产写提示词，输出必须精确覆盖节点集合。
+// runAssetPrompts 为输入里还没写提示词的新资产写提示词；有资产被安全过滤时，写入其余资产后以安全过滤失败，
+// 只扣已写入的部分，重试时只处理仍没有提示词的资产。
 func (s *DramaService) runAssetPrompts(ctx context.Context, run *dramaRun, vars map[string]any) (*dramaResult, error) {
 	var assets []DramaCanvasAsset
 	if e := json.Unmarshal(run.job.InputJSON, &assets); e != nil || len(assets) == 0 {
 		return nil, errcode.ErrDramaStepNotReady.WithMsg("没有待生成提示词的新资产")
 	}
-	vars["assets"] = assets
-	out, cost, err := s.callDrama(ctx, run.job, &run.snapshot, "asset_prompts", vars, func(v any) error { return validatePromptCoverage(v.(drama.AssetPromptsOutput), assets) })
-	if err != nil {
-		return nil, err
-	}
-	result := &dramaResult{output: out, cost: cost}
-	if err = s.prepareCanvasCheckpoint(ctx, run.job, result); err != nil {
-		return nil, err
-	}
 	if s.canvas == nil {
 		return nil, errcode.ErrInternal
 	}
-	if err = s.canvas.ApplyPrompts(ctx, run.job.UserID, run.project.CanvasID, run.job.ID, out.(drama.AssetPromptsOutput).Prompts); err != nil {
+	cp := readDramaCheckpoint(run.job.Output)
+	cp.NewAssets = assets
+	if err := s.promptAssets(ctx, run, vars, cp.unattemptedPrompts()); err != nil {
 		return nil, err
 	}
+	cp, err := s.currentCheckpoint(ctx, run.job)
+	if err != nil {
+		return nil, err
+	}
+	result := &dramaResult{cost: cp.Cost}
+	if len(cp.Filtered) > 0 {
+		result.failure = errcode.ErrDramaContentFiltered.WithMsg(filteredMessage(cp.Filtered))
+	}
 	return result, nil
-}
-
-// prepareCanvasCheckpoint 在网络结束后保存费用和结果，画布事务只追加提交标记。
-func (s *DramaService) prepareCanvasCheckpoint(ctx context.Context, j *model.DramaJob, result *dramaResult) error {
-	raw, err := json.Marshal(result.output)
-	if err != nil {
-		return err
-	}
-	checkpoint, err := json.Marshal(dramaCheckpoint{Result: raw, Cost: result.cost})
-	if err != nil {
-		return err
-	}
-	return s.repo.WithTx(ctx, func(tx repository.DramaTx) error {
-		if _, e := tx.Project(ctx, j.UserID, j.DramaID, true); e != nil {
-			return e
-		}
-		current, e := tx.Job(ctx, j.UserID, j.DramaID, j.ID, true)
-		if e != nil {
-			return e
-		}
-		if !dramaActive(current.Status) {
-			return errcode.ErrTaskNotCancelable
-		}
-		return tx.UpdateJob(ctx, j.UserID, j.ID, map[string]any{"output": checkpoint})
-	})
-}
-
-// restoreDramaCheckpoint 已提交画布不可重复写入；恢复费用、新资产和下一步。
-func restoreDramaCheckpoint(j *model.DramaJob) (*dramaResult, bool, error) {
-	var checkpoint dramaCheckpoint
-	if err := json.Unmarshal(j.Output, &checkpoint); err != nil || !checkpoint.CanvasCommitted {
-		return nil, false, nil
-	}
-	out, err := drama.DecodeOutput(j.Step, checkpoint.Result)
-	if err != nil {
-		return nil, true, errcode.ErrDramaOutputInvalid
-	}
-	result := &dramaResult{output: out, cost: checkpoint.Cost, newAssets: checkpoint.NewAssets}
-	if j.Step == "breakdown" && len(result.newAssets) > 0 {
-		result.next = "asset_prompts"
-	}
-	return result, true, nil
-}
-
-// dramaCanvasCommitted 判断取消是否还来得及，画布提交后必须完成结算。
-func dramaCanvasCommitted(j *model.DramaJob) bool {
-	var checkpoint dramaCheckpoint
-	return json.Unmarshal(j.Output, &checkpoint) == nil && checkpoint.CanvasCommitted
 }
 
 // commitDrama 输出、结算和自动后继任务在同一事务提交。
 func (s *DramaService) commitDrama(ctx context.Context, run *dramaRun, result *dramaResult) error {
 	var completed, following *model.DramaJob
+	finished := false
+	failedCode, failedMessage := 0, ""
 	nextSnap := &run.snapshot
 	var nextModelError error
 	if pipelineJob(*run.job) {
@@ -274,15 +291,22 @@ func (s *DramaService) commitDrama(ctx context.Context, run *dramaRun, result *d
 		}
 		audit := result.output
 		if current.Step == "breakdown" || current.Step == "asset_prompts" {
-			raw, e := json.Marshal(result.output)
-			if e != nil {
+			cp := readDramaCheckpoint(current.Output) // 保留各批进度，重试提示词时据此找出还没写的资产
+			cp.CanvasCommitted = true
+			audit = cp
+		}
+		if result.failure != nil {
+			code, message := dramaFailure(result.failure)
+			failedCode, failedMessage = code, message
+			if e = s.finishTx(ctx, tx, current, "failed", code, message, result.cost, audit); e != nil {
 				return e
 			}
-			audit = dramaCheckpoint{Result: raw, Cost: result.cost, CanvasCommitted: true, NewAssets: result.newAssets}
+			return tx.UpdateProject(ctx, p.UserID, p.ID, p.Revision, map[string]any{"status": "failed"})
 		}
 		if e = s.finishTx(ctx, tx, current, "succeeded", 0, "", result.cost, audit); e != nil {
 			return e
 		}
+		finished = true
 		if nextModelError != nil && p.Phase == "running" && p.SourceKind != "script" && p.PlanCursor < p.RangeEnd {
 			code, msg := dramaFailure(nextModelError)
 			return setPlanningState(ctx, tx, p, "paused", planningPauseCode(code), msg)
@@ -296,6 +320,18 @@ func (s *DramaService) commitDrama(ctx context.Context, run *dramaRun, result *d
 	s.publish(ctx, completed)
 	s.publish(ctx, following)
 	s.publishDrama(ctx, run.job.UserID, run.job.DramaID)
+	if failedCode != 0 && completed.Status == "failed" {
+		logger.RunOf(ctx).End(logger.StatusFailed, zap.Int("error_code", failedCode), zap.String("error_message", failedMessage),
+			zap.String("error_type", dramaErrorType(result.failure)), zap.Int("credits", completed.Credits), zap.Int("refunded", completed.FrozenCredits-completed.Credits))
+	}
+	if finished {
+		fields := []zap.Field{zap.Int("credits", completed.Credits), zap.Int("frozen_credits", completed.FrozenCredits)}
+		if following != nil {
+			fields = append(fields, zap.String("next_job_id", idcodec.Encode(following.ID)))
+		}
+		logger.RunOf(ctx).End(logger.StatusSucceeded, fields...)
+		logDramaCreated(ctx, following, completed)
+	}
 	if pipelineJob(*run.job) {
 		eps, e := s.repo.Episodes(ctx, run.job.UserID, run.job.DramaID)
 		if e != nil {

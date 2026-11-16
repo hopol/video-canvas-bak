@@ -28,7 +28,8 @@ const riverUIPrefix = "/api/v1/admin/river"
 // 队列用的数据库连接池与 GORM 共用（入队因此能进业务事务），另开一个很小的 pgx 连接池只用来 LISTEN 新任务通知，
 // 拿不到时（例如经过不支持 LISTEN 的连接池）退化成轮询，只是取任务慢一点。
 func newTaskQueue(cfg *config.Config, db *gorm.DB, taskSvc *service.GenerationTaskService, executor provider.Executor,
-	assetSvc *service.AssetService, settingsSvc *service.SettingsService, dramaSvc queue.DramaHandler) (*queue.Runtime, *pgxpool.Pool, error) {
+	assetSvc *service.AssetService, settingsSvc *service.SettingsService, dramaSvc queue.DramaHandler, stepSvc queue.StepTrialHandler, marketingSvc queue.MarketingHandler,
+	storyboardSvc queue.StoryboardSplitHandler) (*queue.Runtime, *pgxpool.Pool, error) {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, nil, fmt.Errorf("取数据库连接池失败: %w", err)
@@ -47,9 +48,13 @@ func newTaskQueue(cfg *config.Config, db *gorm.DB, taskSvc *service.GenerationTa
 	rt, err := queue.New(queue.Config{
 		DB: sqlDB, ListenerPool: listener, Store: taskSvc, Handler: handler, Settings: settingsSvc,
 		Repo: repository.NewQueueRepository(db), Enabled: cfg.AI.Worker.Enabled,
-		Drama:    dramaSvc,
-		HardCap:  cfg.AI.Queue.MaxConcurrency,
-		Notifier: notifier, AgentNotify: cfg.Agent.Enabled,
+		Drama:     dramaSvc,
+		StepTrial: stepSvc,
+		Marketing: marketingSvc,
+		// 分镜表拆分镜：worker 执行 + 推送，同一个服务也负责提交
+		StoryboardSplit: storyboardSvc,
+		HardCap:         cfg.AI.Queue.MaxConcurrency,
+		Notifier:        notifier, AgentNotify: cfg.Agent.Enabled,
 		Version: version.Version, Hostname: host, StopTimeout: cfg.Server.ShutdownTimeout,
 	})
 	if err != nil {

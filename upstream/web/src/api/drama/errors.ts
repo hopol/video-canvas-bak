@@ -54,6 +54,8 @@ export const DRAMA_ERR = {
   adaptInvalid: 67026,
   /** 还没有这个格式的转写稿 */
   adaptMissing: 67027,
+  /** 内容触发了模型的安全过滤（Msg 可点名被过滤的资产） */
+  contentFiltered: 67029,
 } as const;
 
 /** 各错误码的兜底文案：后端 Msg 为空时用 */
@@ -84,6 +86,7 @@ const FALLBACK: Record<number, string> = {
   [DRAMA_ERR.adaptBusy]: "这个片段正在转写，请稍候",
   [DRAMA_ERR.adaptInvalid]: "转写结果不合格，请重试",
   [DRAMA_ERR.adaptMissing]: "还没有这个格式的转写稿，请先转写",
+  [DRAMA_ERR.contentFiltered]: "内容触发了模型的安全过滤，调整相关描述后重试",
 };
 
 /** 错误是不是这个业务码 */

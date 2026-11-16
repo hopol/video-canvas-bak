@@ -2,7 +2,7 @@
 # 一键升级的 updater 镜像：Go 小服务 + docker CLI / compose + bash，执行镜像自带的 scripts/update.sh。
 # 构建上下文是仓库根目录（要拿到 scripts/update.sh）：docker build -f backend/Dockerfile.updater .
 
-FROM golang:1.27-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS build
 
 WORKDIR /src
 
@@ -11,8 +11,8 @@ RUN go mod download
 
 COPY backend/ .
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/updater ./cmd/updater
 
 # docker:cli 自带 docker compose 插件；update.sh 还需要 bash、curl 和 GNU coreutils

@@ -133,6 +133,7 @@ func (e *exporter) rewriteData(data map[string]any) {
 	e.rewriteParamAssets(data)
 	e.rewriteScene(data)
 	e.rewriteCharacter(data)
+	e.rewriteStoryboard(data)
 }
 
 // rewriteOutputs 只保留选中的那一版产物，改成 {assetHash, mediaType, model?, createdAt}；
@@ -257,6 +258,24 @@ func (e *exporter) rewriteCharacter(data map[string]any) {
 			out["origin"] = origin
 		}
 		character["voice"] = out
+	}
+}
+
+// rewriteStoryboard 改写分镜表里手传的分镜图：shots[].image 从 {assetId, src} 换成 {assetHash}，
+// 读不到的素材（或 image 不是对象、缺 assetId）去掉这一行的 image，行上其余字段和关联的节点 id 原样保留。
+// imageNodeId / videoNodeId 是画布内部的节点 id，节点 id 导入后不变，所以不用改。
+func (e *exporter) rewriteStoryboard(data map[string]any) {
+	for _, shot := range storyboardShots(data) {
+		raw, exists := shot["image"]
+		if !exists {
+			continue
+		}
+		delete(shot, "image")
+		if m, ok := raw.(map[string]any); ok {
+			if hash, ok := e.resolveValue(m["assetId"]); ok {
+				shot["image"] = map[string]any{"assetHash": hash}
+			}
+		}
 	}
 }
 

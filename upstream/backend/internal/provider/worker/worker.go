@@ -93,6 +93,9 @@ type Worker struct {
 	// 不能复用 poll_attempts：轮询阶段它是查询次数，不是重试次数。
 	crashes map[uint64]int
 
+	// folds 是各任务轮询结果的折叠状态，见 worker_log.go
+	folds folds
+
 	// lastRunnerWarn 是上次记 runner 不可用 Warn 的时间（UnixNano），用于全局限频，避免每个任务每轮都刷一条
 	lastRunnerWarn atomic.Int64
 }
@@ -117,18 +120,22 @@ func (w *Worker) log() *zap.Logger {
 
 // taskLog 返回带任务标识的日志：task_id（界面上展示的十六进制编号）、渠道 key（t.Provider 存的是渠道 key）、模型。
 func (w *Worker) taskLog(t *model.GenerationTask) *zap.Logger {
-	return w.log().With(logger.TaskID(t.ID), zap.String("channel", t.Provider), zap.String("model", t.ModelKey))
+	return w.log().With(logger.GenRun(t.ID), zap.String("channel", t.Provider), zap.String("model", t.ModelKey))
 }
 
 // Handle 处理一个任务的“这一步”：先做超时判断，再按状态分发（提交 / 轮询 / 转存）。任何 panic 只影响这一个任务，不会向上传播。
 // 处理结果都写在任务行里：状态是否变了、下一次什么时候再处理（next_poll_at），由调用方（队列）在返回后读取。
 // 任务在途中被取消 / 超时、迁移没有命中（applied=false）都不算错误，下一次读到终态就结束。
 func (w *Worker) Handle(ctx context.Context, t model.GenerationTask) {
-	// 试跑任务记录本次执行的钩子与 HTTP 追踪。保存放在 defer 里并先于 recover 注册（所以最后执行）：
-	// 即使本次处理 panic，已经发生的步骤也会被保存，方便运营排查
+	// 每次处理都记录钩子与 HTTP 追踪：写进 payload.log（供应商调用全文），试跑任务另外落库给管理端看。
+	// 写日志和保存放在 defer 里并先于 recover 注册（所以最后执行）：即使本次处理 panic，已经发生的步骤也会留下
+	logger.RunOf(ctx).SetUser(t.UserID)
+	var snap *provider.Snapshot
+	// 先声明这次供应商调用：发给 plugin-runner 的请求头和之后的 provider.call / payload 记录用同一个 call_id
+	ctx, _ = logger.WithCall(ctx, "gen."+phaseOf(t.Status))
+	ctx, tr := traceFor(ctx, &t)
+	defer w.logProvider(ctx, &t, phaseOf(t.Status), &snap, tr, time.Now()) // 耗时用真实时钟，不用可注入的 opts.Now
 	if t.IsTest {
-		var tr *provider.Trace
-		ctx, tr = provider.WithTrace(ctx)
 		defer w.saveTrace(ctx, &t, tr)
 	}
 	log := w.taskLog(&t).With(zap.String("status", t.Status))
@@ -160,7 +167,15 @@ func (w *Worker) Handle(ctx context.Context, t model.GenerationTask) {
 		return
 	}
 
-	// 3. 按状态处理
+	// 3. 按状态处理；提交是这个运行真正开始干活的时候（之后每轮轮询都是新的队列执行，不再打开始行）
+	if t.Status == model.TaskPending {
+		startFields := []zap.Field{zap.String("kind", t.Kind), zap.String("model", t.ModelKey), zap.String("channel", t.Provider),
+			zap.String("plugin", snap.Plugin.Key), zap.String("plugin_version", snap.Plugin.Version), zap.Int64("queue_wait_ms", now.Sub(t.CreatedAt).Milliseconds())}
+		if kind, id := t.RunParent(); kind != "" {
+			startFields = append(startFields, zap.String("parent_kind", kind), zap.String("parent_id", id))
+		}
+		logger.RunOf(ctx).Start(startFields...)
+	}
 	switch t.Status {
 	case model.TaskPending:
 		w.submit(ctx, &t, snap)

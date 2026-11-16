@@ -6,6 +6,7 @@ import { sameNodeProps } from "@/utils/canvas/node-props";
 
 import { CharacterCanvasNode } from "./character-node";
 import { DirectorCanvasNode } from "./director-node";
+import { StoryboardCanvasNode } from "./storyboard-node";
 import { TextCanvasNode } from "./text-node";
 import { AudioCanvasNode, ImageCanvasNode, VideoCanvasNode } from "./video-node";
 
@@ -30,6 +31,8 @@ export const CanvasNodeView = memo((props: NodeProps<CanvasNode>) => {
       return <DirectorCanvasNode id={id} data={data} />;
     case "character":
       return <CharacterCanvasNode id={id} data={data} selected={selected} />;
+    case "storyboard":
+      return <StoryboardCanvasNode id={id} data={data} selected={selected} />;
   }
 }, sameNodeProps);
 CanvasNodeView.displayName = "CanvasNodeView";

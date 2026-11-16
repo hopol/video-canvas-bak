@@ -27,6 +27,7 @@ import { useFramePickStore } from "@/store/frame-pick";
 import { useGridSplitStore } from "@/store/grid-split";
 import { leaveImageEditModes } from "@/store/image-edit-mode";
 import { useOutpaintStore } from "@/store/outpaint";
+import { useStoryboardEditor } from "@/store/storyboard-editor";
 import { useTrimStore } from "@/store/trim";
 import type { CanvasNodeData } from "@/types";
 import { downloadMedia, downloadName } from "@/utils/canvas/download";
@@ -174,7 +175,9 @@ export function NodeOverlays({
             "frame-last": () => void captureQuick(id, "last"),
             "frame-custom": startFramePick,
           }
-        : undefined;
+        : data.kind === "storyboard"
+          ? { "edit-storyboard": () => useStoryboardEditor.getState().open(id) }
+          : undefined;
 
   const { src, text, label, fileName } = data;
   const onTail: Partial<Record<ToolbarTail, () => void>> = {

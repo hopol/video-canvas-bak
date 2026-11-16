@@ -36,6 +36,8 @@ export const MODEL_LIBRARY = {
   director: [],
   // 角色卡只引用资产页的角色，不调模型
   character: [],
+  // 分镜表手动编辑，迭代 1 不调模型
+  storyboard: [],
 } as const satisfies Record<NodeKind, readonly ModelOption[]>;
 
 /**

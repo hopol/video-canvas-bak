@@ -89,6 +89,28 @@ export async function submitNodeById(id: string): Promise<string | null> {
   return actions.submit();
 }
 
+/** 这些原因说明节点只是还没准备好（刚建好没挂载、模型清单还在加载），等一等就能提交；其余是真正的拒绝 */
+const TRANSIENT_REASONS = new Set([NOT_READY, "正在加载模型清单"]);
+
+/**
+ * 刚建出来的节点要立刻开始生成：节点要等挂载才会登记动作、模型清单可能还在加载，
+ * 这里每隔一会儿重试，直到能提交；真正的拒绝（积分不足、暂无可用模型……）不等，原因直接交回。
+ * 等不到就返回「节点还没准备好」，调用方让用户到节点上手动点生成。
+ * @returns 提交成功为 null，否则是原因
+ */
+export async function submitNodeWhenReady(
+  id: string,
+  { timeoutMs = 5000, intervalMs = 100 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const reason = await submitNodeById(id);
+    if (reason === null || !TRANSIENT_REASONS.has(reason)) return reason;
+    if (Date.now() >= deadline) return reason;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 /**
  * 「生成（含音色）」：生成形象，出图后用新主图接着生成音色。
  * 音色此刻不能生成（不是角色卡、没写音色描述……）时照常生成形象，音色那一项给原因。

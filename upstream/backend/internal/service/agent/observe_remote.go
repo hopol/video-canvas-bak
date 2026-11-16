@@ -392,7 +392,7 @@ func (s *ObserveService) syncOne(ctx context.Context, ref RemoteRunRef, t *syncT
 	case errors.Is(err, repository.ErrNotFound):
 		t.maxOK = max(t.maxOK, ref.UpdatedAt) // 刚列出来就没了（不该发生），没必要反复重试
 	default:
-		logger.Warn("汇总 Agent 服务里的运行摘要失败", zap.Error(err), zap.String("run_id", ref.ID))
+		logger.Warn("汇总 Agent 服务里的运行摘要失败", zap.Error(err), logger.RunField("agent", ref.ID))
 		if t.firstFail == 0 || ref.UpdatedAt < t.firstFail {
 			t.firstFail = ref.UpdatedAt
 		}
@@ -444,6 +444,7 @@ func (h *HTTPRemoteRuns) get(ctx context.Context, path string, out any) error {
 		return err
 	}
 	req.Header.Set("X-Agent-Service-Token", h.ServiceToken)
+	logger.InjectHeaders(ctx, req.Header) // Agent 服务的请求日志用同一个 request_id
 	resp, err := c.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接 Agent 服务失败：%w", err)

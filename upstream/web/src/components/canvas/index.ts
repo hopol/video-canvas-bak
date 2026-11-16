@@ -22,6 +22,7 @@ export {
   CharacterPlaceholderIcon,
   DirectorPlaceholderIcon,
   ImagePlaceholderIcon,
+  StoryboardPlaceholderIcon,
   TextPlaceholderIcon,
   VideoPlaceholderIcon,
 } from "./placeholder-icons";

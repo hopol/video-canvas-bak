@@ -45,8 +45,8 @@ func newDramaCanvasFake() *dramaCanvasFake {
 		1: {UserID: 1, DramaID: 3, No: 1, ScriptStatus: "ready", Revision: 1},
 		2: {UserID: 1, DramaID: 3, No: 2, ScriptStatus: "ready", Revision: 1},
 	}, jobs: map[uint64]model.DramaJob{
-		9:  {BaseModel: model.BaseModel{ID: 9}, UserID: 1, DramaID: 3, Step: "breakdown", Status: "running", Output: datatypes.JSON(`{"result":{"assets":[]},"cost":5}`)},
-		10: {BaseModel: model.BaseModel{ID: 10}, UserID: 1, DramaID: 3, Step: "asset_prompts", Status: "running", Output: datatypes.JSON(`{"result":{"prompts":[]},"cost":3}`)},
+		9:  {BaseModel: model.BaseModel{ID: 9}, UserID: 1, DramaID: 3, Step: "breakdown", Status: "running", Output: datatypes.JSON(`{}`)},
+		10: {BaseModel: model.BaseModel{ID: 10}, UserID: 1, DramaID: 3, Step: "asset_prompts", Status: "running", Output: datatypes.JSON(`{}`)},
 		11: {BaseModel: model.BaseModel{ID: 11}, UserID: 1, DramaID: 3, Step: "breakdown", Status: "running"},
 		12: {BaseModel: model.BaseModel{ID: 12}, UserID: 1, DramaID: 3, Step: "asset_prompts", Status: "running"},
 	}}
@@ -210,7 +210,7 @@ func TestDramaCanvasBreakdownCreatesAndMergesAtomically(t *testing.T) {
 	f := newDramaCanvasFake()
 	bc := &dramaCanvasBroadcast{}
 	svc := service.NewDramaCanvasService(f, bc)
-	created, err := svc.ApplyBreakdown(ctx, 1, 3, 7, 9, []int{1}, dramaCanvasAssets(1), nil)
+	created, err := svc.ApplyBreakdown(ctx, 1, 3, 7, 9, service.DramaBreakdownBatch{Episodes: []int{1}, Assets: dramaCanvasAssets(1), Cost: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,21 +247,21 @@ func TestDramaCanvasBreakdownCreatesAndMergesAtomically(t *testing.T) {
 	if err := json.Unmarshal(f.jobs[9].Output, &checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	if checkpoint["canvas_committed"] != true || checkpoint["cost"] != float64(5) || checkpoint["result"] == nil {
-		t.Fatalf("checkpoint lost model result or billing cost: %+v", checkpoint)
+	if !reflect.DeepEqual(checkpoint["done"], []any{float64(1)}) || checkpoint["cost"] != float64(5) || checkpoint["result"] == nil || len(checkpoint["new_assets"].([]any)) != 2 {
+		t.Fatalf("检查点应累加这批的集号、新节点、模型结果和费用: %+v", checkpoint)
 	}
-	replayed, err := svc.ApplyBreakdown(ctx, 1, 3, 7, 9, []int{1}, dramaCanvasAssets(1), nil)
-	if err != nil || !reflect.DeepEqual(replayed, created) || f.canvas.Revision != 2 || len(bc.messages) != 1 {
-		t.Fatalf("durable replay changed canvas: replay=%+v err=%v", replayed, err)
+	replayed, err := svc.ApplyBreakdown(ctx, 1, 3, 7, 9, service.DramaBreakdownBatch{Episodes: []int{1}, Assets: dramaCanvasAssets(1), Cost: 5})
+	if err != nil || len(replayed) != 0 || f.canvas.Revision != 2 {
+		t.Fatalf("已写入的批次重放不应再改画布: replay=%+v err=%v", replayed, err)
 	}
-	if err := svc.ApplyPrompts(ctx, 1, 7, 10, []drama.AssetPrompt{{NodeID: created[0].NodeID, Prompt: "原有资产提示词"}}); err != nil {
+	if err := svc.ApplyPrompts(ctx, 1, 7, 10, "asset_prompts", []drama.AssetPrompt{{NodeID: created[0].NodeID, Prompt: "原有资产提示词"}}, nil, 3); err != nil {
 		t.Fatal(err)
 	}
 	assets := dramaCanvasAssets(2)
 	assets[0].Name = "小川"
 	assets[0].Aliases = []string{" 林川 "}
 	assets = append(assets, drama.Asset{Type: "prop", Name: "玉佩", Aliases: []string{}, Episodes: []int{2}, Description: "双鱼玉佩"})
-	second, err := svc.ApplyBreakdown(ctx, 1, 3, 7, 11, []int{2}, assets, nil)
+	second, err := svc.ApplyBreakdown(ctx, 1, 3, 7, 11, service.DramaBreakdownBatch{Episodes: []int{2}, Assets: assets})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestDramaCanvasCASReplaysWithoutDuplicateNodes(t *testing.T) {
 		f.canvas.PayloadJSON = datatypes.JSON(`{"nodes":[{"id":"manual","type":"canvas","position":{"x":0,"y":0},"data":{"kind":"image","label":"用户新增"}}],"edges":[]}`)
 		f.canvas.Revision++
 	}
-	created, err := service.NewDramaCanvasService(f, bc).ApplyBreakdown(context.Background(), 1, 3, 7, 9, []int{1}, dramaCanvasAssets(1), nil)
+	created, err := service.NewDramaCanvasService(f, bc).ApplyBreakdown(context.Background(), 1, 3, 7, 9, service.DramaBreakdownBatch{Episodes: []int{1}, Assets: dramaCanvasAssets(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestDramaCanvasFailureRollsBackEverything(t *testing.T) {
 			if episodes == nil {
 				episodes = []int{1}
 			}
-			_, err := service.NewDramaCanvasService(f, bc).ApplyBreakdown(context.Background(), user, dramaID, 7, 9, episodes, dramaCanvasAssets(1), nil)
+			_, err := service.NewDramaCanvasService(f, bc).ApplyBreakdown(context.Background(), user, dramaID, 7, 9, service.DramaBreakdownBatch{Episodes: episodes, Assets: dramaCanvasAssets(1)})
 			if tc.raw != nil {
 				if !errors.Is(err, tc.raw) {
 					t.Fatalf("err=%v", err)
@@ -381,7 +381,7 @@ func TestDramaCanvasPromptsRejectUnclassifiedAndPreserveParams(t *testing.T) {
 	bc := &dramaCanvasBroadcast{}
 	svc := service.NewDramaCanvasService(f, bc)
 	ctx := context.Background()
-	if err := svc.ApplyPrompts(ctx, 1, 7, 10, []drama.AssetPrompt{{NodeID: "scene", Prompt: "雨夜街道"}}); err != nil {
+	if err := svc.ApplyPrompts(ctx, 1, 7, 10, "asset_prompts", []drama.AssetPrompt{{NodeID: "scene", Prompt: "雨夜街道"}}, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	params := dramaGraph(t, f).Node("scene").Data()["params"].(map[string]any)
@@ -389,7 +389,7 @@ func TestDramaCanvasPromptsRejectUnclassifiedAndPreserveParams(t *testing.T) {
 		t.Fatalf("params=%+v", params)
 	}
 	for _, id := range []string{"manual", "missing"} {
-		err := svc.ApplyPrompts(ctx, 1, 7, 12, []drama.AssetPrompt{{NodeID: id, Prompt: "不可写"}})
+		err := svc.ApplyPrompts(ctx, 1, 7, 12, "asset_prompts", []drama.AssetPrompt{{NodeID: id, Prompt: "不可写"}}, nil, 0)
 		var business *errcode.Error
 		if !errors.As(err, &business) || business.Code != 67008 {
 			t.Fatalf("id=%s err=%v", id, err)
@@ -461,7 +461,7 @@ func TestDramaCanvasPromptsRollbackAndReplay(t *testing.T) {
 				f.updateErr = repository.ErrRevisionConflict
 			}
 			prompts := []drama.AssetPrompt{{NodeID: "scene", Prompt: "夜色街道"}}
-			err := svc.ApplyPrompts(context.Background(), 1, 7, 10, prompts)
+			err := svc.ApplyPrompts(context.Background(), 1, 7, 10, "asset_prompts", prompts, nil, 3)
 			if failure != "none" {
 				if err == nil || f.canvas.Revision != 1 || string(f.canvas.PayloadJSON) != before || len(bc.messages) != 0 {
 					t.Fatalf("failed prompt transaction leaked: err=%v canvas=%+v", err, f.canvas)
@@ -471,7 +471,7 @@ func TestDramaCanvasPromptsRollbackAndReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := svc.ApplyPrompts(context.Background(), 1, 7, 10, prompts); err != nil {
+			if err := svc.ApplyPrompts(context.Background(), 1, 7, 10, "asset_prompts", prompts, nil, 3); err != nil {
 				t.Fatal(err)
 			}
 			if f.canvas.Revision != 2 || len(bc.messages) != 1 {
@@ -479,8 +479,8 @@ func TestDramaCanvasPromptsRollbackAndReplay(t *testing.T) {
 			}
 			var checkpoint map[string]any
 			_ = json.Unmarshal(f.jobs[10].Output, &checkpoint)
-			if checkpoint["canvas_committed"] != true || checkpoint["cost"] != float64(3) || checkpoint["result"] == nil {
-				t.Fatalf("checkpoint=%+v", checkpoint)
+			if !reflect.DeepEqual(checkpoint["prompted"], []any{"scene"}) || checkpoint["cost"] != float64(3) {
+				t.Fatalf("检查点应记下已写节点和费用，重放不重复累加: %+v", checkpoint)
 			}
 		})
 	}

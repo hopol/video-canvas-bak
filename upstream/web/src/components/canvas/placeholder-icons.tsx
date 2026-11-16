@@ -39,6 +39,17 @@ export function DirectorPlaceholderIcon({ className }: PlaceholderIconProps) {
   );
 }
 
+/** 三格胶片画格，分镜表还没有镜头时的占位 */
+export function StoryboardPlaceholderIcon({ className }: PlaceholderIconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      <rect x="2" y="7" width="6" height="10" rx="1.4" />
+      <rect x="9" y="7" width="6" height="10" rx="1.4" />
+      <rect x="16" y="7" width="6" height="10" rx="1.4" />
+    </svg>
+  );
+}
+
 /** 三条文字行，文本还没写时的占位 */
 export function TextPlaceholderIcon({ className }: PlaceholderIconProps) {
   return (

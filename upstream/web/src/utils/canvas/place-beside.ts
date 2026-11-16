@@ -27,6 +27,34 @@ export const overlaps = (a: Rect, b: Rect) =>
   b.y < a.y + a.height + AVOID_GAP;
 
 /**
+ * 把按序号衍生的一批节点竖排在源节点右侧（分镜表按镜号出图）：水平隔 80px，第 slot 格（从 0 起）
+ * 顶边预定在源节点顶边往下 slot × (节点高 + 间隔) 处，撞到别的节点就继续往下错开，最多试 60 次。
+ * 一格格放时，已放好的节点会让后面的避开它们，所以不会重叠。返回新节点左上角的画布坐标（绝对坐标）。
+ * @param input.slot 第几格，从 0 起
+ */
+export function placeInColumn(input: {
+  source: FlowNode;
+  nodes: FlowNode[];
+  size: { width: number; height: number };
+  slot: number;
+}): { x: number; y: number } {
+  const { source, nodes, size, slot } = input;
+  const origin = absolutePosition(source, nodes);
+  const sourceSize = sizeOfNode(source);
+  const taken: Rect[] = nodes.map((node) => ({
+    ...absolutePosition(node, nodes),
+    ...sizeOfNode(node),
+  }));
+  const x = origin.x + sourceSize.width + NODE_GAP_X;
+  let y = origin.y + slot * (size.height + AVOID_GAP);
+  for (let step = 0; step < MAX_SHIFTS; step++) {
+    if (!taken.some((rect) => overlaps({ x, y, ...size }, rect))) break;
+    y += size.height + AVOID_GAP;
+  }
+  return { x, y };
+}
+
+/**
  * 把一个由源节点衍生出来的新节点摆在它右侧：水平隔 80px、垂直居中，
  * 撞到别的节点就往下错开一格（新节点的高度加间隔），最多试 60 次。
  * 扩图和视频修剪共用；返回的是新节点左上角的画布坐标（绝对坐标，不是组内相对坐标）。

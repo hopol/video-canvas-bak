@@ -1,3 +1,4 @@
+import type { StoryboardSplitJob } from "@/api/storyboard/type";
 import type { PaymentWsUpdate } from "@/store/payment";
 import { describe, expect, test } from "bun:test";
 
@@ -154,6 +155,7 @@ function setup(
   const patches: CanvasPatchDto[] = [];
   const agentEvents: AgentEventDto[] = [];
   const payments: PaymentWsUpdate[] = [];
+  const splits: StoryboardSplitJob[] = [];
   const dramaEpisodes: DramaEpisodeEvent[] = [];
   const dramas: { drama_id: string }[] = [];
   let opens = 0;
@@ -175,6 +177,7 @@ function setup(
     onCanvasPatch: (patch) => patches.push(patch),
     onAgentEvent: (event) => agentEvents.push(event),
     onPayment: (update) => payments.push(update),
+    onStoryboardSplit: (job) => splits.push(job),
     onDrama: (event) => dramas.push(event),
     onDramaEpisode: (event) => dramaEpisodes.push(event),
     onOpen: () => {
@@ -195,6 +198,7 @@ function setup(
     patches,
     agentEvents,
     payments,
+    splits,
     dramaEpisodes,
     dramas,
     advance,
@@ -267,7 +271,43 @@ describe("parseServerMessage：payment.updated", () => {
   });
 });
 
+describe("parseServerMessage：storyboard.split", () => {
+  const data = { id: "j1", canvas_id: "c1", node_id: "sb", status: "running", credits: 0 };
+
+  test("必须带任务 id、画布 id、节点 id 和状态", () => {
+    expect(parseServerMessage(JSON.stringify({ type: "storyboard.split", data }))?.type).toBe(
+      "storyboard.split",
+    );
+    for (const bad of [
+      { ...data, id: 1 },
+      { ...data, canvas_id: undefined },
+      { ...data, node_id: 2 },
+      { ...data, status: undefined },
+      null,
+      "x",
+    ]) {
+      expect(
+        parseServerMessage(JSON.stringify({ type: "storyboard.split", data: bad })),
+      ).toBeNull();
+    }
+  });
+});
+
 describe("TaskSocketClient", () => {
+  test("收到 storyboard.split 交给拆分镜回调，不影响任务回调；格式不对的丢弃", async () => {
+    const t = setup();
+    t.client.start();
+    await t.flush();
+    t.sockets[0].open();
+    t.sockets[0].message({
+      type: "storyboard.split",
+      data: { id: "j1", canvas_id: "c1", node_id: "sb", status: "succeeded", credits: 5 },
+    });
+    t.sockets[0].message({ type: "storyboard.split", data: { id: "j2" } });
+    expect(t.splits.map((j) => j.id)).toEqual(["j1"]);
+    expect(t.tasks).toHaveLength(0);
+  });
+
   test("收到 canvas.patch 和 agent.event 分别交给各自的回调", async () => {
     const t = setup();
     t.client.start();

@@ -624,6 +624,16 @@ html:has([data-shell="home"]) {
 .canvas-loader[data-leaving] .logo-anim :is([data-part="beam"], [data-part="glow"]) {
   animation: logo-anim-beam-out 0.36s cubic-bezier(0.4, 0, 1, 1) both;
 }
+/* 分镜表拆分镜的不确定进度条：宽 1/3 的亮条在轨道里左右往返 */
+@keyframes storyboard-split-sweep {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(200%);
+  }
+}
+
 @keyframes logo-anim-left-in {
   from {
     opacity: 0;
@@ -693,14 +703,25 @@ html:has([data-shell="home"]) {
     transform: scale(4, 1.4);
   }
 }
-/* 节点内容加载占位的扫光：只动 transform，合成线程跑 */
+/* 加载占位的扫光：只动 transform，合成线程跑。
+   扫光层是父级 3 倍宽（左右各伸出一倍），位移 ±1/3 自身宽度：层的边缘始终在父级外面。
+   若层和父级一样宽，竖长的框（9:16 视频、瀑布流竖卡）里斜向渐变会铺到层的左边缘，扫到一半露出一条硬竖线。
+   父级需 overflow-hidden、relative；周期用 --sheen-duration 调。 */
 @keyframes node-sheen {
   from {
-    transform: translateX(-100%);
+    transform: translateX(-33.333%);
   }
   to {
-    transform: translateX(100%);
+    transform: translateX(33.333%);
   }
+}
+@utility sheen-sweep {
+  position: absolute;
+  inset-block: 0;
+  left: -100%;
+  width: 300%;
+  background: linear-gradient(120deg, transparent 40%, var(--sheen) 50%, transparent 60%);
+  animation: node-sheen var(--sheen-duration, 1.6s) ease-in-out infinite;
 }
 @keyframes canvas-focus-in {
   from {
@@ -856,23 +877,31 @@ html:has([data-shell="home"]) {
   }
 }
 @keyframes home-drift-a {
-  from {
-    transform: translate(-8%, 4%) scale(0.95);
-    opacity: 0.7;
+  0% {
+    transform: translate(-12%, 6%) scale(0.9);
+    opacity: 0.5;
   }
-  to {
-    transform: translate(8%, -4%) scale(1.08);
+  50% {
+    transform: translate(2%, -6%) scale(1.12);
     opacity: 1;
+  }
+  100% {
+    transform: translate(12%, 2%) scale(0.98);
+    opacity: 0.7;
   }
 }
 @keyframes home-drift-b {
-  from {
-    transform: translate(10%, -2%) scale(1.05);
+  0% {
+    transform: translate(14%, -4%) scale(1.1);
     opacity: 1;
   }
-  to {
-    transform: translate(-10%, 6%) scale(0.9);
-    opacity: 0.6;
+  50% {
+    transform: translate(-4%, 8%) scale(0.92);
+    opacity: 0.45;
+  }
+  100% {
+    transform: translate(-14%, -2%) scale(1.04);
+    opacity: 0.85;
   }
 }
 @keyframes home-ring-spin {
@@ -917,7 +946,7 @@ html:has([data-shell="home"]) {
     color-mix(in oklch, var(--beam) var(--glow, 14%), transparent),
     transparent
   );
-  animation: home-drift-a 11s ease-in-out infinite alternate;
+  animation: home-drift-a 7s ease-in-out infinite alternate;
   &[data-tone="bright"] {
     inset: 10% 20%;
     background: radial-gradient(
@@ -925,7 +954,7 @@ html:has([data-shell="home"]) {
       color-mix(in oklch, var(--beam-bright) var(--glow, 14%), transparent),
       transparent
     );
-    animation: home-drift-b 14s ease-in-out infinite alternate;
+    animation: home-drift-b 9s ease-in-out infinite alternate;
   }
   @media (prefers-reduced-motion: reduce) {
     animation: none;
@@ -1197,6 +1226,66 @@ html:has([data-shell="home"]) {
 @utility transfer-nudge {
   animation: transfer-nudge 120ms cubic-bezier(0.2, 0, 0, 1);
   @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/*
+ * 首页公告：顶栏正中悬浮的清透胶囊（设计：docs/design/公告/公告.md §13 v5）。
+ * 材质和右上角「主题 | 积分」那颗 ChromePill 一样，唯一的彩色是前面的主题黄小圆点（取自 .drama-theme 的琥珀色）。
+ * 不占布局：挂在顶栏里绝对定位，跟着吸顶顶栏一直可见。
+ */
+:root {
+  --announcement-dot: oklch(0.67 0.14 78);
+}
+.dark {
+  --announcement-dot: oklch(0.81 0.15 82);
+}
+/* 资产页滚动后会把收起的工具条挂到顶栏正中，这时让出位置，不叠在一起 */
+[data-slot="site-header"]:has(#site-header-center > *) .announcement-float {
+  opacity: 0;
+  visibility: hidden;
+}
+/* 标题放不下：滚动时右侧渐隐提示还有内容，减少动态效果时改成省略号 */
+.announcement-row[data-over="scroll"] .announcement-viewport {
+  mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent);
+}
+.announcement-row[data-over="ellipsis"] .announcement-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 营销创作台：苹果式连续曲率圆角（squircle）。只作用在创作台里，胶囊（rounded-full）不动；
+ * 不支持 corner-shape 的浏览器照常显示普通圆角。squircle 看起来比同半径的普通圆角更方，
+ * 所以创作台里的半径整体放大并按嵌套递减：外层三栏 28px、顶栏与视频 22px、里面的块 18–20px。
+ */
+[data-slot="marketing-workbench"] :is([class*="rounded-"]:not([class*="rounded-full"]), video) {
+  corner-shape: squircle;
+}
+
+/* 营销创作台「出片中」画框：一道光从左往右慢慢扫过；系统减少动效时不动 */
+@keyframes marketing-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+.marketing-shimmer {
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    color-mix(in oklch, var(--foreground) 7%, transparent) 50%,
+    transparent 65%
+  );
+  background-size: 250% 100%;
+  animation: marketing-shimmer 2.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .marketing-shimmer {
     animation: none;
   }
 }

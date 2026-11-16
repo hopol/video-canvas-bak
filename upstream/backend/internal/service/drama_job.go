@@ -10,9 +10,12 @@ import (
 	"video-canvas/internal/drama"
 	"video-canvas/internal/model"
 	"video-canvas/internal/pkg/errcode"
+	"video-canvas/internal/pkg/logger"
 	"video-canvas/internal/provider"
 	"video-canvas/internal/provider/modelcfg"
 	"video-canvas/internal/repository"
+
+	"go.uber.org/zap"
 )
 
 // Estimate 使用现有模型定价及相同请求范围估价，不冻结积分。
@@ -103,6 +106,7 @@ func (s *DramaService) createDramaJob(ctx context.Context, userID, id uint64, ap
 		return nil, dramaError(err)
 	}
 	s.publish(ctx, job)
+	logDramaCreated(ctx, job, nil)
 	v := jobView(*job)
 	return &v, nil
 }
@@ -202,6 +206,7 @@ func (s *DramaService) ListJobs(ctx context.Context, userID, id uint64, active b
 func (s *DramaService) CancelJob(ctx context.Context, userID, dramaID, jobID uint64) (*model.DramaJobView, error) {
 	// 1. 按project→job→credit顺序加锁，取消和完成只有一个能结算。
 	var job *model.DramaJob
+	canceled := false
 	err := s.repo.WithTx(ctx, func(tx repository.DramaTx) error {
 		if _, e := tx.Project(ctx, userID, dramaID, true); e != nil {
 			return e
@@ -217,15 +222,21 @@ func (s *DramaService) CancelJob(ctx context.Context, userID, dramaID, jobID uin
 		if pipelineJob(*job) {
 			return errcode.ErrDramaPhase.WithMsg("自动规划请使用暂停接口")
 		}
-		if dramaCanvasCommitted(job) {
-			return errcode.ErrTaskNotCancelable.WithMsg("画布已写入，任务正在完成结算")
+		// 已写入画布的批次保留，按检查点费用结算，其余退回
+		if e := s.finishTx(ctx, tx, job, "canceled", 0, "", committedCost(job), nil); e != nil {
+			return e
 		}
-		return s.finishTx(ctx, tx, job, "canceled", 0, "", 0, nil)
+		canceled = true
+		return nil
 	})
 	if err != nil {
 		return nil, dramaError(err)
 	}
 	s.publish(ctx, job)
+	if canceled {
+		_, run := dramaJobRun(ctx, job)
+		run.End(logger.StatusCanceled, append(dramaFields(job), zap.String("by", "user"), zap.Int("credits", job.Credits), zap.Int("refunded", job.FrozenCredits-job.Credits))...)
+	}
 	v := jobView(*job)
 	return &v, nil
 }
@@ -456,7 +467,8 @@ func dramaQuote(p *model.DramaProject, step string, eps []model.DramaEpisode, sn
 			for _, u := range batch {
 				size += u.Chars
 			}
-			total += modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: size, Params: map[string]any{}})
+			// 每批一次拆解，再为这批新资产写一次提示词
+			total += 2 * modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: size, Params: map[string]any{}})
 		}
 		return total
 	case "storyboard":

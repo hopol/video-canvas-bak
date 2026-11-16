@@ -189,7 +189,7 @@ func (d *Document) checkNode(i int, node map[string]any) error {
 // hashRefs 取出一个节点里出现的所有素材哈希引用（含重复，不校验格式）：
 // data.assetHash、data.outputs[].assetHash、data.params.images / videos / audios 的每一项、
 // data.paramAssets 的键、data.scene.thumbHash，以及角色节点的 data.character.extras[].assetHash 和
-// （mode=audio 的）data.character.voice.assetHash。
+// （mode=audio 的）data.character.voice.assetHash，以及分镜表的 data.storyboard.shots[].image.assetHash。
 // 校验、导出后的扫描和导入时的改写都靠它统一找引用，新增引用位置只改这里。
 func hashRefs(node map[string]any) []string {
 	data, _ := node["data"].(map[string]any)
@@ -230,6 +230,11 @@ func hashRefs(node map[string]any) []string {
 	}
 	if voice, ok := character["voice"].(map[string]any); ok && voice["mode"] == voiceModeAudio {
 		refs = appendString(refs, voice["assetHash"])
+	}
+	for _, shot := range storyboardShots(data) {
+		if image, ok := shot["image"].(map[string]any); ok {
+			refs = appendString(refs, image["assetHash"])
+		}
 	}
 	return refs
 }

@@ -17,6 +17,7 @@ import type { CanvasEdge, CanvasNode, CanvasNodeData, ParamAsset } from "@/types
 import { isGenerating } from "@/utils/canvas/outputs";
 import { mentionableNodes, opForLink, unlinkSource } from "@/utils/canvas/link-rule";
 import { withoutOutpaintSource } from "@/utils/canvas/outpaint-node";
+import { withoutProvenanceSources } from "@/utils/canvas/provenance-links";
 import { removePromptRef } from "@/utils/canvas/prompt-tokens";
 import { referencedText } from "@/utils/canvas/text-body";
 import { characterDisplayName, characterRefsOfNode } from "@/utils/characters/node-character";
@@ -93,11 +94,16 @@ export function useTaskNode(
   const params = useMemo(() => readParams(data), [data]);
   const allConnections = useNodeConnections({ id, handleType: "target" });
   // 扩图出来的节点：来自原图的那条线只表示来源，参考图只有合成图（设计稿 6.17）
-  const connections = useMemo(
+  const candidateConnections = useMemo(
     () => withoutOutpaintSource(allConnections, data.outpaintFrom),
     [allConnections, data.outpaintFrom],
   );
-  const upstream = useNodesData<CanvasNode>(connections.map((item) => item.source));
+  const candidateNodes = useNodesData<CanvasNode>(candidateConnections.map((item) => item.source));
+  // 分镜表连进来的线只表示来源：没有可当提示词或参考素材的内容，不进引用条也不参与提交
+  const { connections, nodes: upstream } = useMemo(
+    () => withoutProvenanceSources(candidateConnections, candidateNodes),
+    [candidateConnections, candidateNodes],
+  );
   const voiceTaskStates = useTasksStore((state) =>
     upstream.map((node) => state.tasks[node.data.voiceTaskId ?? ""]?.status ?? "").join("|"),
   );

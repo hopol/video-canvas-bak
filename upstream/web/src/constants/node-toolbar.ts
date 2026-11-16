@@ -5,6 +5,7 @@ import {
   Columns3,
   Expand,
   Grid3x3,
+  Maximize2,
   PanelLeft,
   PanelRight,
   PenLine,
@@ -123,6 +124,11 @@ export const NODE_TOOLBAR: Record<NodeKind, NodeToolbarConfig> = {
   director: { actions: [], tail: [] },
   // 角色卡在资产页编辑，节点上没有加工类按钮
   character: { actions: [], tail: [] },
+  // 分镜表：「编辑分镜」打开表格编辑弹窗；没有素材，不出查看类按钮
+  storyboard: {
+    actions: [{ id: "edit-storyboard", label: "编辑分镜", icon: Maximize2 }],
+    tail: [],
+  },
 };
 
 /** 一种节点配置里所有按钮和菜单项的 id，用来检查不重复 */

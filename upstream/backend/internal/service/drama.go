@@ -37,10 +37,10 @@ type DramaRepo interface {
 
 // DramaCanvasWriter 写入拆解资产和提示词，画布与锁集由其原子执行。
 type DramaCanvasWriter interface {
-	// ApplyBreakdown 合并资产、创建角色卡，并锁定本次集；末参是各类资产新建节点的默认图片模型 key。
-	ApplyBreakdown(context.Context, uint64, uint64, uint64, uint64, []int, []drama.Asset, map[string]string) ([]DramaCanvasAsset, error)
-	// ApplyPrompts 更新本次新建节点的提示词。
-	ApplyPrompts(context.Context, uint64, uint64, uint64, []drama.AssetPrompt) error
+	// ApplyBreakdown 把一批拆解资产合并进画布并锁定这批集，同一事务把集号、新节点和费用累加进任务检查点（userID, dramaID, canvasID, jobID）。
+	ApplyBreakdown(context.Context, uint64, uint64, uint64, uint64, DramaBreakdownBatch) ([]DramaCanvasAsset, error)
+	// ApplyPrompts 写入一组节点提示词，同一事务把已写节点、被安全过滤的资产和费用累加进任务检查点（userID, canvasID, jobID, step）。
+	ApplyPrompts(context.Context, uint64, uint64, uint64, string, []drama.AssetPrompt, []DramaCanvasAsset, int) error
 	// DeleteEpisode 删一集、后面的集补位，并改写资产画布上的出现集数（userID, dramaID, canvasID, no）。
 	DeleteEpisode(context.Context, uint64, uint64, uint64, int) error
 }
@@ -507,11 +507,15 @@ func selectedEpisodes(eps []model.DramaEpisode, scope []int) []model.DramaEpisod
 	return out
 }
 
-// dramaFailure 将未知上游错误转换为安全错误文案。
+// dramaFailure 把任务失败原因转成（错误码，给用户看的文案）：业务错误用原文案；文本模型上游返回的错误给用户看上游原文；
+// 其余未知错误（网络、超时、内部错误）不透给前端，按内部错误处理。
 func dramaFailure(err error) (int, string) {
 	var e *errcode.Error
 	if errors.As(err, &e) {
 		return e.Code, e.Msg
+	}
+	if msg := upstreamText(err); msg != "" {
+		return errcode.ErrDramaModelCall.Code, msg
 	}
 	return errcode.ErrInternal.Code, errcode.ErrInternal.Msg
 }

@@ -3,6 +3,7 @@ import {
   Box,
   Clapperboard,
   FileText,
+  GalleryHorizontalEnd,
   Group,
   Image as ImageIcon,
   Music,
@@ -80,6 +81,7 @@ const KIND_ICON = {
   video: Clapperboard,
   audio: Music,
   character: UserRound,
+  storyboard: GalleryHorizontalEnd,
 } as const;
 
 /** 行内 chip：不可编辑的原子节点，退格整个删除 */
@@ -96,7 +98,9 @@ function ChipView({ node }: NodeViewProps) {
             ? Group
             : node.attrs.nodeKind === "character"
               ? UserRound
-              : FileText;
+              : node.attrs.nodeKind === "storyboard"
+                ? GalleryHorizontalEnd
+                : FileText;
   return (
     <NodeViewWrapper as="span" className="inline-block align-baseline">
       <span

@@ -11,6 +11,16 @@ import { getToken } from "@/utils/storage/token";
 import { handleDramaEpisodeEvent, handleDramaEvent } from "@/utils/drama/episode-events";
 import { handleDramaJobEvent, reconcileWatchedDramas } from "@/utils/drama/job-events";
 import { handleDramaSegmentEvent, reconcileWatchedSegments } from "@/utils/drama/segment-events";
+import {
+  handleMarketingRoundEvent,
+  handleMarketingScriptEvent,
+  reconcileWatchedMarketing,
+} from "@/utils/marketing/events";
+
+import {
+  handleStoryboardSplitEvent,
+  reconcileStoryboardSplit,
+} from "@/utils/storyboard/split-sync";
 
 import { handleTaskView, reconcileActiveTasks } from "./task-events";
 import { buildWsUrl, TaskSocketClient } from "./socket-client";
@@ -39,10 +49,15 @@ export function useTaskSocket() {
       onDrama: handleDramaEvent,
       onDramaEpisode: handleDramaEpisodeEvent,
       onDramaSegment: handleDramaSegmentEvent,
+      onMarketingRound: handleMarketingRoundEvent,
+      onMarketingScript: handleMarketingScriptEvent,
+      onStoryboardSplit: handleStoryboardSplitEvent,
       onOpen: () => {
+        void reconcileStoryboardSplit();
         void reconcileActiveTasks();
         void reconcileWatchedDramas();
         void reconcileWatchedSegments();
+        void reconcileWatchedMarketing();
         void useCreditsStore.getState().refresh();
         // 断线期间可能漏了 Agent 事件：把已经打开过的会话补齐
         const { sessions, sync } = useAgentStore.getState();
@@ -60,6 +75,8 @@ export function useTaskSocket() {
       void reconcileActiveTasks();
       void reconcileWatchedDramas();
       void reconcileWatchedSegments();
+      void reconcileWatchedMarketing();
+      void reconcileStoryboardSplit();
     };
     const onOnline = () => client.reconnectNow();
     document.addEventListener("visibilitychange", onVisible);

@@ -17,6 +17,7 @@ type Handlers struct {
 	Me             *handler.MeHandler // 个人中心：资料、头像、改密码、统计、热力图、积分流水
 	CanvasProject  *handler.CanvasProjectHandler
 	CanvasTransfer *handler.CanvasTransferHandler // 画布导出为文档、从文档导入为新画布
+	Storyboard     *handler.StoryboardHandler     // 画布分镜表：从剧本拆分镜
 	Conversation   *handler.ConversationHandler   // 首页生成：对话与生成记录
 	// AgentProxy：画布 Agent 的会话、运行、审批、评价由独立的 Agent 服务负责，这些接口只校验登录态后反向代理过去
 	// （路径、方法、信封不变）；技能目录等仍由 Go 自己处理。为 nil 表示没有启用 Agent，这些接口统一返回「Agent 暂不可用」。
@@ -42,6 +43,9 @@ type Handlers struct {
 	AdminPlugin    *handler.AdminPluginHandler         // 协议插件管理
 	AdminChannel   *handler.AdminChannelHandler        // 渠道管理
 	AdminStats     *handler.AdminStatsHandler          // 总览页任务统计
+	AdminStep      *handler.AdminStepHandler           // 后台「环节技能」页：环节协议、方法绑定、试跑
+	AdminFormatter *handler.AdminFormatterHandler      // 后台「视频提示词格式化器」只读列表
+	Marketing      *handler.MarketingHandler           // 营销工作室
 	AdminQueue     *handler.AdminQueueHandler          // 后台「任务队列」页：队列、渠道名额、吞吐、实例，调并发与暂停
 	RiverUI        *handler.RiverUIHandler             // 嵌入的 River UI（任务级监控）：一次性 ticket 换会话 cookie，仅 super_admin
 	AdminStorage   *handler.AdminStorageHandler        // 存储配置管理
@@ -53,6 +57,7 @@ type Handlers struct {
 	AdminSettings  *handler.AdminSettingsHandler       // 注册与邮件设置
 	AdminSystem    *handler.AdminSystemHandler         // 版本面板：当前版本、检查更新、迁移状态
 	Showcase       *handler.ShowcaseHandler            // 登录页展示：公开读取 + 后台配置
+	Announcement   *handler.AnnouncementHandler        // 首页公告：用户端读取 + 后台管理
 	Payment        *handler.PaymentHandler             // 积分商城：商品、下单、订单状态；渠道回调（无需登录）
 	AdminPayment   *handler.PaymentAdminHandler        // 后台支付管理：全局设置、渠道、商品、订单
 	AdminRole      middleware.RoleLookup               // 管理接口的角色查询（与 UserState 同一套：Redis 缓存 + 变更时主动失效）
@@ -93,6 +98,9 @@ func New(mode, jwtSecret string, h Handlers) *gin.Engine {
 		// 需要登录：JWT 校验之后再查用户状态（停用 → 403，token_version 不符 → 401），封禁与重置密码立即生效
 		auth := v1.Group("", middleware.JWTAuth(jwtSecret), middleware.RequireActive(h.UserState))
 
+		// 首页公告：生效中的公告，最多 5 条，全站共享；只在登录后的首页外壳展示，所以要登录
+		auth.GET("/announcements", h.Announcement.Public)
+
 		// 个人中心：只操作当前登录用户自己的数据
 		me := auth.Group("/me")
 		me.GET("", h.Me.Get)
@@ -113,6 +121,9 @@ func New(mode, jwtSecret string, h Handlers) *gin.Engine {
 		canvas.DELETE("/:id", h.CanvasProject.Delete)
 		canvas.GET("/:id/export", h.CanvasTransfer.Export)
 		canvas.POST("/import", h.CanvasTransfer.Import)
+		canvas.POST("/:id/storyboard/split", h.Storyboard.Split)           // 异步任务：建任务 + 入队，立刻返回 pending
+		canvas.GET("/:id/storyboard/split/active", h.Storyboard.ActiveJob) // 按 node_id 补查进行中的任务（弹窗打开 / 刷新页面）
+		canvas.GET("/:id/storyboard/split/:jobId", h.Storyboard.Job)       // 按 id 读任务当前状态（断线对账）
 		fwd := agentRoute(h.AgentProxy)
 		canvas.GET("/:id/agent/sessions", fwd)
 		canvas.POST("/:id/agent/sessions", fwd)
@@ -179,6 +190,36 @@ func New(mode, jwtSecret string, h Handlers) *gin.Engine {
 		auth.POST("/asset-library/items", h.AssetLibrary.AddItem)
 		auth.PATCH("/asset-library/items/:id", h.AssetLibrary.MoveItem)
 		auth.DELETE("/asset-library/items/:id", h.AssetLibrary.RemoveItem)
+
+		// 营销工作室：项目、轮次、环节运行、脚本的 id 都是十六进制串；别人的资源一律按「不存在」处理。
+		auth.GET("/marketing/options", h.Marketing.Options)
+		auth.POST("/marketing/quote", h.Marketing.Quote)
+		mktProjects := auth.Group("/marketing-projects")
+		mktProjects.GET("", h.Marketing.List)
+		mktProjects.POST("", h.Marketing.Create) // 201，同时开第一轮
+		mktProjects.GET("/:id", h.Marketing.Get)
+		mktProjects.PUT("/:id", h.Marketing.Update)
+		mktProjects.DELETE("/:id", h.Marketing.Delete)
+		mktProjects.POST("/:id/rounds", h.Marketing.NewRound) // 201
+		mktProjects.POST("/:id/refresh-facts", h.Marketing.RefreshFacts)
+		mktRounds := auth.Group("/marketing-rounds")
+		mktRounds.POST("/:id/cancel", h.Marketing.CancelRound)
+		mktRounds.PUT("/:id/settings", h.Marketing.UpdateRoundSettings)
+		mktRounds.PUT("/:id/reverse", h.Marketing.UpdateReverse)
+		mktRounds.POST("/:id/reverse/restore", h.Marketing.RestoreReverse)
+		mktRounds.POST("/:id/refollow", h.Marketing.Refollow)
+		mktRounds.POST("/:id/render", h.Marketing.RenderRound)
+		auth.POST("/marketing-step-runs/:id/retry", h.Marketing.RetryStep)
+		mktScripts := auth.Group("/marketing-scripts")
+		mktScripts.PUT("/:id", h.Marketing.UpdateScript)
+		mktScripts.POST("/:id/restore", h.Marketing.RestoreScript)
+		mktScripts.GET("/:id/prompt", h.Marketing.Prompt)
+		mktScripts.PUT("/:id/prompt", h.Marketing.EditPrompt)
+		mktScripts.DELETE("/:id/prompt", h.Marketing.RestorePrompt)
+		mktScripts.POST("/:id/adapt", h.Marketing.Adapt)
+		mktScripts.PUT("/:id/adaptation", h.Marketing.EditAdaptation)
+		mktScripts.POST("/:id/render", h.Marketing.Render)
+		mktScripts.POST("/:id/to-canvas", h.Marketing.ToCanvas)
 
 		// 短剧工作室：项目与任务 ID 沿用十六进制编码，分集按从 1 起的集号定位。
 		auth.GET("/drama-styles", h.Drama.Styles)
@@ -303,6 +344,15 @@ func New(mode, jwtSecret string, h Handlers) *gin.Engine {
 		skillsAdmin.DELETE("/:name/versions/:v", h.AgentSkill.DeleteVersion)
 		skillsAdmin.DELETE("/:name", h.AgentSkill.Delete)
 
+		// 环节技能（环节协议层）：admin 与 super_admin 都能试跑和设为生效，同技能管理；写操作进审计。
+		stepsAdmin := auth.Group("/admin", middleware.RequireAdmin(h.AdminRole))
+		stepsAdmin.GET("/steps", h.AdminStep.List)
+		stepsAdmin.GET("/steps/:key", h.AdminStep.Get)
+		stepsAdmin.POST("/steps/:key/trials", h.AdminStep.CreateTrials)
+		stepsAdmin.PUT("/steps/:key/binding", h.AdminStep.SetBinding)
+		stepsAdmin.GET("/step-trials/:id", h.AdminStep.GetTrial)
+		stepsAdmin.GET("/formatters", h.AdminFormatter.List)
+
 		// Agent 运行观测：运行记录是只读接口，管理员 JWT 和后台签发的分析令牌（本地 agent-trace 用）都能访问；
 		// 令牌只挂在这一组只读接口上。令牌管理本身只接受管理员 JWT，不能用令牌签发或吊销令牌
 		observe := v1.Group("/admin/agent", middleware.AdminOrAnalysisToken(h.AnalysisToken,
@@ -426,6 +476,15 @@ func New(mode, jwtSecret string, h Handlers) *gin.Engine {
 		settings.DELETE("/showcase/items/:id", superOnly, h.Showcase.DeleteItem)
 		settings.PUT("/showcase/order", superOnly, h.Showcase.Reorder)
 		settings.PUT("/showcase/settings", superOnly, h.Showcase.UpdateSettings)
+
+		// 首页公告：读写都是 admin 或 super_admin（运营内容，不碰凭证与资金），全部写操作进审计。
+		// order 是静态段，与 /:id 同层，Gin 优先匹配静态段
+		settings.GET("/announcements", h.Announcement.AdminList)
+		settings.POST("/announcements", h.Announcement.Create)
+		settings.PUT("/announcements/order", h.Announcement.Reorder)
+		settings.PUT("/announcements/:id", h.Announcement.Update)
+		settings.PUT("/announcements/:id/enabled", h.Announcement.SetEnabled)
+		settings.DELETE("/announcements/:id", h.Announcement.Delete)
 	}
 
 	// 素材的稳定地址：画布 payload 里存的就是它，永不过期、换存储也不变。

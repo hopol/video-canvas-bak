@@ -41,6 +41,7 @@ func All() []any {
 		&SystemSetting{},
 		&SMTPSetting{},
 		&ShowcaseItem{},
+		&Announcement{},
 		&AgentSession{},
 		&AgentRun{},
 		&AgentEvent{},
@@ -72,5 +73,13 @@ func All() []any {
 		&RechargeProduct{},
 		&PaymentOrder{},
 		&PaymentNotification{},
+		&StepBinding{},
+		&StepBindingHistory{},
+		&StepTrial{},
+		&MarketingProject{},
+		&MarketingRound{},
+		&MarketingStepRun{},
+		&MarketingScript{},
+		&StoryboardSplitJob{},
 	}
 }

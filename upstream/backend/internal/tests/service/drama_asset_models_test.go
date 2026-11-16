@@ -178,7 +178,7 @@ func TestDramaCanvasBreakdownAppliesDefaultImageModels(t *testing.T) {
 	svc := service.NewDramaCanvasService(f, &dramaCanvasBroadcast{})
 	assets := append(dramaCanvasAssets(1), drama.Asset{Type: "prop", Name: "玉佩", Aliases: []string{}, Episodes: []int{1}, Description: "双鱼玉佩"})
 	models := map[string]string{"character": "img-c", "scene": "img-s", "prop": "img-p"}
-	created, err := svc.ApplyBreakdown(context.Background(), 1, 3, 7, 9, []int{1}, assets, models)
+	created, err := svc.ApplyBreakdown(context.Background(), 1, 3, 7, 9, service.DramaBreakdownBatch{Episodes: []int{1}, Assets: assets, Models: models})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestDramaCanvasBreakdownAppliesDefaultImageModels(t *testing.T) {
 
 func TestDramaCanvasBreakdownWithoutModelsLeavesModelUnset(t *testing.T) {
 	f := newDramaCanvasFake()
-	created, err := service.NewDramaCanvasService(f, &dramaCanvasBroadcast{}).ApplyBreakdown(context.Background(), 1, 3, 7, 9, []int{1}, dramaCanvasAssets(1), map[string]string{"prop": "img-p"})
+	created, err := service.NewDramaCanvasService(f, &dramaCanvasBroadcast{}).ApplyBreakdown(context.Background(), 1, 3, 7, 9, service.DramaBreakdownBatch{Episodes: []int{1}, Assets: dramaCanvasAssets(1), Models: map[string]string{"prop": "img-p"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -120,7 +120,7 @@ export function refKindsOf(
 
 /**
  * 上游节点种类能提供哪些东西：文本节点给文字，图片 / 视频 / 音频节点给对应种类的素材，
- * 角色卡同时给图片（形象）和音频（声音）；导演台什么都不提供。
+ * 角色卡同时给图片（形象）和音频（声音）；导演台什么都不提供，分镜表也不直接当参考（按行生成时另拼提示词）。
  */
 export const PORTS_OF_KIND: Record<NodeKind, ReadonlyArray<"text" | RefKind>> = {
   script: ["text"],
@@ -129,6 +129,7 @@ export const PORTS_OF_KIND: Record<NodeKind, ReadonlyArray<"text" | RefKind>> = 
   audio: ["audio"],
   director: [],
   character: ["image", "audio"],
+  storyboard: [],
 };
 
 /** 节点上的一个输入口：提示词口 + 每种可接收的素材一个口 */

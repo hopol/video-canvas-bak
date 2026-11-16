@@ -47,11 +47,12 @@ export const countCanvasRunningTasks = (tasks: TaskMap, canvasId: string | null 
 export const useCanvasRunningTaskCount = (canvasId: string | null | undefined) =>
   useTasksStore((state) => countCanvasRunningTasks(state.tasks, canvasId));
 
-/** 通过十进制 ID 或编码任务编号订阅快照，任务库仍只保存一份规范 ID 的记录。 */
+/** 按十进制 ID 或编码任务编号取快照，任务库仍只保存一份规范 ID 的记录。 */
+export const findTask = (tasks: TaskMap, taskId: string | undefined) =>
+  taskId
+    ? (tasks[taskId] ?? Object.values(tasks).find((task) => matchesTaskId(task, taskId)))
+    : undefined;
+
+/** 通过十进制 ID 或编码任务编号订阅快照 */
 export const useTask = (taskId: string | undefined) =>
-  useTasksStore((state) =>
-    taskId
-      ? (state.tasks[taskId] ??
-        Object.values(state.tasks).find((task) => matchesTaskId(task, taskId)))
-      : undefined,
-  );
+  useTasksStore((state) => findTask(state.tasks, taskId));

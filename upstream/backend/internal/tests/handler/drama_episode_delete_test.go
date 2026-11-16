@@ -19,11 +19,11 @@ import (
 // deleteEpisodeCanvas 是删集接口测试用的画布写入者：第 3 集模拟「有任务在跑」，其余成功并记下集号。
 type deleteEpisodeCanvas struct{ deleted []int }
 
-func (c *deleteEpisodeCanvas) ApplyBreakdown(context.Context, uint64, uint64, uint64, uint64, []int, []drama.Asset, map[string]string) ([]service.DramaCanvasAsset, error) {
+func (c *deleteEpisodeCanvas) ApplyBreakdown(context.Context, uint64, uint64, uint64, uint64, service.DramaBreakdownBatch) ([]service.DramaCanvasAsset, error) {
 	return nil, nil
 }
 
-func (c *deleteEpisodeCanvas) ApplyPrompts(context.Context, uint64, uint64, uint64, []drama.AssetPrompt) error {
+func (c *deleteEpisodeCanvas) ApplyPrompts(context.Context, uint64, uint64, uint64, string, []drama.AssetPrompt, []service.DramaCanvasAsset, int) error {
 	return nil
 }
 

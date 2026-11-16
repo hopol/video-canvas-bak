@@ -55,6 +55,8 @@ type applier struct {
 	explicit map[string]bool
 	issues   []Issue
 	current  int
+	// warnings 是执行中发现的、不拦截的提醒（比如镜头时长被修正），和重叠提醒一起回给模型
+	warnings []string
 }
 
 // Apply 在 g 的拷贝上依次执行 ops。有任何一项不合法就整体不生效，返回 *ValidationError，
@@ -75,7 +77,7 @@ func Apply(g *Graph, ops []Op, opt Options) (*Result, error) {
 	a.g.placeDeferred(a.pending)
 	moved := a.g.pushGroupOverlaps(a.g.grownGroups(g, a.refit), a.explicit)
 	res := finish(g, a.g, a.idMap)
-	res.Warnings = a.g.overlapWarnings(a.explicit, a.refit, moved)
+	res.Warnings = append(a.warnings, a.g.overlapWarnings(a.explicit, a.refit, moved)...)
 	return res, nil
 }
 
@@ -239,6 +241,19 @@ func (a *applier) createNode(op Op) error {
 	if op.Kind == KindDirector {
 		return errors.New("导演台节点只能由用户在画布上手动创建")
 	}
+	if op.Storyboard != nil && op.Kind != KindStoryboard {
+		return errors.New("storyboard 只能写在分镜表节点（kind 为 storyboard）上")
+	}
+	var storyboard map[string]any
+	if op.Kind == KindStoryboard {
+		if op.Prompt != nil || op.Model != nil || len(op.Params) > 0 || op.Mode != nil || op.AssetID != "" || op.Character != nil {
+			return errors.New("分镜表节点不调模型，只能写标题、位置和镜头（storyboard）")
+		}
+		var err error
+		if storyboard, err = a.newStoryboard(op.Storyboard); err != nil {
+			return err
+		}
+	}
 	if op.Character != nil && op.Kind != KindCharacter {
 		return errors.New("character 只能写在角色节点（kind 为 character）上")
 	}
@@ -250,7 +265,7 @@ func (a *applier) createNode(op Op) error {
 		}
 	}
 	if !validKind(op.Kind) {
-		return fmt.Errorf("节点种类 %q 不认识，可选 script / image / video / audio", op.Kind)
+		return fmt.Errorf("节点种类 %q 不认识，可选 script / image / video / audio / character / storyboard", op.Kind)
 	}
 	if err := checkParams(op.Params); err != nil {
 		return err
@@ -277,6 +292,9 @@ func (a *applier) createNode(op Op) error {
 	n := Node{"id": id, "type": "canvas", "data": map[string]any{"kind": op.Kind, "label": a.uniqueLabel(op.Label, defaultLabel)}}
 	if character != nil {
 		n.Data()["character"] = character
+	}
+	if storyboard != nil {
+		n.Data()["storyboard"] = storyboard
 	}
 	if ref != nil {
 		// 已有素材：节点直接是已完成的上传型图片（角色卡则是它的主图），字段和前端从素材创建节点时一致
@@ -360,8 +378,20 @@ func (a *applier) updateNode(op Op) error {
 	if n.Kind() == KindDirector {
 		return errors.New("导演台节点只能由用户在导演台里修改")
 	}
-	if op.Label == nil && op.Prompt == nil && op.Model == nil && len(op.Params) == 0 && op.Mode == nil && op.Character == nil {
+	if op.Label == nil && op.Prompt == nil && op.Model == nil && len(op.Params) == 0 && op.Mode == nil && op.Character == nil && op.Storyboard == nil {
 		return errors.New("没有要修改的内容")
+	}
+	if n.Kind() == KindStoryboard {
+		if op.Prompt != nil || op.Model != nil || len(op.Params) > 0 || op.Mode != nil || op.Character != nil {
+			return errors.New("分镜表节点不调模型，只能改标题和镜头（storyboard）")
+		}
+		if op.Storyboard != nil {
+			if err := a.patchStoryboard(n, op.Storyboard); err != nil {
+				return err
+			}
+		}
+	} else if op.Storyboard != nil {
+		return errors.New("storyboard 只能改分镜表节点（kind 为 storyboard）")
 	}
 	if op.Character != nil {
 		if n.Kind() != KindCharacter {

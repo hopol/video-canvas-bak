@@ -59,8 +59,10 @@ import { useFramePickStore } from "@/store/frame-pick";
 import { useDirectorStore } from "@/store/director";
 import { useTrimStore } from "@/store/trim";
 import { DirectorHost } from "@/components/director/director-host";
+import { StoryboardSplitSync } from "@/components/storyboard/split-sync";
 import { openDirector } from "@/components/director/open-director";
 import { useCharacterDetail } from "@/store/character-detail";
+import { useStoryboardEditor } from "@/store/storyboard-editor";
 import type { CanvasEdge, CanvasNode, FlowNode, NodeKind, UploadNotice } from "@/types";
 import { getModelOptions, pruneRemoteDefaults } from "@/utils/canvas/canvas";
 import { createCanvas } from "@/api/canvas";
@@ -607,6 +609,11 @@ export const CanvasEditor = memo(function CanvasEditor({
         useCharacterDetail.getState().open(node.id);
         return;
       }
+      // 分镜表双击打开表格编辑弹窗
+      if (node.data.kind === "storyboard") {
+        useStoryboardEditor.getState().open(node.id);
+        return;
+      }
       if (collectPreviewItems([node]).length === 0) return;
       startPreview(node.id, event.currentTarget.getBoundingClientRect());
     },
@@ -944,6 +951,7 @@ export const CanvasEditor = memo(function CanvasEditor({
                             />
                             <NodeHistoryDialog />
                             <DirectorHost />
+                            <StoryboardSplitSync />
                             <MediaLightbox
                               items={liveItems ?? lastItems}
                               target={preview}

@@ -59,6 +59,52 @@ func TestSystem_ModeAddenda(t *testing.T) {
 	}
 }
 
+// 搭分镜的默认做法是先建分镜表、再由用户按行生成；旧的「每镜一个组」只在用户明确要时才用。
+func TestSystem_StoryboardBuildsTableFirst(t *testing.T) {
+	section := prompts.System("all")
+	i := strings.Index(section, "## 影视链路的搭法")
+	if i < 0 {
+		t.Fatal("基础提示词缺少「影视链路的搭法」一节")
+	}
+	section = section[i:]
+	for _, must := range []string{
+		"默认先建分镜表",          // 默认做法
+		"storyboard.shots", // 镜头写进表里的方式
+		"每镜一个组",            // 旧搭法保留为可选
+		"明确",               // 只在用户明确要时才用旧搭法
+		"按行",               // 分镜图和视频由用户在表里按行生成
+		"没有按行生成的工具",        // 如实告知做不到，不用别的节点冒充
+		"不要分批追加",           // 超长剧本不让 Agent 分批写
+		"点「从剧本拆分镜」",        // 超长剧本的去处
+		"角色卡",              // 角色和场景照常建
+	} {
+		if !strings.Contains(section, must) {
+			t.Errorf("影视链路一节应包含 %q", must)
+		}
+	}
+	// 旧的默认做法不能还留着：不再一上来就给每个镜头建图片、视频节点
+	if strings.Contains(section, "用户明确要「分镜表」时") {
+		t.Error("分镜表已是默认做法，不该再写成「用户明确要才建」")
+	}
+}
+
+func TestSystem_StoryboardModeBuildsTableFirst(t *testing.T) {
+	got := prompts.System("storyboard")
+	i := strings.Index(got, "## 当前模式：分镜搭建")
+	if i < 0 {
+		t.Fatal("应追加分镜搭建模式说明")
+	}
+	add := got[i:]
+	for _, must := range []string{"分镜表", "按行", "每镜一个组"} {
+		if !strings.Contains(add, must) {
+			t.Errorf("分镜搭建模式说明应包含 %q: %s", must, add)
+		}
+	}
+	if strings.Contains(add, "建角色组和镜头组") {
+		t.Errorf("模式说明不该再让 Agent 默认建镜头组: %s", add)
+	}
+}
+
 func TestUser_MarksInjectedBlocksAsData(t *testing.T) {
 	got := prompts.User("把剧本拆成分镜", `{"nodes":[{"id":"n1"}]}`, prompts.RunInfo{MaxSteps: 40})
 	if !strings.HasPrefix(got, "把剧本拆成分镜") {

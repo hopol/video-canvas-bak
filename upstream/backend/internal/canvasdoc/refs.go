@@ -39,7 +39,8 @@ func decodePayload(raw []byte) (*payload, error) {
 //
 // 素材 ID 取自 data.assetId、选中那一版产物的 assetId（其余版本不导出，不收集）、
 // data.params.images / videos / audios 的每一项、data.paramAssets 的键、data.scene.thumb.assetId，
-// 以及角色节点内嵌的 data.character.extras[].assetId 和（mode=audio 的）data.character.voice.assetId。
+// 角色节点内嵌的 data.character.extras[].assetId 和（mode=audio 的）data.character.voice.assetId，
+// 以及分镜表手传的分镜图 data.storyboard.shots[].image.assetId。
 func CollectRefs(raw []byte) (Refs, error) {
 	p, err := decodePayload(raw)
 	if err != nil {
@@ -81,7 +82,33 @@ func assetIDRefs(data map[string]any) []string {
 	scene, _ := data["scene"].(map[string]any)
 	thumb, _ := scene["thumb"].(map[string]any)
 	ids = appendAssetID(ids, thumb["assetId"])
-	return append(ids, characterAssetIDs(data)...)
+	ids = append(ids, characterAssetIDs(data)...)
+	return append(ids, storyboardAssetIDs(data)...)
+}
+
+// storyboardShots 取出分镜表节点的镜头列表（只认对象项）；字段类型错乱时返回 nil，调用方照常往下走而不是 panic。
+func storyboardShots(data map[string]any) []map[string]any {
+	storyboard, _ := data["storyboard"].(map[string]any)
+	list, _ := storyboard["shots"].([]any)
+	var shots []map[string]any
+	for _, v := range list {
+		if m, ok := v.(map[string]any); ok {
+			shots = append(shots, m)
+		}
+	}
+	return shots
+}
+
+// storyboardAssetIDs 取出分镜表节点里手动上传的分镜图 storyboard.shots[].image.assetId。
+// 行上关联的 imageNodeId / videoNodeId 是画布内部的节点 id，不是素材，不在这里。
+func storyboardAssetIDs(data map[string]any) []string {
+	var ids []string
+	for _, shot := range storyboardShots(data) {
+		if image, ok := shot["image"].(map[string]any); ok {
+			ids = appendAssetID(ids, image["assetId"])
+		}
+	}
+	return ids
 }
 
 // characterAssetIDs 取出角色节点内嵌的素材 ID：补充图 character.extras[].assetId，

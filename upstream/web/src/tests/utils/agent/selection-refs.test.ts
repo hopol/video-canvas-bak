@@ -8,8 +8,8 @@ import {
 } from "@/utils/agent/selection-refs";
 
 describe("哪些节点能被引用", () => {
-  test("文本、图片、视频、音频和角色卡都能引用", () => {
-    for (const kind of ["script", "image", "video", "audio", "character"] as const) {
+  test("文本、图片、视频、音频、角色卡和分镜表都能引用", () => {
+    for (const kind of ["script", "image", "video", "audio", "character", "storyboard"] as const) {
       expect(isReferableKind(kind)).toBe(true);
     }
   });
@@ -21,6 +21,11 @@ describe("哪些节点能被引用", () => {
   test("没有标题的角色卡用「角色卡节点」兜底", () => {
     const refs = resolveSelection(["k"], [{ id: "k", label: " ", kind: "character" }]);
     expect(refs[0]).toMatchObject({ label: "角色卡节点", kind: "character", missing: false });
+  });
+
+  test("没有标题的分镜表用「分镜表节点」兜底", () => {
+    const refs = resolveSelection(["s"], [{ id: "s", label: "", kind: "storyboard" }]);
+    expect(refs[0]).toMatchObject({ label: "分镜表节点", kind: "storyboard", missing: false });
   });
 });
 

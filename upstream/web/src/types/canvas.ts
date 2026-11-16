@@ -4,6 +4,7 @@ import type { AnimatedSvgEdge, MediaType, NodeMediaType, NodeStatus } from "@/co
 import type { NodeKind } from "@/constants/canvas/node-library";
 
 import type { DirectorScene } from "./director";
+import type { NodeStoryboard } from "./storyboard";
 
 export type { NodeKind, NodeKindMeta } from "@/constants/canvas/node-library";
 export type { ModelOption } from "@/constants/canvas/model-library";
@@ -72,6 +73,8 @@ export type CanvasNodeData = {
   scene?: DirectorScene;
   /** 角色卡节点自带的角色数据，只有 kind 为 character 时才有；主图沿用本节点的 assetId / src，数据只属于当前画布 */
   character?: NodeCharacter;
+  /** 分镜表节点的镜头，只有 kind 为 storyboard 时才有；镜号按行序现算，不存 */
+  storyboard?: NodeStoryboard;
   /** @deprecated 旧版角色卡节点引用的全局角色卡 ID。角色卡已改为画布内嵌，打开画布时由 normalizeLegacyCharacters 规整掉，不再写回 */
   characterId?: string;
   /** @deprecated 旧版角色卡节点缓存的名称和主图，同上，规整时只取名字 */

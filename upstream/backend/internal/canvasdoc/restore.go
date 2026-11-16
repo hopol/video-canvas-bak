@@ -176,6 +176,7 @@ func (r *restorer) restoreNode(id string, node map[string]any) {
 	r.restoreParamAssets(data)
 	r.restoreScene(data)
 	r.restoreCharacter(data)
+	r.restoreStoryboard(data)
 	// 角色卡下线前导出的旧文件里节点带 characterRef，已没有对应的角色字典，只丢弃这个引用
 	delete(data, "characterRef")
 }
@@ -277,6 +278,23 @@ func (r *restorer) restoreScene(data map[string]any) {
 	delete(scene, "thumbHash")
 	if a, ok := r.lookup(v); ok {
 		scene["thumb"] = map[string]any{"assetId": a.ID, "url": a.URL}
+	}
+}
+
+// restoreStoryboard 还原分镜表手传的分镜图：shots[].image {assetHash} 换回 {assetId, src}，
+// 素材复制失败（或 image 不是对象）时去掉这一行的 image，其余字段和关联的节点 id 原样。
+func (r *restorer) restoreStoryboard(data map[string]any) {
+	for _, shot := range storyboardShots(data) {
+		raw, exists := shot["image"]
+		if !exists {
+			continue
+		}
+		delete(shot, "image")
+		if m, ok := raw.(map[string]any); ok {
+			if a, ok := r.lookup(m["assetHash"]); ok {
+				shot["image"] = map[string]any{"assetId": a.ID, "src": a.URL}
+			}
+		}
 	}
 }
 

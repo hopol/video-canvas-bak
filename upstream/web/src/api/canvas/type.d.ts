@@ -1,4 +1,4 @@
-import type { DirectorScene, NodeCharacter, NodeDrama } from "@/types";
+import type { DirectorScene, NodeCharacter, NodeDrama, NodeStoryboard } from "@/types";
 
 /** 持久化到后端的画布节点 */
 export interface PersistedCanvasNodeDto {
@@ -15,7 +15,7 @@ export interface PersistedCanvasNodeDto {
   /** 节点携带的业务数据 */
   data: {
     /** 节点种类 */
-    kind: "script" | "image" | "video" | "audio" | "director" | "character";
+    kind: "script" | "image" | "video" | "audio" | "director" | "character" | "storyboard";
     /** 节点标题 */
     label: string;
     /** 提示词 */
@@ -57,6 +57,8 @@ export interface PersistedCanvasNodeDto {
     scene?: DirectorScene;
     /** 角色卡节点自带的角色数据（结构见 types/canvas 的 NodeCharacter），主图沿用本节点的 assetId / src */
     character?: NodeCharacter;
+    /** 分镜表节点的镜头（结构见 types/storyboard.ts） */
+    storyboard?: NodeStoryboard;
     /** @deprecated 旧版角色卡节点引用的全局角色卡 ID，打开画布时规整掉 */
     characterId?: string;
     /** @deprecated 旧版角色卡节点缓存的名称和主图，规整时只取名字 */

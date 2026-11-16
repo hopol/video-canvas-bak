@@ -57,6 +57,14 @@ var (
 	ErrCanvasImportTooLarge = New(30007, "导入文件或素材数量超限", http.StatusRequestEntityTooLarge)
 	// 画布导出：导出的文件超出导入上限时拒绝导出（导出了也导不回来），具体原因用 WithMsg 给出
 	ErrCanvasExportTooLarge = New(30008, "画布太大，超过导入上限，无法导出", http.StatusRequestEntityTooLarge)
+	// 分镜表「从剧本拆分镜」：积分不足复用 40001
+	ErrStoryboardScriptEmpty   = New(30011, "剧本节点还没有内容", http.StatusBadRequest)
+	ErrStoryboardScriptTooLong = New(30012, "剧本超过 2 万字，请分场拆分镜", http.StatusBadRequest)
+	ErrStoryboardNoModel       = New(30013, "没有可用的 Agent 模型", http.StatusBadRequest)
+	ErrStoryboardSplitBusy     = New(30014, "这张分镜表正在拆分镜", http.StatusConflict)
+	ErrStoryboardSplitFailed   = New(30015, "拆分镜失败：模型两次输出都不合格，请重试", http.StatusBadGateway)
+	ErrStoryboardModelCall     = New(30016, "文本模型调用失败，请稍后重试", http.StatusBadGateway) // Msg 换成上游返回的错误原文
+	ErrStoryboardJobNotFound   = New(30017, "拆分镜任务不存在", http.StatusNotFound)
 )
 
 // 生成任务 / 积分 / 素材 / AI 配置模块 4xxxx
@@ -148,6 +156,13 @@ var (
 	ErrShowcaseNotFound      = New(54001, "登录页展示条目不存在", http.StatusNotFound)
 	ErrShowcaseInvalid       = New(54002, "登录页展示参数不合法", http.StatusBadRequest)          // 具体原因写进 Msg
 	ErrShowcaseOrderMismatch = New(54003, "排序列表与现有条目不一致，请刷新后重试", http.StatusBadRequest) // 多了、少了或重复了条目
+)
+
+// 首页公告 56xxx
+var (
+	ErrAnnouncementNotFound      = New(56001, "公告不存在或已删除", http.StatusNotFound)
+	ErrAnnouncementInvalid       = New(56002, "公告内容不合法", http.StatusBadRequest)        // 具体原因写进 Msg
+	ErrAnnouncementOrderMismatch = New(56003, "公告列表已变化，请刷新后重试", http.StatusBadRequest) // 排序列表多了、少了或重复了公告
 )
 
 // 个人中心 55xxx
@@ -265,4 +280,33 @@ var (
 	ErrDramaAdaptBusy            = New(67025, "这个片段正在转写", http.StatusConflict)
 	ErrDramaAdaptFailed          = New(67026, "转写结果不合格，请重试", http.StatusBadGateway)
 	ErrDramaAdaptMissing         = New(67027, "还没有这个格式的转写稿", http.StatusBadRequest)
+	ErrDramaModelCall            = New(67028, "文本模型调用失败", http.StatusBadGateway)     // Msg 换成上游返回的错误原文
+	ErrDramaContentFiltered      = New(67029, "内容触发了模型的安全过滤", http.StatusBadGateway) // 上游按安全策略截断输出；Msg 可点名被过滤的资产
+)
+
+// 环节协议层（stepkit）与营销工作室 68xxx。68001–68011、68015、68016、68018 由营销业务使用（见 docs/design/营销工作室/接口契约.md §6），
+// 这里先落地环节协议层用到的四个，营销业务的在下面，积分不足复用 40001。
+var (
+	ErrStepNotFound     = New(68012, "环节不存在", http.StatusNotFound)
+	ErrStepTrialNeeded  = New(68013, "生效前需要该候选试跑通过", http.StatusConflict)
+	ErrStepSkillUnavail = New(68014, "技能或版本不可用", http.StatusBadRequest)
+	ErrStepTrialBusy    = New(68017, "该环节已有试跑在进行", http.StatusConflict)
+)
+
+// 营销工作室 68xxx（业务部分；68012–68014、68017 在上面，属环节协议层）。积分不足复用 40001。
+var (
+	ErrMarketingNotFound     = New(68001, "营销项目不存在", http.StatusNotFound)
+	ErrMarketingAssets       = New(68002, "商品图数量不对或素材无效", http.StatusBadRequest)
+	ErrMarketingNoTextModel  = New(68003, "没有可用的看图文本模型", http.StatusServiceUnavailable)
+	ErrMarketingVideoModel   = New(68004, "视频模型不可用或不支持所需参考", http.StatusBadRequest)
+	ErrMarketingRefTooLong   = New(68005, "参考视频超出模型限制", http.StatusBadRequest)
+	ErrMarketingScriptBusy   = New(68006, "脚本正在出片或重写，不能修改", http.StatusConflict)
+	ErrMarketingRoundBusy    = New(68007, "这个项目正在写脚本", http.StatusConflict)
+	ErrMarketingPromptLong   = New(68008, "提示词超出模型上限", http.StatusBadRequest)
+	ErrMarketingConflict     = New(68009, "内容已在别处修改，请刷新后重试", http.StatusConflict)
+	ErrMarketingBusyDelete   = New(68010, "有进行中的任务，不能删除", http.StatusConflict)
+	ErrMarketingCanvasFailed = New(68011, "发到画布失败", http.StatusInternalServerError)
+	ErrMarketingReverseBad   = New(68015, "拆解内容不合法", http.StatusBadRequest)
+	ErrMarketingNoReverse    = New(68016, "没有可用的拆解，不能重写跟拍", http.StatusConflict)
+	ErrMarketingAdaptFailed  = New(68018, "转写提示词失败：两次输出都不合格，请稍后重试", http.StatusBadGateway)
 )

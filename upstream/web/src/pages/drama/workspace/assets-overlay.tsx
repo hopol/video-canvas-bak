@@ -28,7 +28,7 @@ import {
   toAssetItems,
   type AssetItem,
 } from "@/utils/drama/assets";
-import { isActiveJob } from "@/utils/drama/jobs";
+import { writingAssetPrompts } from "@/utils/drama/jobs";
 import { lowestUnit } from "@/utils/pricing/quote";
 
 import { AssetCard, TYPE_ICON } from "./asset-card";
@@ -454,7 +454,7 @@ export const AssetsOverlay = memo(function AssetsOverlay() {
   const ui = useAssetsUi();
   const editor = useCanvasEditor();
   const { jobs } = useWorkspace();
-  const analyzing = jobs.some((job) => job.step === "asset_prompts" && isActiveJob(job));
+  const analyzing = writingAssetPrompts(jobs);
   const items = useMemo(() => toAssetItems(editor.nodes, { analyzing }), [analyzing, editor.nodes]);
 
   const { clearSelection } = editor;

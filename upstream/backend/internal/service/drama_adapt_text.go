@@ -38,7 +38,7 @@ func (s *DramaService) AdaptSegment(ctx context.Context, p *model.DramaProject, 
 	callCtx, cancel := context.WithTimeout(ctx, adaptTimeout)
 	defer cancel()
 	// 3. 最多两次：第一次不合格时把校验原因交给模型修正，仍不合格才报错；不合格的那次不收费
-	for range 2 {
+	for try := 1; try <= 2; try++ {
 		prompt, err := drama.AdaptPrompt(format, in)
 		if err != nil {
 			return "", 0, errcode.ErrDramaAdaptFormat
@@ -47,11 +47,17 @@ func (s *DramaService) AdaptSegment(ctx context.Context, p *model.DramaProject, 
 		if chars > dramaContextLimit(snap) {
 			return "", 0, errcode.ErrDramaContext
 		}
-		res, err := s.streamText(callCtx, snap, prompt, func(c context.Context) error { return c.Err() })
+		tryCtx, callID := logger.WithCall(callCtx, "drama.adapt", zap.Int("try", try), zap.String("format", format), zap.String("model_key", snap.Model.Key))
+		logger.RunOf(ctx).NoteCall(callID)
+		res, err := s.streamText(tryCtx, snap, prompt, func(c context.Context) error { return c.Err() })
 		if err != nil {
-			// 上游失败和超时不把内部错误透给前端，记一条日志后按转写失败返回
-			logger.Warn("短剧片段转写调用失败", zap.String("format", format), zap.Error(err))
-			return "", 0, errcode.ErrDramaAdaptFailed.WithMsg("转写失败：文本模型没有返回结果，请稍后重试")
+			// 上游返回了错误就带出原文；网络断开、超时这类不把内部错误透给前端，用统一文案。原始错误留给日志（运行收尾行）
+			msg := "文本模型没有返回结果，请稍后重试"
+			if up := upstreamText(err); up != "" {
+				msg = up
+			}
+			cause := &dramaCallFailure{err: err}
+			return "", 0, withCause(errcode.ErrDramaAdaptFailed.WithMsg("转写失败："+msg), cause, dramaErrorType(cause))
 		}
 		decoded, err := drama.DecodeOutput("adapt", []byte(res.Text))
 		if err == nil {
@@ -60,6 +66,8 @@ func (s *DramaService) AdaptSegment(ctx context.Context, p *model.DramaProject, 
 				return out, adaptCost(snap, chars, res), nil
 			}
 		}
+		logger.Ctx(ctx).Warn("片段转写输出不合格", logger.Event(logger.EventRunStep), zap.String("call_id", callID), zap.Int("try", try),
+			zap.String("error_type", "invalid_output"), zap.String("validation_error", err.Error()))
 		in.ValidationError = err.Error()
 	}
 	return "", 0, errcode.ErrDramaAdaptFailed

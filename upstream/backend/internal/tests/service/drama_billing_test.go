@@ -54,7 +54,7 @@ func TestDramaLedgerConservation(t *testing.T) {
 	}
 }
 
-// asset_prompts 失败后手动重试，必须仍只处理第一次拆解新建的资产，而不是整张画布。
+// 拆解里写提示词失败不影响拆解：资产留在画布上，接续的提示词任务只处理这次新建的资产，而不是整张画布。
 func TestDramaAssetPromptsRetryKeepsNewAssetList(t *testing.T) {
 	r := newDramaMemory()
 	r.project.Ratio = "9:16"
@@ -64,6 +64,7 @@ func TestDramaAssetPromptsRetryKeepsNewAssetList(t *testing.T) {
 	good, _ := json.Marshal(drama.AssetPromptsOutput{Prompts: []drama.AssetPrompt{{NodeID: "new", Prompt: "角色正向描述"}}})
 	e := &dramaTextStreamer{outputs: []string{string(raw), `{bad`, `{bad`, string(good)}}
 	c := &dramaPipelineCanvas{created: []service.DramaCanvasAsset{{NodeID: "new", Asset: asset}}}
+	c.mem = r
 	s, _ := dramaTestService(r, e, c)
 	ctx := context.Background()
 
@@ -74,25 +75,18 @@ func TestDramaAssetPromptsRetryKeepsNewAssetList(t *testing.T) {
 	if err = s.HandleDrama(ctx, 7, 1, uint64(j.ID)); err != nil {
 		t.Fatal(err)
 	}
-	// 自动接续的 asset_prompts 两次输出非法 -> 67008、不扣费。
+	// 拆解里的提示词两次输出非法：拆解照样成功、只扣拆解那次，接一个提示词任务。
+	if r.jobs[0].Status != "succeeded" || r.jobs[0].Credits != 5 || c.applied != 1 || len(r.jobs) != 2 || r.jobs[1].Step != "asset_prompts" {
+		t.Fatalf("jobs=%+v applied=%d", r.jobs, c.applied)
+	}
 	if err = s.HandleDrama(ctx, 7, 1, r.jobs[1].ID); err != nil {
 		t.Fatal(err)
 	}
-	if r.jobs[1].Status != "failed" || r.jobs[1].ErrorCode != 67008 || r.jobs[1].Credits != 0 {
-		t.Fatalf("job=%+v", r.jobs[1])
-	}
-	retry, err := s.CreateJob(ctx, 7, 1, &model.DramaJobReq{Step: "asset_prompts", Episodes: []int{1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.HandleDrama(ctx, 7, 1, uint64(retry.ID)); err != nil {
-		t.Fatal(err)
-	}
 	last := e.prompts[len(e.prompts)-1]
-	if r.jobs[2].Status != "succeeded" || c.prompted != 1 || !strings.Contains(last, `"node_id":"new"`) {
-		t.Fatalf("job=%+v prompted=%d prompt=%s", r.jobs[2], c.prompted, last)
+	if r.jobs[1].Status != "succeeded" || c.prompts["new"] != "角色正向描述" || !strings.Contains(last, `"node_id":"new"`) {
+		t.Fatalf("job=%+v prompts=%v prompt=%s", r.jobs[1], c.prompts, last)
 	}
-	// 失败的一次不扣费，成功的 breakdown 与重试各扣一次。
+	// 失败的提示词不扣费，成功的拆解与接续任务各扣一次。
 	if r.credit.Balance != 1000-2*5 || r.credit.Frozen != 0 {
 		t.Fatalf("credit=%+v", r.credit)
 	}

@@ -67,7 +67,7 @@ export function structureKey({ nodes, edges }: HistorySnapshot) {
   ]);
 }
 
-/** 节点的内容：标题、模型、提示词、参数。连着打字只算一步，要攒一会儿再入栈 */
+/** 节点的内容：标题、模型、提示词、参数、角色卡和分镜表的数据。连着打字只算一步，要攒一会儿再入栈 */
 export function contentKey({ nodes }: HistorySnapshot) {
   return JSON.stringify(
     nodes.map((node) =>
@@ -80,6 +80,7 @@ export function contentKey({ nodes }: HistorySnapshot) {
             node.data.params,
             node.data.paramAssets,
             node.data.character,
+            node.data.storyboard,
           ],
     ),
   );

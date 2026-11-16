@@ -37,6 +37,8 @@ export function canLinkNodes(source: LinkEnd, target: LinkEnd): boolean {
   // 还在上传的节点没有正式素材，没东西可引用
   if (isUploading(source)) return false;
   if (!canConnectKinds(source.kind, "source", target.kind)) return false;
+  // 分镜表连出去的线只表示来源，下游不把它当参考素材，所以不看下游模型收不收这种素材
+  if (source.kind === "storyboard") return true;
   const caps = capabilitiesOf(target);
   const op = currentOp(caps, readParams(target));
   return acceptsSourceKind(caps, op, source.kind) || !!opToAcceptSource(caps, op, source.kind);

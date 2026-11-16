@@ -1193,8 +1193,12 @@ export class AgentEngine {
   /** 一段运行结束：释放内存里的状态，并告诉 Go 释放它那边这个运行的状态（联网次数、技能固定版本）；失败不要紧，Go 闲置过期会清 */
   async #release(a: Active): Promise<void> {
     this.#byRun.delete(a.run.id);
-    if (this.#active.get(a.convId) === a) this.#active.delete(a.convId);
-    this.#contexts.delete(a.convId);
+    // 运行状态一结束用户就能发下一条，同一会话的新运行可能已经登记了自己的上下文（收尾还要命名、写活动说明）；
+    // 会话已经归新运行时只释放自己，不能把新运行的上下文删掉，否则它之后的模型请求都带不上运行上下文
+    if (this.#active.get(a.convId) === a) {
+      this.#active.delete(a.convId);
+      this.#contexts.delete(a.convId);
+    }
     await this.#o.platform.endRun(a.rc).catch(() => {});
   }
 

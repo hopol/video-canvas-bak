@@ -73,10 +73,16 @@ export interface FakeGoOptions {
   summary?:
     | string
     | ((body: any, n: number) => string | { error: { status: number; message: string } });
-  /** 会话命名请求（X-Agent-Purpose: title）的回答；函数形式可以按请求变化或出错。不消耗 turns */
+  /** 会话命名请求（X-Agent-Purpose: title）的回答；函数形式可以按请求变化或出错，也可以先等一会儿再回。不消耗 turns */
   title?:
     | string
-    | ((body: any, n: number) => string | { error: { status: number; message: string } });
+    | ((
+        body: any,
+        n: number,
+      ) =>
+        | string
+        | { error: { status: number; message: string } }
+        | Promise<string | { error: { status: number; message: string } }>);
   /** 活动摘要请求（X-Agent-Purpose: activity）的回答；函数形式可以按请求变化或出错。不消耗 turns */
   activity?:
     | string
@@ -329,7 +335,9 @@ export async function fakeGo(opts: FakeGoOptions) {
     return sideCall(
       res,
       "title",
-      typeof opts.title === "function" ? opts.title(body, ++titles) : (opts.title ?? "默认标题"),
+      typeof opts.title === "function"
+        ? await opts.title(body, ++titles)
+        : (opts.title ?? "默认标题"),
     );
   }
   async function summarizeActivity(res: ServerResponse, body: any) {

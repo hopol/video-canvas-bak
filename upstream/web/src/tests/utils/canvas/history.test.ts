@@ -26,6 +26,35 @@ describe("structureKey / contentKey", () => {
     expect(contentKey(typed)).not.toBe(contentKey(a));
   });
 
+  test("分镜表改镜头（增删、改字段、拖拽排序）是内容变化，撤销能倒回", () => {
+    const shot = (id: string, scene: string) => ({
+      id,
+      scene,
+      shot: "中景" as const,
+      camera: "固定" as const,
+      action: "",
+      dialogue: "",
+      duration: 3,
+    });
+    const board = (...shots: ReturnType<typeof shot>[]) => ({ shots });
+    const withBoard = (b: ReturnType<typeof board>) => ({
+      nodes: [node("sb", { kind: "storyboard", storyboard: b })],
+      edges: [],
+    });
+    const base = withBoard(board(shot("a", "一"), shot("b", "二")));
+    expect(contentKey(withBoard(board(shot("a", "一"), shot("b", "二"))))).toBe(contentKey(base));
+    expect(contentKey(withBoard(board(shot("a", "改"), shot("b", "二"))))).not.toBe(
+      contentKey(base),
+    );
+    expect(contentKey(withBoard(board(shot("b", "二"), shot("a", "一"))))).not.toBe(
+      contentKey(base),
+    );
+    expect(contentKey(withBoard(board(shot("a", "一"))))).not.toBe(contentKey(base));
+    // 撤销时镜头取快照里的，不被「眼下」覆盖
+    const restored = restoreNodes(base.nodes, withBoard(board(shot("x", "覆盖后"))).nodes);
+    expect(restored[0].data.storyboard?.shots.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
   test("角色卡节点改角色名 / 形象名 / 音色 / 补充图是内容变化，只有选中状态不同则不是", () => {
     const base = { name: "小明", look: "基础形象", description: "", extras: [], voice: null };
     const card = (character: typeof base & Record<string, unknown>) =>
