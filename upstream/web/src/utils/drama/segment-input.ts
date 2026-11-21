@@ -6,10 +6,12 @@ import {
   hasImageRefs,
   imageLinksOf,
   resolveBindings,
+  toAssetNumber,
   type Bindings,
   type IncomingLink,
 } from "@/utils/tasks/capabilities";
 
+import { BOARD_LINE, type BoardRef } from "./board";
 import type { DramaAssetType, RefAsset } from "./segment-assets";
 import { durationField, fitDuration, segmentParams } from "./video-models";
 
@@ -18,8 +20,8 @@ export type RefView = {
   id: string;
   label: string;
   type: DramaAssetType | null;
-  /** image 带了参考图；text 只用文字（没图 / 被截断）；dead 节点已被删 */
-  state: "image" | "text" | "dead";
+  /** image 带了参考图；audio 是参考音频；text 只用文字（没图 / 被截断）；dead 节点已被删 */
+  state: "image" | "audio" | "text" | "dead";
   /** 这个资产在 input.images 里占了几张 */
   imageCount: number;
   /** 超出参考图上限，被截掉了一部分 */
@@ -41,9 +43,50 @@ export type SegmentPlan = {
   /** input.images 里的张数与模型上限，参考素材条的「n/上限」 */
   imageCount: number;
   imageMax: number;
+  /** input.audios 里的条数与模型上限；角色卡音色就体现在这里 */
+  audioCount: number;
+  audioMax: number;
   /** 引用了已被删除的节点，存下来的名字 */
   deadLabels: string[];
+  /** 故事板这次带没带、为什么 */
+  board: BoardPlan;
 };
+
+/**
+ * 故事板在这次请求里的去向：image 带入（第一张参考图）/ stale 带入但已过期 / off 用户本次关掉 /
+ * none 没有可用的故事板 / unsupported 模型不是全能参考，不带
+ */
+export type BoardPlan = {
+  state: "image" | "stale" | "off" | "none" | "unsupported";
+  /** 没带入的原因，带入时为空串 */
+  reason: string;
+};
+
+/** 故事板的虚拟连线 id：不和任何画布节点重名 */
+const BOARD_LINK_ID = "__board__";
+
+/**
+ * 决定故事板带不带：只有全能参考（omni）才带，图生视频会把第一张图当首帧、文生视频不收图。
+ * 带的时候生成方式固定为 omni，故事板作为普通图片连线排在所有引用前面，于是固定是图片1。
+ */
+function planBoard(
+  caps: Capabilities | undefined,
+  board: BoardRef | null | undefined,
+  off: boolean,
+): BoardPlan {
+  if (!board) return { state: "none", reason: "" };
+  if (off) return { state: "off", reason: "本次已关掉故事板" };
+  const ops = caps?.ops ?? [];
+  const images = caps?.refs?.image?.on ? caps.refs.image.max : 0;
+  if (!ops.includes("omni") || images <= 0) {
+    const reason =
+      ops.includes("i2v") && images > 0
+        ? "当前模型把第一张图当首帧，故事板未带入"
+        : "当前模型不收参考图，故事板未带入";
+    return { state: "unsupported", reason };
+  }
+  return { state: board.stale ? "stale" : "image", reason: "" };
+}
 
 type Cited = { id: string; label: string; asset: RefAsset | undefined };
 
@@ -95,6 +138,14 @@ const isDead = (asset: RefAsset | undefined): boolean =>
 
 type Linked = { links: IncomingLink[]; cited: Cited[] };
 
+/**
+ * 提示词里 @ 的资产转成连线（同画布连线的规则）：失效的引用不带；故事板拿它带参考图
+ * @param prompt 提示词（含 `@[名](节点id)`）
+ * @param assets 画布上的资产
+ */
+export const assetLinks = (prompt: string, assets: readonly RefAsset[]): IncomingLink[] =>
+  linkRefs(prompt, assets).links;
+
 function linkRefs(prompt: string, assets: readonly RefAsset[]): Linked {
   const cited = citedRefs(prompt, assets);
   const links = cited.flatMap(({ asset }) => (asset && !isDead(asset) ? [toLink(asset)] : []));
@@ -120,6 +171,21 @@ function refViews(linked: Linked, bindings: Bindings): RefView[] {
         voice: "none",
       };
     }
+    // 没有素材地址的音频仍会挂在 bindings 上，但 buildTaskInput 会跳过它，这里按能提交的算
+    const audioCount = bindings.audios.filter(
+      (link) => link.sourceId === id && toAssetNumber(link.assetId) !== null,
+    ).length;
+    if (asset.kind === "audio")
+      return {
+        id,
+        label,
+        type: asset.type,
+        // 没有素材地址时只当文字，不假装带了参考音频
+        state: audioCount > 0 ? "audio" : "text",
+        imageCount: 0,
+        truncated: false,
+        voice: "none",
+      };
     const imageCount = countOf(bindings.images, id);
     const droppedImage = bindings.dropped.some(
       (link) => link.sourceId === id && link.fromCharacter?.part !== "voice",
@@ -176,26 +242,68 @@ export function planSegmentInput(args: {
   ratio: string;
   overrides: Record<string, unknown>;
   assets: readonly RefAsset[];
+  /** 片段采用的故事板；没有为 null */
+  board?: BoardRef | null;
+  /** 用户本次关掉了故事板 */
+  boardOff?: boolean;
 }): SegmentPlan {
   const { caps, prompt } = args;
   const linked = linkRefs(prompt, args.assets);
-  const op = pickVideoOp(caps, {
-    hasImages: hasImageRefs({}, { images: imageLinksOf(linked.links) }),
-  });
+  const board = planBoard(caps, args.board, !!args.boardOff);
+  const withBoard = (board.state === "image" || board.state === "stale") && args.board;
+  const links: IncomingLink[] = withBoard
+    ? [
+        {
+          edgeId: BOARD_LINK_ID,
+          sourceId: BOARD_LINK_ID,
+          sourceKind: "image",
+          sourceLabel: "故事板",
+          targetHandle: null,
+          assetId: withBoard.assetId,
+        },
+        ...linked.links,
+      ]
+    : linked.links;
+  const hasImages = hasImageRefs({}, { images: imageLinksOf(linked.links) });
+  const readyAudio = linked.links.filter(
+    (link) => link.sourceKind === "audio" && toAssetNumber(link.assetId) !== null,
+  );
+  // 只 @ 了音频（没有参考图）时也要走全能参考，文生视频没有参考素材口
+  const audioOnly = !hasImages && readyAudio.length > 0;
+  const op =
+    withBoard || (audioOnly && caps?.ops?.includes("omni"))
+      ? "omni"
+      : pickVideoOp(caps, { hasImages });
   const params = {
-    prompt,
+    prompt: withBoard ? `${BOARD_LINE}\n${prompt}` : prompt,
     ...segmentParams(caps, { seconds: args.seconds, ratio: args.ratio, overrides: args.overrides }),
   };
-  const bindings = resolveBindings(caps, op, linked.links, params);
-  const built = buildTaskInput(caps, params, bindings, op, linked.links);
+  const bindings = resolveBindings(caps, op, links, params);
+  const built = buildTaskInput(caps, params, bindings, op, links);
+  if (withBoard && built.errors.images) {
+    built.errors.images = `${built.errors.images}（含故事板 1 张，可以在参考素材里关掉故事板）`;
+  }
+  // 模型不收参考音频时音频会被静默丢掉，旁白就变成没有音色的普通文字
+  const sentAudios = Array.isArray(built.input.audios) ? built.input.audios : [];
+  const narrator = readyAudio.filter((link) => sentAudios.includes(toAssetNumber(link.assetId)));
+  if (caps && narrator.length < readyAudio.length)
+    built.errors.audios ??=
+      "当前模型或生成方式不接收参考音频，旁白音色带不进去；请换支持参考音频的模型，或去掉音频引用";
+  // 声音生成关掉时参考音频没有意义，只拦真正带进这次请求的音频
+  const sound = caps?.params?.generate_audio;
+  const soundValue = sound?.open ? built.input.generate_audio : sound?.default;
+  if (narrator.length > 0 && sound && (soundValue === false || soundValue === "false"))
+    built.errors.generate_audio ??= "使用参考音频时请开启声音生成";
 
   const notices = [...bindings.notices];
+  if (board.state === "stale") notices.push("故事板已过期，原稿在出图之后改过");
   const duration = durationField(caps);
   if (duration) {
     const fit = fitDuration(duration, args.seconds);
     if (fit.adjusted) notices.push(`片段 ${args.seconds}s 超出模型范围，按 ${fit.value}s 生成`);
   }
   const images = built.input.images;
+  const audios = built.input.audios;
   return {
     op,
     input: built.input,
@@ -204,6 +312,9 @@ export function planSegmentInput(args: {
     refs: refViews(linked, bindings),
     imageCount: Array.isArray(images) ? images.length : 0,
     imageMax: caps?.refs?.image?.max ?? 0,
+    audioCount: Array.isArray(audios) ? audios.length : 0,
+    audioMax: caps?.refs?.audio?.max ?? 0,
     deadLabels: deadLabelsOf(linked),
+    board,
   };
 }

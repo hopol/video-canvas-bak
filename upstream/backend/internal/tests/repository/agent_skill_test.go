@@ -175,3 +175,31 @@ func TestAgentSkillRepo_PendingGarbageAndImports(t *testing.T) {
 		t.Errorf("删除后: %v", err)
 	}
 }
+
+func TestAgentSkillRepo_ScopeSeedAndDeleteGuard(t *testing.T) {
+	r, ctx := newSkillRepo(t), context.Background()
+	in := repository.ReserveSkillInput{
+		Name: "demo", Title: "demo", CreatedBy: 7, Enabled: true, DramaSteps: []string{"video"},
+		Version: model.AgentSkillVersion{SHA256: "a", Description: "d", PackageKey: "agent-skills/demo/a.zip", FilesJSON: datatypes.JSON("[]")},
+	}
+	s, _, err := r.ReserveVersion(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Enabled || len(s.DramaSteps) != 1 || s.DramaSteps[0] != "video" {
+		t.Fatalf("新技能应带上确认时选的场景: %+v", s)
+	}
+	// 已有技能再预留版本：场景不被覆盖
+	in.Enabled, in.DramaSteps, in.Version.SHA256, in.Version.PackageKey = false, []string{"plan"}, "b", "agent-skills/demo/b.zip"
+	if s2, _, err := r.ReserveVersion(ctx, in); err != nil || !s2.Enabled || s2.DramaSteps[0] != "video" {
+		t.Fatalf("新版本不应改场景: %+v %v", s2, err)
+	}
+	_ = r.SetEnabled(ctx, s.ID, false)
+	if err := r.DeleteSkill(ctx, s.ID); !errors.Is(err, repository.ErrInUse) {
+		t.Errorf("开着短剧环节不能删: %v", err)
+	}
+	_ = r.SetDramaSteps(ctx, s.ID, []string{})
+	if err := r.DeleteSkill(ctx, s.ID); err != nil {
+		t.Fatal(err)
+	}
+}

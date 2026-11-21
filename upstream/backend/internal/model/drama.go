@@ -40,6 +40,7 @@ type DramaProject struct {
 	TextModel      string         `gorm:"size:128;not null;default:''"`
 	VideoModel     string         `gorm:"size:128;not null;default:''"`
 	ImageModels    datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"`
+	ImageParams    datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"`
 	OutlineMD      string         `gorm:"type:text;not null;default:''"`
 	CharactersMD   string         `gorm:"type:text;not null;default:''"`
 	Status         string         `gorm:"size:16;not null;default:analyzing"`
@@ -118,15 +119,19 @@ type CreateDramaReq struct {
 	TextModel string `json:"text_model" binding:"max=128"`
 	// VideoModel 分镜与片段用的视频模型 key；空串表示不指定
 	VideoModel string `json:"video_model" binding:"max=128"`
-	// ImageModels 人物 / 场景 / 物品资产节点新建时默认的图片模型 key；空串表示不指定
+	// ImageModels 人物 / 场景 / 物品资产节点新建时默认的图片模型 key 和故事板的图片模型 key；空串表示不指定
 	ImageModels DramaImageModels `json:"image_models"`
+	// ImageParams 三类资产节点新建时默认的比例、分辨率等生成参数
+	ImageParams DramaImageParams `json:"image_params"`
 }
 
-// DramaImageModels 三类资产各自默认的图片模型 key，空串表示不指定。
+// DramaImageModels 三类资产各自默认的图片模型 key，加上故事板出图用的模型 key，空串表示不指定。
 type DramaImageModels struct {
 	Character string `json:"character" binding:"max=128"`
 	Scene     string `json:"scene" binding:"max=128"`
 	Prop      string `json:"prop" binding:"max=128"`
+	// Board 故事板出图的模型；空串跟随场景图片模型。不是资产类型，不进 ByType
+	Board string `json:"board,omitempty" binding:"max=128"`
 }
 
 // ByType 返回资产类型（character / scene / prop）到模型 key 的映射，只含已指定的项。
@@ -138,6 +143,34 @@ func (m DramaImageModels) ByType() map[string]string {
 		}
 	}
 	return out
+}
+
+// DramaImageParams 三类资产各自默认的生成参数（参数名 → 取值，如 aspect_ratio: 16:9），空表示用模型默认。
+type DramaImageParams struct {
+	Character map[string]string `json:"character"`
+	Scene     map[string]string `json:"scene"`
+	Prop      map[string]string `json:"prop"`
+}
+
+// ByType 返回资产类型（character / scene / prop）到参数的映射，只含有参数的项。
+func (p DramaImageParams) ByType() map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for typ, params := range map[string]map[string]string{"character": p.Character, "scene": p.Scene, "prop": p.Prop} {
+		if len(params) > 0 {
+			out[typ] = params
+		}
+	}
+	return out
+}
+
+// Normalized 把未指定的类型补成空映射，序列化后三项都是对象而不是 null。
+func (p DramaImageParams) Normalized() DramaImageParams {
+	for _, m := range []*map[string]string{&p.Character, &p.Scene, &p.Prop} {
+		if *m == nil {
+			*m = map[string]string{}
+		}
+	}
+	return p
 }
 
 // UpdateDramaReq 部分更新项目，revision 用于乐观锁。
@@ -152,6 +185,7 @@ type UpdateDramaReq struct {
 	TextModel    *string                      `json:"text_model" binding:"omitempty,max=128"`
 	VideoModel   *string                      `json:"video_model" binding:"omitempty,max=128"`
 	ImageModels  *DramaImageModels            `json:"image_models"`
+	ImageParams  *DramaImageParams            `json:"image_params"`
 	OutlineMD    *string                      `json:"outline_md"`
 	CharactersMD *string                      `json:"characters_md"`
 }
@@ -194,23 +228,25 @@ type DramaSummary struct {
 
 // DramaEpisodeSummary 集概要。
 type DramaEpisodeSummary struct {
-	Hook             string     `json:"hook"`
-	Cliffhanger      string     `json:"cliffhanger"`
-	UnitFrom         int        `json:"unit_from"`
-	UnitTo           int        `json:"unit_to"`
-	No               int        `json:"no"`
-	Title            string     `json:"title"`
-	Synopsis         string     `json:"synopsis"`
-	ScriptStatus     string     `json:"script_status"`
-	StoryboardStatus string     `json:"storyboard_status"`
-	SegmentCount     int        `json:"segment_count"`
-	SegmentSeconds   int        `json:"segment_seconds"`
-	DoneSegmentCount int        `json:"done_segment_count"`
-	Locked           bool       `json:"locked"`
-	Revision         int64      `json:"revision"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	Final            *AssetView `json:"final"`
-	FinalStale       bool       `json:"final_stale"`
+	Hook             string `json:"hook"`
+	Cliffhanger      string `json:"cliffhanger"`
+	UnitFrom         int    `json:"unit_from"`
+	UnitTo           int    `json:"unit_to"`
+	No               int    `json:"no"`
+	Title            string `json:"title"`
+	Synopsis         string `json:"synopsis"`
+	ScriptStatus     string `json:"script_status"`
+	StoryboardStatus string `json:"storyboard_status"`
+	SegmentCount     int    `json:"segment_count"`
+	SegmentSeconds   int    `json:"segment_seconds"`
+	DoneSegmentCount int    `json:"done_segment_count"`
+	// DoneBoardCount 有采用且未过期故事板的片段数
+	DoneBoardCount int        `json:"done_board_count"`
+	Locked         bool       `json:"locked"`
+	Revision       int64      `json:"revision"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	Final          *AssetView `json:"final"`
+	FinalStale     bool       `json:"final_stale"`
 }
 
 // DramaEpisodeView 单集正文。
@@ -233,6 +269,7 @@ type DramaJobView struct {
 	ErrorCode    int                 `json:"error_code"`
 	ErrorMessage string              `json:"error_message"`
 	CreatedAt    time.Time           `json:"created_at"`
+	StartedAt    *time.Time          `json:"started_at"`
 	FinishedAt   *time.Time          `json:"finished_at"`
 	Result       *DramaComposeResult `json:"result"`
 }
@@ -241,6 +278,13 @@ type DramaJobView struct {
 type DramaComposeResult struct {
 	Asset       AssetView `json:"asset"`
 	SkippedSeqs []int     `json:"skipped_seqs"`
+}
+
+// DramaEta 是自动规划中的预计耗时原料，只在 phase=running 时返回；秒数为 0 表示历史不足，界面不显示。
+type DramaEta struct {
+	AnalyzeSeconds  int `json:"analyze_seconds"`
+	PlanSeconds     int `json:"plan_seconds"`
+	PlanBatchesLeft int `json:"plan_batches_left"`
 }
 
 // DramaView 项目详情。
@@ -268,11 +312,13 @@ type DramaView struct {
 	TextModel      string                        `json:"text_model"`
 	VideoModel     string                        `json:"video_model"`
 	ImageModels    DramaImageModels              `json:"image_models"`
+	ImageParams    DramaImageParams              `json:"image_params"`
 	OutlineMD      string                        `json:"outline_md"`
 	CharactersMD   string                        `json:"characters_md"`
 	Revision       int64                         `json:"revision"`
 	Episodes       []DramaEpisodeSummary         `json:"episodes"`
 	ActiveJobs     []DramaJobView                `json:"active_jobs"`
+	Eta            *DramaEta                     `json:"eta"`
 	CreatedAt      time.Time                     `json:"created_at"`
 	UpdatedAt      time.Time                     `json:"updated_at"`
 }

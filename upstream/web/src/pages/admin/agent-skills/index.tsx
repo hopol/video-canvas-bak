@@ -2,6 +2,7 @@ import { Upload } from "lucide-react";
 import { MotionConfig } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import type { SkillItem } from "@/api/admin/agent-skill/type.d";
@@ -28,34 +29,59 @@ import { importedMessage, type SkillListFilter } from "@/utils/admin/agent-skill
 import { DropOverlay } from "./drop-overlay";
 import { getFilesFromEvent, toPicked } from "./drop-files";
 import { ImportDialog } from "./import-dialog";
-import { SkillDialog } from "./skill-dialog";
+import { SkillDetailDialog, skillDialogPath } from "./skill-detail";
 import { SkillTable } from "./skill-table";
 import { useAgentSkills } from "./use-agent-skills";
 import { useSkillImport, type ImportedResult } from "./use-skill-import";
 
 const FILTERS: { id: SkillListFilter; label: string }[] = [
   { id: "all", label: "全部" },
-  { id: "enabled", label: "已启用" },
-  { id: "disabled", label: "已停用" },
+  { id: "agent", label: "画布 Agent" },
+  { id: "drama", label: "短剧" },
+  { id: "unused", label: "未使用" },
   { id: "builtin", label: "内置" },
 ];
 
 /**
- * Agent 技能管理页：列表 + 工具栏 + 详情弹窗 + 居中导入对话框。
+ * Agent 技能管理页：列表 + 工具栏 + 详情弹窗 + 居中导入对话框。点行在当前页弹出详情，
+ * 打开的技能记在地址的 ?skill=（刷新、分享链接都能直接打开），⌘ / Ctrl 点击在新标签页打开。
  * 页面根节点是 react-dropzone 的拖放区（noClick），文件拖到页面任意位置都会打开导入对话框并直接上传；
  * 对话框开着时由第 1 步的拖放区高亮。按 / 聚焦搜索。
  */
 export default function AgentSkillsPage() {
   const api = useAgentSkills();
-  const [openSkill, setOpenSkill] = useState<SkillItem | null>(null);
+  const [params, setParams] = useSearchParams();
+  const openSkill = params.get("skill");
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  /** 打开 / 关闭详情弹窗：只改 skill 和弹窗内的 tab / v，列表的搜索、筛选、页码不动 */
+  const setOpenSkill = useCallback(
+    (name: string | null) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("tab");
+          next.delete("v");
+          if (name) next.set("skill", name);
+          else next.delete("skill");
+          return next;
+        },
+        { replace: !name },
+      ),
+    [setParams],
+  );
+  const closeSkill = () => {
+    setOpenSkill(null);
+    // 弹窗里可能改了场景、版本、显示名，关掉后刷新列表
+    void api.reload();
+  };
   const searchRef = useRef<HTMLInputElement>(null);
 
   const onImported = useCallback(
-    ({ item, view }: ImportedResult) => {
+    ({ item, view, scopeCount }: ImportedResult) => {
       setDialogOpen(false);
       api.markFresh(item.name);
-      toast.success(importedMessage(view));
+      toast.success(importedMessage(view, scopeCount));
       api.reload();
     },
     [api],
@@ -156,10 +182,11 @@ export default function AgentSkillsPage() {
                 <SkillTable
                   items={api.items}
                   loading={api.status === "loading"}
-                  busyNames={api.busyNames}
                   freshName={api.freshName}
-                  onOpen={(item) => setOpenSkill(item)}
-                  onToggle={(item, enabled) => void api.toggleEnabled(item, enabled)}
+                  onOpen={(item: SkillItem, newTab?: boolean) => {
+                    if (newTab) window.open(skillDialogPath(item.name), "_blank", "noopener");
+                    else setOpenSkill(item.name);
+                  }}
                 />
               )}
             </DataPanelBody>
@@ -175,14 +202,7 @@ export default function AgentSkillsPage() {
           </DataPanel>
         </DataPage>
 
-        <SkillDialog
-          target={openSkill}
-          api={api}
-          onClose={() => {
-            setOpenSkill(null);
-            api.reload();
-          }}
-        />
+        <SkillDetailDialog name={openSkill} onClose={closeSkill} onDeleted={closeSkill} />
         <ImportDialog
           open={dialogOpen}
           importer={importer}

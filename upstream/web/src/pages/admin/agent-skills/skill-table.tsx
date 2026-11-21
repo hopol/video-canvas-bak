@@ -1,12 +1,10 @@
 import { Lightbulb } from "lucide-react";
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { SkillItem } from "@/api/admin/agent-skill/type.d";
 import { EmptyState, EmptyStateTitle } from "@/components/admin-ui/empty-state";
-import { ReasonTooltip } from "@/components/admin-ui/reason-tooltip";
 import { Tag } from "@/components/admin-ui/tag";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -18,7 +16,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { SKELETON_DELAY } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { toggleBlockReason, versionBadge } from "@/utils/admin/agent-skill";
+import { formatDateTime, formatRelative, scopeTags, versionBadge } from "@/utils/admin/agent-skill";
 
 /** loading 持续超过 delay 毫秒才返回 true：缓存命中很快返回时不闪灰块 */
 function useDelayedFlag(flag: boolean, delay: number) {
@@ -38,59 +36,42 @@ function useDelayedFlag(flag: boolean, delay: number) {
 const FRESH_ROW =
   "relative after:pointer-events-none after:absolute after:inset-0 after:bg-violet-500/14 after:content-[''] after:animate-out after:fade-out-0 after:duration-240 after:fill-mode-forwards motion-reduce:after:duration-150";
 
-/** 启停开关：内置 / 没有生效版本时禁用并悬停写原因；点它不触发整行的“打开详情” */
-function SkillSwitch({
-  item,
-  busy,
-  onToggle,
-}: {
-  item: SkillItem;
-  busy: boolean;
-  onToggle: (item: SkillItem, enabled: boolean) => void;
-}) {
-  const reason = toggleBlockReason(item);
-  return (
-    <span
-      data-slot="skill-switch"
-      className="inline-flex"
-      onClick={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      <ReasonTooltip reason={reason}>
-        <Switch
-          checked={item.enabled}
-          disabled={!!reason || busy}
-          aria-label={`${item.enabled ? "停用" : "启用"}技能 ${item.title}`}
-          onCheckedChange={(next) => onToggle(item, next)}
-        />
-      </ReasonTooltip>
-    </span>
-  );
-}
-
-/** 名称单元：图标块 + 显示名 + name 等宽小字 */
+/** 名称单元：图标块 + 显示名（内置带标签）；技能名和显示名不同时下面一行等宽小字 */
 function NameCell({ item }: { item: SkillItem }) {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <span className="bg-muted text-muted-foreground grid size-8 shrink-0 place-items-center rounded-lg border">
+      <span className="bg-chrome ring-chrome-border text-muted-foreground grid size-8 shrink-0 place-items-center rounded-xl ring-1">
         <Lightbulb className="size-4" />
       </span>
       <span className="grid min-w-0">
-        <span className="truncate font-medium">{item.title}</span>
-        <span className="text-muted-foreground truncate font-mono text-xs">{item.name}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate font-medium">{item.title}</span>
+          {item.readonly && <Tag className="shrink-0">内置</Tag>}
+        </span>
+        {item.title !== item.name && (
+          <span className="text-muted-foreground truncate font-mono text-xs">{item.name}</span>
+        )}
       </span>
     </div>
   );
 }
 
-/** 来源与内容：内置 / 导入 + 文件数 */
-function SourceTags({ item }: { item: SkillItem }) {
+/** 用在哪里：开着的场景按固定顺序排成小标签，悬停看全称；一个都没有时写“未使用” */
+function ScopeTags({ item }: { item: SkillItem }) {
+  const tags = scopeTags(item);
+  if (tags.length === 0) return <span className="text-muted-foreground text-xs">未使用</span>;
   return (
     <div className="flex flex-wrap gap-1">
-      <Tag tone={item.source === "builtin" ? "neutral" : "violet"}>
-        {item.source === "builtin" ? "内置" : "导入"}
-      </Tag>
-      <Tag className="tabular-nums">{item.file_count} 个文件</Tag>
+      {tags.map((scope) => (
+        <Tag
+          key={scope.key}
+          data-slot="scope-tag"
+          tone={scope.group === "canvas" ? "info" : "violet"}
+          title={scope.group === "canvas" ? scope.name : `短剧 · ${scope.name}`}
+        >
+          {scope.short}
+        </Tag>
+      ))}
     </div>
   );
 }
@@ -110,35 +91,43 @@ function VersionCell({ item }: { item: SkillItem }) {
   );
 }
 
-/** 行上 Enter 打开详情；开关等内部控件自己的按键不触发 */
+/** 更新时间：相对时间，悬停看完整时间；内置技能随版本发布，没有更新时间 */
+function UpdatedCell({ item }: { item: SkillItem }) {
+  if (item.readonly) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="text-muted-foreground tabular-nums" title={formatDateTime(item.updated_at)}>
+      {formatRelative(item.updated_at)}
+    </span>
+  );
+}
+
+/** 行上 Enter 打开详情 */
 const openOnEnter = (event: KeyboardEvent<HTMLElement>, open: () => void) => {
   if (event.key === "Enter" && event.target === event.currentTarget) open();
 };
 
+/** ⌘ / Ctrl / 中键点击：在新标签页打开 */
+const wantsNewTab = (event: MouseEvent) => event.metaKey || event.ctrlKey || event.button === 1;
+
 /**
- * 技能列表：≥ 768 px 用表格，窄屏变卡片（名称 + 开关 / 说明 / 标签 + 版本）。
- * 点行或在行上按 Enter 打开详情；加载超过 150 ms 才显示骨架行；筛选无结果有说明。
+ * 技能列表：≥ 768 px 用表格，窄屏变卡片（名称 + 版本 / 说明 / 场景标签）。
+ * 点行或在行上按 Enter 打开详情（⌘ / Ctrl 点击新标签页打开）；改使用场景要进详情。
+ * 加载超过 150 ms 才显示骨架行；筛选无结果有说明。
  * @param items 已过滤的行
  * @param loading 首次加载中
- * @param busyNames 正在启停的技能名
  * @param freshName 刚导入的技能名，对应行一次性高亮
- * @param onOpen 打开详情
- * @param onToggle 启停
+ * @param onOpen 打开详情；newTab 表示要在新标签页打开
  */
 export function SkillTable({
   items,
   loading,
-  busyNames,
   freshName,
   onOpen,
-  onToggle,
 }: {
   items: SkillItem[];
   loading: boolean;
-  busyNames: ReadonlySet<string>;
   freshName: string | null;
-  onOpen: (item: SkillItem) => void;
-  onToggle: (item: SkillItem, enabled: boolean) => void;
+  onOpen: (item: SkillItem, newTab?: boolean) => void;
 }) {
   const mobile = useIsMobile();
   const showSkeleton = useDelayedFlag(loading, SKELETON_DELAY * 1000);
@@ -159,6 +148,14 @@ export function SkillTable({
     );
   }
 
+  const rowProps = (item: SkillItem) => ({
+    "data-skill-name": item.name,
+    tabIndex: 0,
+    onClick: (event: MouseEvent) => onOpen(item, wantsNewTab(event)),
+    onAuxClick: (event: MouseEvent) => event.button === 1 && onOpen(item, true),
+    onKeyDown: (event: KeyboardEvent<HTMLElement>) => openOnEnter(event, () => onOpen(item)),
+  });
+
   return (
     <div data-slot="skill-table" className="flex flex-col">
       {items.length === 0 ? (
@@ -171,9 +168,7 @@ export function SkillTable({
             <li
               key={item.name}
               role="button"
-              tabIndex={0}
-              onClick={() => onOpen(item)}
-              onKeyDown={(event) => openOnEnter(event, () => onOpen(item))}
+              {...rowProps(item)}
               className={cn(
                 "bg-chrome ring-chrome-border ring-1 shadow-lg backdrop-blur-xl backdrop-saturate-150 hover:bg-card focus-visible:ring-ring/50 grid gap-2 rounded-3xl p-4 transition-colors outline-none focus-visible:ring-2",
                 item.name === freshName && FRESH_ROW,
@@ -181,13 +176,10 @@ export function SkillTable({
             >
               <div className="flex items-center justify-between gap-3">
                 <NameCell item={item} />
-                <SkillSwitch item={item} busy={busyNames.has(item.name)} onToggle={onToggle} />
-              </div>
-              <p className="text-muted-foreground line-clamp-2 text-sm">{item.description}</p>
-              <div className="flex items-center justify-between gap-2">
-                <SourceTags item={item} />
                 <VersionCell item={item} />
               </div>
+              <p className="text-muted-foreground line-clamp-2 text-sm">{item.description}</p>
+              <ScopeTags item={item} />
             </li>
           ))}
         </ul>
@@ -196,21 +188,18 @@ export function SkillTable({
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/40 hover:bg-muted/40">
-                <TableHead className="w-[28%] px-4">名称</TableHead>
+                <TableHead className="w-[28%] px-4">技能</TableHead>
                 <TableHead>说明</TableHead>
-                <TableHead className="w-48">来源与内容</TableHead>
-                <TableHead className="w-36">生效版本</TableHead>
-                <TableHead className="w-16 px-4 text-right">启用</TableHead>
+                <TableHead className="w-56">用在哪里</TableHead>
+                <TableHead className="w-36">版本</TableHead>
+                <TableHead className="w-24 px-4">更新</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.map((item) => (
                 <TableRow
                   key={item.name}
-                  data-skill-name={item.name}
-                  tabIndex={0}
-                  onClick={() => onOpen(item)}
-                  onKeyDown={(event) => openOnEnter(event, () => onOpen(item))}
+                  {...rowProps(item)}
                   className={cn(
                     "focus-visible:ring-ring/50 min-h-15 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset",
                     item.name === freshName && FRESH_ROW,
@@ -223,13 +212,13 @@ export function SkillTable({
                     <span className="line-clamp-2">{item.description}</span>
                   </TableCell>
                   <TableCell className="py-3">
-                    <SourceTags item={item} />
+                    <ScopeTags item={item} />
                   </TableCell>
                   <TableCell className="py-3">
                     <VersionCell item={item} />
                   </TableCell>
-                  <TableCell className="px-4 py-3 text-right">
-                    <SkillSwitch item={item} busy={busyNames.has(item.name)} onToggle={onToggle} />
+                  <TableCell className="px-4 py-3 text-xs">
+                    <UpdatedCell item={item} />
                   </TableCell>
                 </TableRow>
               ))}

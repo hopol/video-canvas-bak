@@ -27,12 +27,14 @@ type DramaCanvasAsset struct {
 	Asset  drama.Asset `json:"asset"`
 }
 
-// DramaBreakdownBatch 是一批拆解结果：这批集号、模型给出的资产、这次调用的费用、各类资产新建节点的默认图片模型 key（可为 nil）。
+// DramaBreakdownBatch 是一批拆解结果：这批集号、模型给出的资产、这次调用的费用、
+// 各类资产新建节点的默认图片模型 key 和默认生成参数（都可为 nil）。
 type DramaBreakdownBatch struct {
 	Episodes []int
 	Assets   []drama.Asset
 	Cost     int
 	Models   map[string]string
+	Params   map[string]map[string]string
 }
 
 // DramaCanvasService 提供不依赖 Agent run 的短剧画布写入口，复用公共图差异、CAS 重放和 patch 协议。
@@ -155,7 +157,7 @@ func breakdownTx(ctx context.Context, tx repository.DramaCanvasTx, g *canvasgrap
 	for i, a := range assets {
 		graphAssets[i] = canvasgraph.DramaAsset{Type: a.Type, Name: a.Name, Look: a.Look, Aliases: a.Aliases, Episodes: a.Episodes, Description: a.Description, VoicePrompt: a.VoicePrompt}
 	}
-	merged, err := canvasgraph.MergeDrama(g, graphAssets, canvasgraph.Options{DramaModels: batch.Models})
+	merged, err := canvasgraph.MergeDrama(g, graphAssets, canvasgraph.Options{DramaModels: batch.Models, DramaParams: batch.Params})
 	if err != nil {
 		return errcode.ErrDramaOutputInvalid
 	}
@@ -221,6 +223,38 @@ func createdAssets(merged *canvasgraph.DramaResult, assets []drama.Asset) []Dram
 		created = append(created, DramaCanvasAsset{NodeID: c.NodeID, Asset: assets[c.AssetIndex]})
 	}
 	return created
+}
+
+// SyncBoards 让一集的故事板节点和片段对上（见 canvasgraph.SyncBoards）：每个片段一个节点，没有就建空的，
+// 片段已经没了的节点和连线清掉；有改动才写，同样推 canvas.patch。
+func (s *DramaCanvasService) SyncBoards(ctx context.Context, userID, canvasID uint64, episodeNo int, segments []DramaBoardSegment) error {
+	out, err := WriteCanvas(ctx, s.repo, userID, canvasID, func(g *canvasgraph.Graph, revision uint64) (breakdownAttempt, error) {
+		out := breakdownAttempt{before: revision, revision: revision}
+		res := canvasgraph.SyncBoards(g, episodeNo, segments)
+		if res == nil {
+			return out, nil
+		}
+		out.changes = res.Changes
+		err := s.repo.WithTx(ctx, func(tx repository.DramaCanvasTx) error {
+			if err := tx.CheckCanvasRevision(ctx, userID, canvasID, revision); err != nil {
+				return err
+			}
+			var err error
+			out.revision, err = commitCanvas(ctx, tx, userID, canvasID, revision, res.Graph, res.Changes)
+			return err
+		})
+		return out, err
+	})
+	if errors.Is(err, repository.ErrRevisionConflict) {
+		return errcode.ErrCanvasConflict
+	}
+	if err != nil {
+		return err
+	}
+	if len(out.changes) > 0 {
+		PublishCanvasPatch(ctx, s.bc, userID, CanvasPatch{CanvasID: canvasID, Kind: "board_sync", RevisionBefore: out.before, RevisionAfter: out.revision, Changes: out.changes})
+	}
+	return nil
 }
 
 // ApplyPrompts 写入一组节点提示词，同一事务把已写节点、被安全过滤的资产（filtered）和费用累加进 step 任务的检查点；

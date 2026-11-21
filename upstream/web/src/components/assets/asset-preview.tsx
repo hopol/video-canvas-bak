@@ -2,8 +2,9 @@ import { useMemo, type ReactNode } from "react";
 
 import type { AssetDto } from "@/api/asset/type";
 import { MediaLightbox } from "@/components/canvas/media-lightbox";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import type { PreviewItem } from "@/utils/canvas/preview-items";
+
+import { AudioPreviewDialog } from "./audio-preview";
 
 /** 预览里的一项：素材 + 展示用的名字 */
 export type AssetPreviewEntry = {
@@ -17,7 +18,7 @@ export type AssetPreviewEntry = {
 
 /**
  * 资产页的只读预览：图片、视频复用画布同款的 MediaLightbox（翻页、缩略图条、下载都有，
- * 不传 onLocate，所以没有「定位到节点」）；音频没有画面，用小弹窗直接播放。
+ * 不传 onLocate，所以没有「定位到节点」）；音频没有画面，用带头像的播放卡（AudioPreviewDialog）直接播放。
  * 受控：弹层状态在调用方。
  * @param entries 当前列表的全部素材，顺序即翻页顺序；音频不进灯箱翻页
  * @param targetId 正在看的素材 ID；null 表示关着
@@ -82,14 +83,7 @@ export function AssetPreview({
             : undefined
         }
       />
-      <Dialog open={audio !== undefined} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent className="flex w-fit items-center justify-center bg-black/90 p-2">
-          <DialogTitle className="sr-only">{audio?.label ?? "音频预览"}</DialogTitle>
-          {audio && (
-            <audio src={audio.asset.url} controls autoPlay className="m-6 w-[min(80vw,480px)]" />
-          )}
-        </DialogContent>
-      </Dialog>
+      <AudioPreviewDialog entry={audio} onClose={onClose} />
     </>
   );
 }

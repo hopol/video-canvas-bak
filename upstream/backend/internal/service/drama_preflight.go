@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -97,7 +98,7 @@ const kindGuessTimeout = 30 * time.Second
 // guessKindByAI 让文本模型判断原文是剧本还是小说。只发一小段采样，平台承担这次调用，不向用户扣积分；
 // 模型不可用、超时、输出不合规一律返回 ok=false，调用方保持 unknown 让用户手选。
 func (s *DramaService) guessKindByAI(ctx context.Context, modelKey, text string) (kind, reason string, ok bool) {
-	snap, err := s.resolvePlanningModel(ctx, modelKey)
+	snap, err := s.resolveModel(ctx, modelKey)
 	if err != nil {
 		return "", "", false
 	}
@@ -150,8 +151,11 @@ func (s *DramaService) estimateSource(ctx context.Context, p drama.PreflightResu
 	if kind == "" {
 		kind = p.KindGuess
 	}
-	snap, err := s.resolvePlanningModel(ctx, key)
+	snap, err := s.resolveModel(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err = checkUnitsFit(snap, p.Units[:end]); err != nil {
 		return nil, err
 	}
 	chars := 0
@@ -175,7 +179,7 @@ func (s *DramaService) estimateSource(ctx context.Context, p drama.PreflightResu
 	}
 	if kind != "script" {
 		for cursor := 0; cursor < end; {
-			batch, e := drama.NextBatch(p.Units, cursor, end, min(30000, dramaContextLimit(snap)-8192))
+			batch, e := drama.NextBatch(p.Units, cursor, end, dramaBatchBudget(snap))
 			if e != nil {
 				return nil, errcode.ErrDramaContext
 			}
@@ -201,16 +205,29 @@ func (s *DramaService) estimateSource(ctx context.Context, p drama.PreflightResu
 	return out, nil
 }
 
-// resolvePlanningModel 建剧、修改与估价都拒绝未知或低于 128k 的上下文窗口。
-func (s *DramaService) resolvePlanningModel(ctx context.Context, key string) (*provider.Snapshot, error) {
-	snap, err := s.resolveModel(ctx, key)
-	if err != nil {
-		return nil, err
+// dramaPromptReserve 分批时给提示词（模板、已知角色、上一集结尾等）预留的字数；调用前还会按真实提示词再查一遍。
+const dramaPromptReserve = 8192
+
+// dramaBatchBudget 一批原文 / 剧本最多放多少字：上下文额度（窗口的 60%）扣掉提示词预留，最多三万字。
+func dramaBatchBudget(snap *provider.Snapshot) int {
+	return min(30000, dramaContextLimit(snap)-dramaPromptReserve)
+}
+
+// checkUnitsFit 建剧、修改模型与估价时检查每个单元都能整个放进一批（单元不拆开），放不下时点名最长的那个。
+func checkUnitsFit(snap *provider.Snapshot, units []drama.Unit) error {
+	budget := dramaBatchBudget(snap)
+	if budget <= 0 {
+		return errcode.ErrDramaContext.WithMsg("这个模型的上下文太小，放不下提示词，请换上下文更大的模型")
 	}
-	if c := snap.Model.Capabilities.Context; c == nil || c.Window < 128000 {
-		return nil, errcode.ErrDramaContext.WithMsg("模型上下文低于 128k，装不下一批完整原文")
+	longest, n := drama.LongestUnit(units)
+	if n <= budget {
+		return nil
 	}
-	return snap, nil
+	name := longest.Title
+	if name == "" {
+		name = fmt.Sprintf("第 %d 段", longest.No)
+	}
+	return errcode.ErrDramaContext.WithMsg(fmt.Sprintf("「%s」约 %d 字，超过这个模型一次能读的 %d 字，请换上下文更大的模型", name, n, budget))
 }
 
 // unitModels 复制纯单元到模型，目录不带正文。

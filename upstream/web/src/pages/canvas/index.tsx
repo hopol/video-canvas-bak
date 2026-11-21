@@ -1,16 +1,12 @@
 import { ReactFlowProvider } from "@xyflow/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
-import { getCanvas } from "@/api/canvas";
-import { draftStore } from "@/utils/canvas/draft-idb";
 import { useCanvasLock } from "@/hooks/use-canvas-lock";
+import { useCanvasOpening } from "@/hooks/use-canvas-opening";
 import { useAgentSettings } from "@/store/agent-settings";
-import { loadCanvasForEditing, type OpenedCanvas } from "@/utils/canvas/open-canvas";
 import { getCanvasTitle } from "@/utils/canvas/title-cache";
-import { getCurrentUserId } from "@/utils/storage/user-id";
 
 import { CanvasLoader } from "./canvas-loader";
-import { CanvasLockedNotice } from "./canvas-locked-notice";
 import { Flow } from "./flow";
 import { prefetchPetAssets } from "./pet/use-pet-assets";
 
@@ -19,14 +15,16 @@ const ENTERING_MS = 1200;
 
 export default function Canvas() {
   const { id } = useParams();
-  /** 打开结果：云端画布，加上本地草稿对账后的恢复信息 */
-  const [opened, setOpened] = useState<OpenedCanvas | null>(null);
-  const [error, setError] = useState(false);
-  /** 加载层已经为哪张画布收起；换画布（id 变了）就重新走一遍加载 */
   const [revealedId, setRevealedId] = useState<string | null>(null);
 
-  /** 同一张画布只让一个标签页编辑：拿到锁才加载，没拿到先提示，对方关闭后自动接管 */
-  const lock = useCanvasLock(id);
+  /**
+   * 同一张画布只让一个标签页编辑：
+   * 拿不到锁不是拦住，而是以只读预览打开（只读云端、不碰草稿），对方关闭后自动转成可编辑。
+   * 被要求让位时要先存盘，所以把编辑器的 saveNow 交出去。
+   */
+  const saveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
+  const lock = useCanvasLock(id, { onYield: () => saveRef.current() });
+  const { opened, error, mountSeq, readOnly, replace } = useCanvasOpening(id, lock.status);
 
   // 桌宠素材和画布数据并行拉：等画布加载完、外壳挂上时素材多半已经到了
   const petSkin = useAgentSettings((s) => s.pet.skin);
@@ -34,28 +32,6 @@ export default function Canvas() {
   useEffect(() => {
     if (!petHidden) prefetchPetAssets(petSkin);
   }, [petSkin, petHidden]);
-
-  useEffect(() => {
-    let active = true;
-    if (!id || lock !== "held") return;
-    const userId = getCurrentUserId();
-    void loadCanvasForEditing({
-      canvasId: id,
-      userId,
-      getCanvas,
-      loadDraft: (user, canvasId) => draftStore.load(user, canvasId),
-      removeDraft: (canvasId) => (userId ? draftStore.remove(userId, canvasId) : Promise.resolve()),
-    })
-      .then((value) => {
-        if (active) setOpened(value);
-      })
-      .catch(() => {
-        if (active) setError(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [id, lock]);
 
   const current = opened && opened.canvas.id === id ? opened : null;
   // 入场直接在画布根节点上挂 data-entering，不走 state：
@@ -71,17 +47,21 @@ export default function Canvas() {
   }, [id]);
 
   if (!id) return null;
-  if (lock === "waiting") return <CanvasLockedNotice />;
   if (error) return <div className="grid min-h-svh place-items-center">画布不存在或无法加载</div>;
   return (
     <>
       {current && (
         <ReactFlowProvider>
           <Flow
-            key={`${id}:${current.canvas.version}`}
+            // 只读转可编辑时数据是重新拉的：模型和绘制都得跟着换一份，别拿旧节点接着渲染
+            key={`${id}:${current.canvas.version}:${mountSeq}`}
             canvas={current.canvas}
             recovery={current.recovery}
-            onConflict={(latest) => setOpened({ canvas: latest, recovery: null })}
+            readOnly={readOnly}
+            takeoverState={lock.takeoverState}
+            onTakeover={lock.takeover}
+            saveRef={saveRef}
+            onConflict={(latest) => replace({ canvas: latest, recovery: null })}
           />
         </ReactFlowProvider>
       )}

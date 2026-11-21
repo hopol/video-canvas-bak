@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 
 import { cn } from "@/lib/utils";
 import { NODE_LABEL_MAX, normalizeNodeLabel } from "@/utils/canvas/node-label";
+import { useCanvasReadOnly } from "@/utils/canvas/read-only";
 
 import { BaseNode } from "./base-node";
 import { useConnectionTilt, type ConnectionTiltOptions } from "./hooks/use-connection-tilt";
@@ -252,6 +253,8 @@ export function NodeCard({
   const { rotateX, rotateY, scale, opacity, transformPerspective } = useConnectionTilt({
     canAccept: canAcceptConnection,
   });
+  // 只读预览里标题也不能双击改名：改不动却让输入框弹出来，比不能点更让人困惑
+  const readOnly = useCanvasReadOnly();
 
   return (
     // 外面这层只管 3D：别人拉线压到本节点身上时朝鼠标偏一点头，
@@ -265,7 +268,7 @@ export function NodeCard({
       >
         <div className="text-foreground pointer-events-none absolute right-0.5 bottom-full left-0.5 mb-2 flex items-center gap-2 text-[13px] font-semibold">
           {icon && <span className="text-muted-foreground [&_svg]:size-4">{icon}</span>}
-          <NodeTitle title={title} onRename={onRename} />
+          <NodeTitle title={title} onRename={readOnly ? undefined : onRename} />
           {status && <span className="ml-auto shrink-0 text-xs font-medium">{status}</span>}
         </div>
         {children}

@@ -40,7 +40,10 @@ type ReserveSkillInput struct {
 	Name      string
 	Title     string // 技能首次出现时用作显示名；技能已存在则忽略
 	CreatedBy uint64
-	Version   model.AgentSkillVersion // 除 SkillID / Version / State 外的内容；PackageKey 由调用方先生成
+	// Enabled、DramaSteps 是新技能的使用场景（导入确认时勾选）；技能已存在则忽略，不改动现有场景
+	Enabled    bool
+	DramaSteps []string
+	Version    model.AgentSkillVersion // 除 SkillID / Version / State 外的内容；PackageKey 由调用方先生成
 }
 
 // ListSkills 返回全部导入技能，按名字排序。
@@ -105,7 +108,10 @@ func (r *AgentSkillRepository) ReserveVersion(ctx context.Context, in ReserveSki
 	var ver model.AgentSkillVersion
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. 技能行：不存在就插入（并发创建时 ON CONFLICT 忽略），再 FOR UPDATE 锁住它，串行化同一技能的版本号分配
-		seed := model.AgentSkill{Name: in.Name, Title: in.Title, CreatedBy: in.CreatedBy}
+		seed := model.AgentSkill{Name: in.Name, Title: in.Title, CreatedBy: in.CreatedBy, Enabled: in.Enabled}
+		if len(in.DramaSteps) > 0 {
+			seed.DramaSteps = append(datatypes.JSONSlice[string]{}, in.DramaSteps...)
+		}
 		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "name"}}, DoNothing: true}).Create(&seed).Error; err != nil {
 			return err
 		}
@@ -216,14 +222,14 @@ func (r *AgentSkillRepository) MarkVersionDeleting(ctx context.Context, skillID 
 }
 
 // DeleteSkill 在一个事务里删除技能行，并把它的全部版本标为 deleting；对象由清理任务删除。
-// 技能不存在返回 ErrNotFound；技能仍启用返回 ErrInUse（竞态兜底，service 已要求先停用）。
+// 技能不存在返回 ErrNotFound；画布 Agent 或任一短剧环节还开着返回 ErrInUse（竞态兜底，service 已先检查）。
 func (r *AgentSkillRepository) DeleteSkill(ctx context.Context, skillID uint64) error {
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var skill model.AgentSkill
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Take(&skill, skillID).Error; err != nil {
 			return err
 		}
-		if skill.Enabled {
+		if skill.Enabled || len(skill.DramaSteps) > 0 {
 			return ErrInUse
 		}
 		if err := tx.Model(&model.AgentSkillVersion{}).Where("skill_id = ? AND state <> ?", skillID, model.SkillVersionDeleting).

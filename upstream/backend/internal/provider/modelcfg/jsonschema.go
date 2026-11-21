@@ -163,6 +163,10 @@ func channelRefSchema() obj {
 		},
 		"protocol":   protocolSchema(),
 		"api_format": enum("接口格式（仅 agent），不填等于 openai", APIFormatOpenAI, APIFormatGemini),
+		"path_prefix": obj{
+			"type": "string", "maxLength": maxPathPrefixLen, "pattern": pathPrefixRe.String(),
+			"description": "接口路径里的版本段（仅 agent 的 openai 格式），如 /v4；不填等于 /v1，填 / 表示不加前缀",
+		},
 	}, "channel", "upstream_model")
 }
 

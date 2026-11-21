@@ -36,7 +36,8 @@ type dramaMemory struct {
 	segments   []model.DramaSegment
 	hasTakes   bool
 	replaceErr error
-	mu         *sync.Mutex // 并发拆解批次时由 lockedDramaMemory 和假画布共用
+	durations  map[string][]int // 按步骤给模型 9 的历史耗时（秒）
+	mu         *sync.Mutex      // 并发拆解批次时由 lockedDramaMemory 和假画布共用
 }
 
 // lockedDramaMemory 让并发的拆解批次安全地读写内存仓储：事务和事务外的单次读取共用一把锁，事务内的调用直接落到内层。
@@ -147,6 +148,8 @@ func (r *dramaMemory) UpdateProject(_ context.Context, userID, id uint64, revisi
 			r.project.VideoModel = v.(string)
 		case "image_models":
 			r.project.ImageModels = v.([]byte)
+		case "image_params":
+			r.project.ImageParams = v.([]byte)
 		}
 	}
 	r.project.Revision++
@@ -208,16 +211,17 @@ func (r *dramaMemory) ReplaceSegments(_ context.Context, userID, episodeID uint6
 func (r *dramaMemory) HasSegmentTakes(context.Context, uint64, uint64) (bool, error) {
 	return r.hasTakes, nil
 }
-func (r *dramaMemory) Summary(ctx context.Context, userID, episodeID uint64) (count, seconds, done int, err error) {
+func (r *dramaMemory) Summary(ctx context.Context, userID, episodeID uint64, _ map[string]string) (model.DramaSegmentStats, error) {
+	var stats model.DramaSegmentStats
 	segments, err := r.Segments(ctx, userID, episodeID)
 	for _, segment := range segments {
-		count++
-		seconds += segment.Seconds
+		stats.Count++
+		stats.Seconds += segment.Seconds
 		if segment.ChosenTaskID != nil {
-			done++
+			stats.Done++
 		}
 	}
-	return count, seconds, done, err
+	return stats, err
 }
 func (r *dramaMemory) GetByID(_ context.Context, userID, canvasID uint64) (*model.CanvasProject, error) {
 	if userID != r.project.UserID || canvasID != r.project.CanvasID {
@@ -405,11 +409,30 @@ type dramaPipelineCanvas struct {
 	prompted int
 	created  []service.DramaCanvasAsset // 非空时每批都返回它；为空时按资产名生成节点 node-<名字>
 	models   map[string]string
+	params   map[string]map[string]string
 	assets   []drama.Asset     // 各批收到的资产，按提交顺序
 	prompts  map[string]string // 已写入的节点提示词
 	filtered []service.DramaCanvasAsset
 	// deleted 记录删集调用：短剧 id、画布 id、集号
 	deleted [][3]uint64
+	// synced 记录故事板同步调用；syncErr 非空时同步返回它
+	synced  []boardSync
+	syncErr error
+}
+
+// boardSync 是一次故事板同步调用的参数。
+type boardSync struct {
+	canvasID  uint64
+	episodeNo int
+	segments  []service.DramaBoardSegment
+}
+
+func (c *dramaPipelineCanvas) SyncBoards(_ context.Context, _, canvasID uint64, episodeNo int, segments []service.DramaBoardSegment) error {
+	if c == nil { // 很多测试给服务传 nil 画布（装进接口后不是 nil 接口），不关心故事板
+		return nil
+	}
+	c.synced = append(c.synced, boardSync{canvasID: canvasID, episodeNo: episodeNo, segments: segments})
+	return c.syncErr
 }
 
 func (c *dramaPipelineCanvas) DeleteEpisode(_ context.Context, _, dramaID, canvasID uint64, no int) error {
@@ -423,6 +446,7 @@ func (c *dramaPipelineCanvas) ApplyBreakdown(_ context.Context, _, _, _, jobID u
 	c.applied++
 	c.assets = append(c.assets, batch.Assets...)
 	c.models = batch.Models
+	c.params = batch.Params
 	created := c.created
 	if created == nil {
 		for _, a := range batch.Assets {
@@ -525,13 +549,14 @@ func dramaAddEpisode(r *dramaMemory, no int, script string) {
 	r.episodes = append(r.episodes, model.DramaEpisode{BaseModel: model.BaseModel{ID: r.nextID}, UserID: 7, DramaID: 1, No: no, Title: fmt.Sprintf("第%d集", no), ScriptMD: script, ScriptStatus: status, Revision: 1})
 }
 
+// 剧本只有创作段：创作稿原样就是本集剧本；空白输出算不合格，带校验反馈重试一次，不合格的调用不收费。
 func TestDramaPipelineJSONRetryAndNoCharge(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
 		outputs              []string
 		status               string
 		code, calls, balance int
-	}{{"成功", []string{`{"script_md":"剧本正文"}`}, "succeeded", 0, 1, 995}, {"JSON重试成功", []string{`{bad`, `{"script_md":"修正后的正文"}`}, "succeeded", 0, 2, 995}, {"JSON两次失败", []string{`{bad`, `{bad`}, "failed", 67008, 2, 1000}} {
+	}{{"成功", []string{"△ 剧本正文"}, "succeeded", 0, 1, 995}, {"空白重试成功", []string{" ", "△ 修正后的正文"}, "succeeded", 0, 2, 995}, {"两次空白失败", []string{" ", "\n"}, "failed", 67008, 2, 1000}} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newDramaMemory()
 			dramaAddEpisode(r, 1, "")
@@ -553,6 +578,10 @@ func TestDramaPipelineJSONRetryAndNoCharge(t *testing.T) {
 			}
 			if tc.calls == 2 && !strings.Contains(e.prompts[1], "validation_error") {
 				t.Fatal("重试缺少校验反馈")
+			}
+			// 不再有格式段改写：保存的剧本就是创作稿原文
+			if tc.status == "succeeded" && r.episodes[0].ScriptMD != tc.outputs[len(tc.outputs)-1] {
+				t.Fatalf("剧本应原样保存创作稿，got %q", r.episodes[0].ScriptMD)
 			}
 		})
 	}
@@ -614,8 +643,8 @@ func TestDramaScriptsSerialContinuationAndPartialSuccess(t *testing.T) {
 	dramaAddEpisode(r, 2, "")
 	dramaAddEpisode(r, 3, "")
 	ending := strings.Repeat("甲", 900) + "最后一句"
-	raw, _ := json.Marshal(drama.ScriptOutput{ScriptMD: ending})
-	e := &dramaTextStreamer{outputs: []string{string(raw)}, failAt: 2}
+	// 第一集一次调用；第二集（第 2 次调用）失败
+	e := &dramaTextStreamer{outputs: []string{ending}, failAt: 2}
 	s, _ := dramaTestService(r, e, nil)
 	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "scripts"})
 	if err != nil {
@@ -674,7 +703,8 @@ func TestDramaModelFallbackAndEstimate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credits != 10 || len(registry.requested) != 2 || registry.requested[1] != "text" {
+	// 两集，每集两次调用（创作段、格式段）各 5 点
+	if credits != 20 || len(registry.requested) != 2 || registry.requested[1] != "text" {
 		t.Fatalf("estimate=%d requested=%v", credits, registry.requested)
 	}
 	r.credit.Balance = 0
@@ -700,6 +730,8 @@ type dramaFakeModel struct {
 var (
 	dramaNodeRe    = regexp.MustCompile(`"node_id":\s*"(node-[^"]+)"`)
 	dramaEpisodeRe = regexp.MustCompile(`第(\d+)集正文`)
+	// 资产拆解格式段只带集号范围，没有剧本正文
+	dramaEpisodeNosRe = regexp.MustCompile(`"episode_numbers":\[(\d+)`)
 )
 
 func (m *dramaFakeModel) filter(names ...string) {
@@ -730,7 +762,12 @@ func (m *dramaFakeModel) respond(ctx context.Context, prompt string) (*llmgatewa
 		raw, _ := json.Marshal(out)
 		return &llmgateway.Result{Text: string(raw)}, nil
 	}
-	first, _ := strconv.Atoi(dramaEpisodeRe.FindStringSubmatch(prompt)[1])
+	first := 0
+	if m := dramaEpisodeRe.FindStringSubmatch(prompt); m != nil {
+		first, _ = strconv.Atoi(m[1])
+	} else if m := dramaEpisodeNosRe.FindStringSubmatch(prompt); m != nil {
+		first, _ = strconv.Atoi(m[1])
+	}
 	m.mu.Lock()
 	m.inFlight++
 	m.peak = max(m.peak, m.inFlight)
@@ -845,8 +882,43 @@ func TestDramaBreakdownRunsBatchesInParallelAndPromptsEachBatch(t *testing.T) {
 	if c.applied != 3 || len(c.prompts) != 3 || c.prompts["node-角色13"] == "" {
 		t.Fatalf("三批各写一次画布并写好提示词：applied=%d prompts=%v", c.applied, c.prompts)
 	}
-	if got.Credits != 30 || r.credit.Balance != 970 || r.credit.Frozen != 0 {
-		t.Fatalf("三次拆解加三次提示词共 30 积分：credits=%d account=%+v", got.Credits, r.credit)
+	// 每批拆解与提示词各两次调用（创作段、格式段），每次 5 积分
+	if got.Credits != 60 || r.credit.Balance != 940 || r.credit.Frozen != 0 {
+		t.Fatalf("三次拆解加三次提示词共 60 积分：credits=%d account=%+v", got.Credits, r.credit)
+	}
+}
+
+// 拆解任务顺带写资产图提示词时，要用项目「资产图提示词」环节的设置，不能沿用「资产拆解」环节的内置正文。
+func TestDramaBreakdownUsesAssetPromptsSetting(t *testing.T) {
+	m := &dramaFakeModel{}
+	e := &dramaTextStreamer{respond: m.respond}
+	r := newDramaMemory()
+	r.project.Ratio = "9:16"
+	r.project.PromptSettings = []byte(`{"asset_prompts":{"source":"mine","id":3,"label":"我的 · 构图","bodies":{"asset_prompts":"自写构图：四画面不对称分栏"}}}`)
+	dramaAddEpisode(r, 1, "第1集正文")
+	c := &dramaPipelineCanvas{mem: r}
+	s, _ := dramaTestService(r, e, c)
+	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "breakdown", Episodes: []int{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.HandleDrama(context.Background(), 7, 1, uint64(j.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.jobs[0]; got.Status != "succeeded" || len(c.prompts) != 1 {
+		t.Fatalf("拆解应成功并写好提示词：status=%s prompts=%v", got.Status, c.prompts)
+	}
+	var creative string
+	for _, p := range e.prompts {
+		if strings.Contains(p, "# 资产图提示词创作") || strings.Contains(p, "自写构图") {
+			creative = p
+		}
+		if strings.Contains(p, "# 资产拆解") && strings.Contains(p, "自写构图") {
+			t.Fatal("资产图提示词的自定义正文不应混进拆解调用")
+		}
+	}
+	if !strings.Contains(creative, "自写构图：四画面不对称分栏") || strings.Contains(creative, "四视图设定图") {
+		t.Fatalf("资产图提示词应使用项目里的自定义正文:\n%s", creative)
 	}
 }
 
@@ -875,7 +947,7 @@ func TestDramaBreakdownResumesFromCommittedBatches(t *testing.T) {
 	if err := s.HandleDrama(context.Background(), 7, 1, jobID); err != nil {
 		t.Fatal(err)
 	}
-	if e.calls-calls != 2 || c.applied != 2 {
+	if e.calls-calls != 4 || c.applied != 2 {
 		t.Fatalf("重跑只应调用第二批的拆解和提示词：calls=%d applied=%d", e.calls-calls, c.applied)
 	}
 	for _, p := range e.prompts[calls:] {
@@ -883,8 +955,8 @@ func TestDramaBreakdownResumesFromCommittedBatches(t *testing.T) {
 			t.Fatal("重跑不应再处理第一批")
 		}
 	}
-	if got := r.jobs[0]; got.Status != "succeeded" || got.Credits != 20 || len(c.prompts) != 2 {
-		t.Fatalf("两批各一次拆解加一次提示词共 20 积分：status=%s credits=%d prompts=%v", got.Status, got.Credits, c.prompts)
+	if got := r.jobs[0]; got.Status != "succeeded" || got.Credits != 40 || len(c.prompts) != 2 {
+		t.Fatalf("两批各一次拆解加一次提示词共 40 积分：status=%s credits=%d prompts=%v", got.Status, got.Credits, c.prompts)
 	}
 }
 
@@ -911,8 +983,8 @@ func TestDramaBreakdownCancelKeepsCommittedBatchesAndChargesThem(t *testing.T) {
 	if got.Status != "canceled" || c.applied != 1 || !c.hasPrompt("node-角色1") {
 		t.Fatalf("取消后保留第一批：status=%s applied=%d", got.Status, c.applied)
 	}
-	if got.Credits != 10 || r.credit.Balance != 990 || r.credit.Frozen != 0 {
-		t.Fatalf("只扣第一批的拆解和提示词 10 积分：credits=%d account=%+v", got.Credits, r.credit)
+	if got.Credits != 20 || r.credit.Balance != 980 || r.credit.Frozen != 0 {
+		t.Fatalf("只扣第一批的拆解和提示词 20 积分：credits=%d account=%+v", got.Credits, r.credit)
 	}
 }
 
@@ -949,7 +1021,7 @@ func TestDramaPromptsIsolateFilteredAssets(t *testing.T) {
 	if follow.Status != "failed" || follow.ErrorCode != errcode.ErrDramaContentFiltered.Code || !strings.Contains(follow.ErrorMessage, "苏星月") {
 		t.Fatalf("应以安全过滤失败并点名资产：%s %d %q", follow.Status, follow.ErrorCode, follow.ErrorMessage)
 	}
-	if follow.Credits != 5 || r.credit.Balance != balance-5 || r.credit.Frozen != 0 {
+	if follow.Credits != 10 || r.credit.Balance != balance-10 || r.credit.Frozen != 0 {
 		t.Fatalf("只扣成功写入的那次：credits=%d account=%+v", follow.Credits, r.credit)
 	}
 
@@ -969,7 +1041,8 @@ func TestDramaContentFilterFailsWithoutRetry(t *testing.T) {
 	r := newDramaMemory()
 	dramaAddEpisode(r, 1, "")
 	e := &dramaTextStreamer{respond: func(context.Context, string) (*llmgateway.Result, error) {
-		return &llmgateway.Result{Text: `{"script_md":"开头`, FinishReason: "content_filter"}, nil
+		// 空输出被安全过滤截断：创作段就失败，不再进入格式段
+		return &llmgateway.Result{Text: "", FinishReason: "content_filter"}, nil
 	}}
 	s, _ := dramaTestService(r, e, nil)
 	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "scripts", Episodes: []int{1}})

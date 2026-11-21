@@ -541,6 +541,7 @@ export function useTaskNode(
     model,
     offline,
     setModel,
+    applyModel,
     pendingSwitch,
     confirmSwitch,
     cancelSwitch,

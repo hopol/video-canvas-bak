@@ -3,23 +3,31 @@ import {
   AudioLines,
   Check,
   CircleX,
+  FolderOpen,
   Gem,
   Image as ImageIcon,
   Loader2,
   Mountain,
   PencilLine,
+  Plus,
   Type,
+  Upload,
   UserRound,
+  UserRoundCheck,
+  UserRoundPlus,
   Video,
   type LucideIcon,
 } from "lucide-react";
 
+import type { VirtualHumanDto } from "@/api/virtual-human/type";
 import { MediaPreview } from "@/components/canvas/media-preview";
 import { DramaPoster } from "@/components/drama/poster";
 import { Button } from "@/components/ui/button";
 import { DURATION, STAGGER, STAGGER_MAX, TAP_CARD } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { AssetItem, AssetType } from "@/utils/drama/assets";
+import { canFillNode } from "@/utils/canvas/fill-upload";
+import { assetUploaded, type AssetItem, type AssetType } from "@/utils/drama/assets";
+import { FILING_LABEL } from "@/utils/virtual-human/virtual-human";
 
 export const TYPE_ICON: Record<AssetType, LucideIcon> = {
   character: UserRound,
@@ -62,8 +70,8 @@ function DoneCover({ item }: { item: AssetItem }) {
   return <DramaPoster seed={item.name + item.look} className="absolute inset-0" />;
 }
 
-/** 空状态里的一块说明（待生成 / 生成中 / 失败） */
-function EmptyFrame({
+/** 空状态里的一块说明（待生成 / 生成中 / 失败）；故事板卡也用 */
+export function EmptyFrame({
   tone = "idle",
   children,
 }: {
@@ -84,12 +92,51 @@ function EmptyFrame({
   );
 }
 
+/** 分段胶囊里的一段：透明底，悬停提亮（同 ChromeSegment）；故事板卡也用 */
+export const SEGMENT_CLASS =
+  "hover:bg-chrome-hover text-foreground focus-visible:ring-ring/60 inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full text-xs transition-colors duration-150 outline-none focus-visible:ring-2 [&_svg]:size-3.5 [&_svg]:shrink-0";
+
+/** 贴在封面底部、悬停卡片（group/card）时浮出的半透明分段胶囊；触屏一直显示。故事板卡也用 */
+export const HOVER_PILL_CLASS =
+  "bg-chrome ring-chrome-border flex translate-y-1.5 items-center gap-0.5 rounded-full p-1 opacity-0 shadow-lg ring-1 backdrop-blur-xl backdrop-saturate-150 transition-[opacity,translate] duration-150 ease-out will-change-[opacity,translate] group-hover/card:translate-y-0 group-hover/card:opacity-100 group-hover/card:duration-200 focus-within:translate-y-0 focus-within:opacity-100 focus-within:duration-200 motion-reduce:transition-none [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100";
+
+/**
+ * 空卡的上传入口：贴在封面底部的半透明分段胶囊（coding-standards 6.1），左上传、右素材库。
+ * 平时收起，悬停卡片或键盘聚焦时从下方浮出；没有悬停的触屏设备一直显示。压在整卡的「进画布」按钮之上。
+ */
+function FillActions({
+  onUpload,
+  onPickLibrary,
+}: {
+  onUpload?: () => void;
+  onPickLibrary?: () => void;
+}) {
+  return (
+    <div className="absolute inset-x-2.5 bottom-2.5 z-20">
+      {/* 淡入淡出加在带模糊的这一层上：祖先半透明会让 backdrop-blur 失效，淡出一开始模糊就突然没了，看着像卡顿。
+          退出 150ms，约为进入 200ms 的 70% */}
+      <div className={HOVER_PILL_CLASS}>
+        <button type="button" className={SEGMENT_CLASS} onClick={onUpload}>
+          <Upload />
+          上传
+        </button>
+        <span aria-hidden className="bg-chrome-border h-4 w-px shrink-0" />
+        <button type="button" className={SEGMENT_CLASS} onClick={onPickLibrary}>
+          <FolderOpen />
+          素材库
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * 资产卡（原型资产列表）：封面按状态显示——已完成（素材）、生成中、分析设定中、失败、待生成（角色显示「待生成形象」）。
  * 点整张卡进画布定位到对应节点；名字旁的按钮弹框编辑提示词（角色卡还能打开详情改音色）；
  * 多选 / 框选后批量生成，已生成的也能选上重新生成；多选模式下点卡片是勾选。
  * 根节点带 data-asset-id，列表框选按它量卡片位置。
  * 出现集数：全集一个小标，具体集号一串小点，未分类写「未分类」。
+ * 空卡（没素材、没生成过）直接给「上传」「素材库」；生成过的不能上传。上传来的卡左上角标「上传」，没有提示词可编辑。
  */
 export function AssetCard({
   item,
@@ -100,6 +147,9 @@ export function AssetCard({
   onLocate,
   onEditPrompt,
   onEditCharacter,
+  onUpload,
+  onPickLibrary,
+  enroll,
 }: {
   item: AssetItem;
   index: number;
@@ -111,9 +161,22 @@ export function AssetCard({
   onEditPrompt: () => void;
   /** 打开角色卡详情（角色名、形象、补充图、音色） */
   onEditCharacter: () => void;
+  /** 选本地文件放进这张空卡 */
+  onUpload?: () => void;
+  /** 从素材库选一个放进这张空卡 */
+  onPickLibrary?: () => void;
+  /**
+   * 角色形象图加入真人库：只有已有形象图、且管理员配置了虚拟人像库（或图片已在真人库）时才传。
+   * human 是图片已经所在的真人，这时只显示状态，不能重复加入。
+   */
+  enroll?: { human: VirtualHumanDto | null; onEnroll: () => void };
 }) {
   const Icon = TYPE_ICON[item.type];
-  const generated = item.type === "character" || item.type === "scene" || item.type === "prop";
+  const uploaded = assetUploaded(item.data);
+  const generated =
+    !uploaded && (item.type === "character" || item.type === "scene" || item.type === "prop");
+  const fillable = !multi && item.type !== "text" && canFillNode(item.data);
+  const fill = fillable ? <FillActions onUpload={onUpload} onPickLibrary={onPickLibrary} /> : null;
   // 已生成的也能勾选：再生成一次就是重新生成
   const canGenerate =
     generated && (item.status === "idle" || item.status === "error" || item.status === "done");
@@ -139,12 +202,22 @@ export function AssetCard({
         {item.status === "done" ? (
           <>
             <DoneCover item={item} />
+            {uploaded && (
+              <span className="bg-chrome ring-chrome-border text-foreground absolute top-2 left-2 rounded-full px-2 text-[11px] leading-5 ring-1 backdrop-blur-xl">
+                上传
+              </span>
+            )}
             <div className="from-cover-scrim absolute inset-x-0 bottom-0 bg-linear-to-t to-transparent px-2.5 pt-8 pb-2">
               <div className="text-cover-foreground truncate text-xs font-semibold">
                 {item.name}
               </div>
             </div>
           </>
+        ) : item.status === "uploading" ? (
+          <EmptyFrame>
+            <Loader2 className="size-5 animate-spin" />
+            <span className="tabular-nums">上传中 {item.data.uploadProgress ?? 0}%</span>
+          </EmptyFrame>
         ) : item.status === "running" ? (
           <EmptyFrame>
             <Loader2 className="size-5 animate-spin" />
@@ -158,9 +231,9 @@ export function AssetCard({
         ) : item.status === "error" ? (
           <EmptyFrame tone="error">
             <CircleX className="size-5" />
-            生成失败
+            {item.data.uploaded ? "上传失败" : "生成失败"}
             <span className="text-muted-foreground text-[11px]">
-              {item.data.error ? item.data.error.slice(0, 24) : "可以重试"}
+              {!item.data.uploaded && item.data.error ? item.data.error.slice(0, 24) : "可以重试"}
             </span>
           </EmptyFrame>
         ) : (
@@ -169,6 +242,8 @@ export function AssetCard({
             {item.type === "character" ? "待生成形象" : "待生成"}
           </EmptyFrame>
         )}
+
+        {fill}
 
         {multi && canGenerate && (
           <button
@@ -208,6 +283,7 @@ export function AssetCard({
             {item.name}
             {item.look && <span className="text-muted-foreground font-normal"> · {item.look}</span>}
           </div>
+          {enroll && <EnrollButton name={item.name} enroll={enroll} />}
           {generated && (
             <Button
               variant="ghost"
@@ -252,5 +328,91 @@ export function AssetCard({
         </div>
       </div>
     </motion.div>
+  );
+}
+
+/** 备案状态对应的图标颜色 */
+const ENROLLED_TONE = {
+  pending: "text-amber-500",
+  active: "text-emerald-500",
+  failed: "text-destructive",
+} as const;
+
+/**
+ * 卡片名字旁的真人库按钮：没加入时点了打开「加入真人库」；已加入时换成带状态颜色的图标，悬停看所属真人和备案状态。
+ * @param name 资产名，读屏用
+ * @param enroll 所在真人与加入回调
+ */
+function EnrollButton({
+  name,
+  enroll,
+}: {
+  name: string;
+  enroll: { human: VirtualHumanDto | null; onEnroll: () => void };
+}) {
+  const { human } = enroll;
+  if (human) {
+    const label = `已在真人库「${human.name}」· ${FILING_LABEL[human.status]}`;
+    return (
+      <span
+        role="img"
+        aria-label={label}
+        title={label}
+        className={cn(
+          "grid size-6 place-items-center [&_svg]:size-3.5",
+          ENROLLED_TONE[human.status],
+        )}
+      >
+        <UserRoundCheck />
+      </span>
+    );
+  }
+  return (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label={`把 ${name} 的形象加入真人库`}
+      title="加入真人库"
+      onClick={enroll.onEnroll}
+    >
+      <UserRoundPlus />
+    </Button>
+  );
+}
+
+/** 新建卡上半「新建」按钮的文字：角色是引入角色卡，其余是新建某类 */
+const CREATE_LABEL: Record<AssetType, string> = {
+  character: "引入角色卡",
+  scene: "新建场景",
+  prop: "新建道具",
+  text: "新建文本",
+  image: "新建图片",
+  video: "新建视频",
+  audio: "新建音频",
+};
+
+/**
+ * 资产网格末尾的新建卡：新建一张当前类型的空卡。
+ * @param scope 新卡的归类说明（出现在第 N 集 / 全集出现 / 未分类）
+ */
+export function AddAssetCard({
+  type,
+  scope,
+  onCreate,
+}: {
+  type: AssetType;
+  scope: string;
+  onCreate: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onCreate}
+      className="text-muted-foreground hover:bg-muted/60 focus-visible:ring-ring/50 flex aspect-3/4 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed text-sm outline-none focus-visible:ring-2"
+    >
+      <Plus className="size-5" />
+      {CREATE_LABEL[type]}
+      <span className="text-xs">{scope}</span>
+    </button>
   );
 }

@@ -15,11 +15,13 @@ import (
 	"video-canvas/internal/repository"
 )
 
-// dramaPages 只开放契约允许的四个环节。
+// dramaPages 只开放契约允许的五个环节，每个环节对应一页任务提示词。
 func dramaPages(step string) []string {
 	switch step {
-	case "adapt":
-		return []string{"plan", "scripts"}
+	case "plan":
+		return []string{"plan"}
+	case "scripts":
+		return []string{"scripts"}
 	case "assets":
 		return []string{"breakdown"}
 	case "asset_prompts":
@@ -30,9 +32,8 @@ func dramaPages(step string) []string {
 	return nil
 }
 
-// SetDramaSteps 设置导入技能适用的短剧环节，不产生新版本，写操作审计。
-func (s *SkillService) SetDramaSteps(ctx context.Context, actorID uint64, name string, steps []string) (*SkillItem, error) {
-	// 1. 验证白名单和重复，空列表表示撤销全部短剧适用范围。
+// validDramaSteps 校验环节白名单且不重复，nil 归一成空切片。
+func validDramaSteps(steps []string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, step := range steps {
 		if dramaPages(step) == nil || seen[step] {
@@ -40,12 +41,28 @@ func (s *SkillService) SetDramaSteps(ctx context.Context, actorID uint64, name s
 		}
 		seen[step] = true
 	}
+	if steps == nil {
+		steps = []string{}
+	}
+	return steps, nil
+}
+
+// SetDramaSteps 设置导入技能适用的短剧环节，不产生新版本，写操作审计。
+// 新增环节要求有就绪的生效版本（否则 61009）；只减不增时不检查，没有生效版本也能关掉。
+func (s *SkillService) SetDramaSteps(ctx context.Context, actorID uint64, name string, steps []string) (*SkillItem, error) {
+	// 1. 验证白名单和重复，空列表表示撤销全部短剧适用范围。
+	steps, err := validDramaSteps(steps)
+	if err != nil {
+		return nil, err
+	}
 	sk, err := s.writable(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	if steps == nil {
-		steps = []string{}
+	if slices.ContainsFunc(steps, func(step string) bool { return !slices.Contains(sk.DramaSteps, step) }) {
+		if err := s.requireActiveVersion(ctx, sk); err != nil {
+			return nil, err
+		}
 	}
 	// 2. 适用环节与启停同级，使用独立字段更新，不影响不可变版本。
 	if err := s.repo.SetDramaSteps(ctx, sk.ID, steps); err != nil {
@@ -59,7 +76,7 @@ func (s *SkillService) SetDramaSteps(ctx context.Context, actorID uint64, name s
 	return s.itemFor(ctx, sk)
 }
 
-// DramaSkills 只列启用、生效版本就绪且管理员标记该环节的导入技能。
+// DramaSkills 只列生效版本就绪且管理员打开了该环节的导入技能；与画布 Agent 开关无关。
 func (s *SkillService) DramaSkills(ctx context.Context, step string) ([]model.DramaSkillView, error) {
 	// 1. 直接查当前状态，停用立即生效，不借用 Agent 目录缓存。
 	if dramaPages(step) == nil {
@@ -76,7 +93,7 @@ func (s *SkillService) DramaSkills(ctx context.Context, step string) ([]model.Dr
 	out := []model.DramaSkillView{}
 	for _, sk := range rows {
 		v, ok := active[sk.ID]
-		if sk.Enabled && sk.ActiveVersion != nil && ok && slices.Contains(sk.DramaSteps, step) {
+		if sk.ActiveVersion != nil && ok && slices.Contains(sk.DramaSteps, step) {
 			out = append(out, model.DramaSkillView{Name: sk.Name, Title: sk.Title, Description: v.Description, HasScripts: v.HasScripts})
 		}
 	}
@@ -85,7 +102,7 @@ func (s *SkillService) DramaSkills(ctx context.Context, step string) ([]model.Dr
 
 // DramaSkill 读取可用技能及其正文引用的文本资源，最多一万六千字，不执行脚本。
 func (s *SkillService) DramaSkill(ctx context.Context, name, step string) (*model.DramaPromptSetting, error) {
-	// 1. 先检查管理员标记和启停；来源不符统一返回 67018。
+	// 1. 先检查管理员是否打开了该环节；来源不符统一返回 67018。
 	sk, err := s.repo.GetSkill(ctx, name)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, errcode.ErrDramaSkillUnavailable
@@ -93,7 +110,7 @@ func (s *SkillService) DramaSkill(ctx context.Context, name, step string) (*mode
 	if err != nil {
 		return nil, err
 	}
-	if !sk.Enabled || sk.ActiveVersion == nil || !slices.Contains(sk.DramaSteps, step) {
+	if sk.ActiveVersion == nil || !slices.Contains(sk.DramaSteps, step) {
 		return nil, errcode.ErrDramaSkillUnavailable
 	}
 	v, err := s.repo.GetVersion(ctx, sk.ID, *sk.ActiveVersion)

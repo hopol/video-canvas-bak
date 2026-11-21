@@ -82,6 +82,7 @@ export function useCanvasShortcuts({
   save,
   group,
   paste,
+  readOnly = false,
 }: {
   undo: () => void;
   redo: () => void;
@@ -93,6 +94,11 @@ export function useCanvasShortcuts({
   group: { group: () => void; ungroup: () => void; rename: () => boolean };
   /** 粘贴来自剪贴板的外部内容（文件或文字）；at 是指针处的画布坐标，指针不在画布上为 null */
   paste: (content: ClipboardContent, at: { x: number; y: number } | null) => void;
+  /**
+   * 只读预览：撤销重做、粘贴、原地复制、打组这些会改画布的快捷键全部不响应，
+   * 缩放、抓手切换、快捷键说明照旧——看的时候还能用。
+   */
+  readOnly?: boolean;
 }) {
   const {
     getNodes,
@@ -142,6 +148,7 @@ export function useCanvasShortcuts({
 
     /** 粘贴：粘回复制的节点，或把剪贴板里的文件、文字交给调用方落成节点；输入框里的粘贴不管 */
     const onPaste = (event: ClipboardEvent) => {
+      if (readOnly) return;
       if (isBusyTarget(event.target) || !event.clipboardData) return;
       const content = readClipboard(event.clipboardData);
       const decision = decidePaste(content, clipboardText, !!clipboard?.nodes.length);
@@ -159,20 +166,17 @@ export function useCanvasShortcuts({
       // 保存在输入框里也要生效，同时挡掉浏览器的「保存网页」
       if (mod && key === "s" && !event.shiftKey && !event.altKey) {
         event.preventDefault();
-        save();
+        if (!readOnly) save();
         return;
       }
       if (isBusyTarget(event.target)) return;
 
-      if (mod && key === "z") {
+      if (mod && (key === "z" || key === "y")) {
+        // 只读时撤销重做也会改画布，连浏览器自己的撤销都不用管
+        if (readOnly) return;
         event.preventDefault();
-        if (event.shiftKey) redo();
+        if (key === "y" || event.shiftKey) redo();
         else undo();
-        return;
-      }
-      if (mod && key === "y") {
-        event.preventDefault();
-        redo();
         return;
       }
       if (mod && key === "c") {
@@ -188,12 +192,14 @@ export function useCanvasShortcuts({
         return;
       }
       if (mod && key === "g") {
+        if (readOnly) return;
         event.preventDefault();
         if (event.shiftKey) group.ungroup();
         else group.group();
         return;
       }
       if (mod && key === "d") {
+        if (readOnly) return;
         event.preventDefault();
         duplicateSelection({ getNodes, getEdges, setNodes, setEdges });
         return;
@@ -224,7 +230,7 @@ export function useCanvasShortcuts({
       }
       if (key === "v") setTool("select");
       if (key === "h") setTool("pan");
-      if ((event.key === "Enter" || event.key === "F2") && group.rename()) {
+      if ((event.key === "Enter" || event.key === "F2") && !readOnly && group.rename()) {
         event.preventDefault();
         return;
       }
@@ -263,6 +269,7 @@ export function useCanvasShortcuts({
     openShortcuts,
     group,
     paste,
+    readOnly,
     redo,
     save,
     screenToFlowPosition,

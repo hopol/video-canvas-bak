@@ -55,7 +55,7 @@ func TestPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []string{"analyze", "outline", "scripts", "breakdown", "asset_prompts"} {
+	for _, step := range []string{"analyze", "plan_format", "breakdown_format", "asset_prompts_format"} {
 		t.Run(step, func(t *testing.T) {
 			prompt, err := Prompt(step, variables)
 			if err != nil {

@@ -21,6 +21,9 @@ import {
   selectByRange,
   editBlockReason,
   tocState,
+  MAX_STORYBOARD_BATCH,
+  storyboardBatchSubmit,
+  storyboardOptions,
 } from "@/utils/drama/episodes";
 
 const ep = (no: number, patch: Partial<EpisodeSummary> = {}): EpisodeSummary => ({
@@ -334,5 +337,100 @@ describe("一次最多 200 集", () => {
     expect(scriptSubmit(over, many)).toMatchObject({ ok: false, label: "一次最多 200 集" });
     expect(scriptSubmit(over.slice(0, 200), many).ok).toBe(true);
     expect(breakdownSubmit(over)).toEqual({ ok: false, label: "一次最多 200 集" });
+  });
+});
+
+describe("批量生成分镜脚本：选集", () => {
+  const sb = (no: number, patch: Partial<EpisodeSummary> = {}) =>
+    ep(no, {
+      locked: true,
+      storyboardStatus: "empty",
+      segmentCount: 0,
+      doneSegmentCount: 0,
+      ...patch,
+    });
+
+  test("已拆解、还没有分镜（或失败）的能选；没拆解、生成中、已有分镜的置灰并写明原因", () => {
+    const options = storyboardOptions(
+      [
+        sb(1),
+        sb(2, { storyboardStatus: "failed" }),
+        sb(3, { locked: false }),
+        sb(4, { storyboardStatus: "generating" }),
+        sb(5, { storyboardStatus: "ready", segmentCount: 3 }),
+        sb(6, { storyboardStatus: "failed", segmentCount: 2, doneSegmentCount: 1 }),
+        sb(7, { title: "" }),
+      ],
+      [],
+    );
+    expect(options.map((o) => [o.no, o.reason])).toEqual([
+      [1, null],
+      [2, null],
+      [3, "还没拆解"],
+      [4, "生成中"],
+      [5, "已有分镜"],
+      [6, "已有视频"],
+    ]);
+    expect(options.filter((o) => !o.disabled).map((o) => o.no)).toEqual([1, 2]);
+  });
+
+  test("同一集有进行中的分镜或合成任务时不能选，其他集不受影响", () => {
+    const options = storyboardOptions(
+      [sb(1), sb(2)],
+      [job({ step: "compose", episodes: [2], status: "running" })],
+    );
+    expect(options.map((o) => o.disabled)).toEqual([false, true]);
+    expect(options[1].reason).toBe("有进行中的任务：合成整集 · 第 2 集");
+  });
+
+  test("提交按钮：至少一集，写明集数，超过上限不能提交", () => {
+    expect(storyboardBatchSubmit([])).toEqual({ ok: false, label: "至少选一集" });
+    expect(storyboardBatchSubmit([1, 2, 3])).toEqual({ ok: true, label: "生成 3 集脚本" });
+    const over = Array.from({ length: MAX_STORYBOARD_BATCH + 1 }, (_, i) => i + 1);
+    expect(storyboardBatchSubmit(over)).toEqual({
+      ok: false,
+      label: `一次最多 ${MAX_STORYBOARD_BATCH} 集`,
+    });
+  });
+});
+
+describe("正在拆解 / 生成剧本的集不能再选，免得重复提交", () => {
+  const running = (step: DramaJob["step"], episodes: number[]) =>
+    job({ id: `${step}-${episodes.join("-")}`, step, episodes, status: "running" });
+
+  test("资产拆解：正在拆解的集置灰写「拆解中」，默认选择跳过它们", () => {
+    const eps = [ep(1), ep(2), ep(3)];
+    const jobs = [running("breakdown", [1, 2])];
+    const options = breakdownOptions(eps, jobs);
+    expect(options.map((o) => [o.no, o.reason])).toEqual([
+      [1, "拆解中"],
+      [2, "拆解中"],
+      [3, null],
+    ]);
+    expect(defaultBreakdownSelection(eps, jobs)).toEqual([3]);
+  });
+
+  test("排队中的也算；已结束的任务不算", () => {
+    const eps = [ep(1), ep(2)];
+    const jobs = [
+      job({ id: "q", step: "breakdown", episodes: [1], status: "queued" }),
+      job({ id: "d", step: "breakdown", episodes: [2], status: "failed" }),
+    ];
+    expect(breakdownOptions(eps, jobs).map((o) => o.reason)).toEqual(["拆解中", null]);
+  });
+
+  test("写剧本：正在拆解的写「拆解中」，正在写剧本的写「生成中」，默认选择跳过", () => {
+    const eps = [
+      ep(1, { scriptStatus: "empty" }),
+      ep(2, { scriptStatus: "empty" }),
+      ep(3, { scriptStatus: "empty" }),
+    ];
+    const jobs = [running("breakdown", [1]), running("scripts", [2])];
+    expect(scriptOptions(eps, jobs).map((o) => [o.no, o.reason])).toEqual([
+      [1, "拆解中"],
+      [2, "生成中"],
+      [3, null],
+    ]);
+    expect(defaultScriptSelection(eps, jobs)).toEqual([3]);
   });
 });

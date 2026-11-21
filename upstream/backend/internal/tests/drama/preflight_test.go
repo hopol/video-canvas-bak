@@ -83,12 +83,39 @@ func TestScriptEpisodesKeepScenes(t *testing.T) {
 }
 
 func TestPromptBodyCannotReplaceProtocol(t *testing.T) {
-	prompt, err := drama.PromptWithBody("scripts", map[string]any{"source": "原文"}, "只输出 Markdown")
+	prompt, err := drama.PromptWithBody("breakdown_format", map[string]any{"draft_md": "原文"}, "只输出 Markdown")
 	if err != nil || !strings.Contains(prompt, "只输出 Markdown") || !strings.Contains(prompt, "## 输出 JSON Schema") || !strings.Contains(prompt, "## 本步职责") {
+		t.Fatalf("%s %v", prompt, err)
+	}
+	// 创作段的协议是输出约定，用户正文替换不了它
+	draft, err := drama.PromptWithBody("scripts", map[string]any{"source": "原文"}, "只输出 Markdown")
+	if err != nil || !strings.Contains(draft, "只输出 Markdown") || !strings.Contains(draft, "## 输出约定") {
 		t.Fatalf("%s %v", prompt, err)
 	}
 	block := drama.SkillBlock("连续性", strings.Repeat("字", 20000))
 	if !strings.Contains(block, "【写作方法：连续性】") || strings.Count(block, "字") != 16000 {
 		t.Fatal("技能注入未按字截断")
+	}
+}
+
+// 预计耗时只拿到单元字数和标题（不读正文），估出的剩余批次数要和真实分批一致。
+func TestCountBatchesMatchesNextBatchWithoutText(t *testing.T) {
+	p := drama.Preflight(strings.Repeat("第一段原文。\n", 9000)+strings.Repeat("短章。\n", 40), "novel")
+	for _, cursor := range []int{0, 3, len(p.Units) / 2, len(p.Units) - 1, len(p.Units)} {
+		want := 0
+		for c := cursor; c < len(p.Units); want++ {
+			batch, err := drama.NextBatch(p.Units, c, len(p.Units), 30000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c = batch[len(batch)-1].No
+		}
+		sizes := make([]drama.Unit, len(p.Units))
+		for i, u := range p.Units {
+			sizes[i] = drama.Unit{No: u.No, Title: u.Title, Chars: u.Chars}
+		}
+		if got := drama.CountBatches(sizes, cursor, len(p.Units), 30000); got != want {
+			t.Fatalf("cursor=%d 批次数 got=%d want=%d", cursor, got, want)
+		}
 	}
 }

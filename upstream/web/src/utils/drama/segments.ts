@@ -83,6 +83,17 @@ export function chooseCheck(segment: Segment, taskId: string): "ok" | "already" 
 export const batchTargets = (list: readonly Segment[]): Segment[] =>
   list.filter((item) => !hasVideo(item) && !isRunning(item) && item.prompt.trim() !== "");
 
+/**
+ * 批量生成：对每个片段各走一遍「立即生成」，全部同时开始（并发由后台统一限制）；
+ * 某个片段出错不影响其他片段，等全部结束才返回
+ */
+export async function runBatch(
+  targets: readonly Segment[],
+  generate: (segment: Segment) => Promise<void>,
+): Promise<void> {
+  await Promise.allSettled(targets.map((item) => generate(item)));
+}
+
 /** 失败时的说明：最近一条失败 take 的原因；不是 error 状态为 null */
 export function latestError(segment: Segment): string | null {
   if (segment.status !== "error") return null;

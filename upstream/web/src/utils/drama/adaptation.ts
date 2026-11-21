@@ -111,9 +111,29 @@ export function adaptState(segment: Segment, format: AdaptFormat, promptHash: st
   return adaptation.sourceHash === promptHash ? "fresh" : "stale";
 }
 
-/** 这个格式下要提交的文字：Seedance 交原稿，其他交转写稿（没有为空串） */
-export function submitText(segment: Segment, format: TargetFormat): string {
-  if (format === "seedance") return segment.prompt;
+/** 提示词面板上选的标签：原稿 / 转写 */
+export type PromptView = "source" | "adapted";
+
+/**
+ * 此刻用哪份文字生成：视频模型本身吃 Seedance 原稿时只有原稿；否则**选了哪个标签就用哪份**——
+ * 选「原稿」用原稿（不转写也能生成），选「转写」用转写稿。还没手动选过时同面板的默认：有转写稿看转写，没有看原稿。
+ * @param format 视频模型要的提示词格式
+ * @param picked 提示词面板上手动选的标签；没选过为 null
+ * @param segment 片段
+ */
+export function effectiveView(
+  format: TargetFormat,
+  picked: PromptView | null,
+  segment: Segment,
+): PromptView {
+  if (format === "seedance") return "source";
+  if (picked) return picked;
+  return segment.adaptations[format] ? "adapted" : "source";
+}
+
+/** 按此刻用的那份文字取内容：用原稿交原稿，用转写交转写稿（没有为空串）；视频模型是 Seedance 时永远交原稿 */
+export function submitTextFor(segment: Segment, format: TargetFormat, view: PromptView): string {
+  if (format === "seedance" || view === "source") return segment.prompt;
   return segment.adaptations[format]?.prompt ?? "";
 }
 
@@ -145,6 +165,44 @@ export function splitBatch(
     }
   }
   return split;
+}
+
+/** 批量前转写选择的去向：转写后生成 / 没转写好的交原稿 / 只生成已转写的 */
+export type BatchPick = "adapt" | "source" | "ready";
+
+/** 批量前转写选择弹窗要显示的内容 */
+export type BatchChoiceView = {
+  title: string;
+  /** 只列不为零的项 */
+  stats: { label: string; value: number }[];
+  /** 有手改过的过期稿时提醒会被覆盖 */
+  note?: string;
+  /** 推荐的排第一；count 是选它会生成几个片段 */
+  options: { value: BatchPick; label: string; count: number; primary?: boolean }[];
+};
+
+/** 按拆分结果组织批量前的转写选择：一个都没转写好时不给「只生成已转写的」 */
+export function batchChoice(split: BatchSplit, format: TargetFormat): BatchChoiceView {
+  const pending = split.none.length + split.stale.length;
+  const all = split.ready.length + pending;
+  const stats = [
+    { label: "已就绪", value: split.ready.length },
+    { label: "未转写", value: split.none.length },
+    { label: "已过期", value: split.stale.length },
+  ].filter((item) => item.value > 0);
+  const options: BatchChoiceView["options"] = [
+    { value: "adapt", label: "转写后生成", count: all, primary: true },
+    { value: "source", label: "原稿生成", count: all },
+  ];
+  if (split.ready.length > 0) {
+    options.push({ value: "ready", label: "只生成已转写的", count: split.ready.length });
+  }
+  return {
+    title: `${pending} 个片段还没转写为 ${formatLabel(format)}`,
+    stats,
+    note: split.edited > 0 ? `${split.edited} 个转写稿被手改过，重新转写会覆盖` : undefined,
+    options,
+  };
 }
 
 /** 片段号：「01、03」 */

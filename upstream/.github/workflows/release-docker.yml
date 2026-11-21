@@ -136,6 +136,8 @@ jobs:
     name: Build and publish images
     needs: quality
     runs-on: ubuntu-latest
+    # 正常约 10 分钟；模拟器卡死时不用等默认的 360 分钟
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -197,6 +199,9 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
+          # 固定 binfmt 版本：默认的 latest 在模拟 arm64 跑 node 时会 "Illegal instruction" 崩溃，
+          # 崩溃后构建不报错而是一直挂住（v0.7.1 发布时 agent 镜像的 npm ci 就这样卡了 20 分钟以上）
+          image: tonistiigi/binfmt:qemu-v8.1.5
           platforms: arm64
 
       - name: Set up Buildx

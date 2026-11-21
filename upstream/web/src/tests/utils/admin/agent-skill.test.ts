@@ -19,10 +19,14 @@ import {
   issueLevelByPath,
   locateLine,
   planSummary,
-  replaceSkillRow,
   sortIssues,
+  scopeBlockReason,
+  scopeOn,
+  scopeTags,
+  SKILL_SCOPES,
+  withScope,
   stripFrontmatter,
-  toggleBlockReason,
+  formatRelative,
   versionBadge,
   versionState,
   visibleTreeRows,
@@ -59,6 +63,7 @@ const item = (extra: Partial<SkillItem>): SkillItem => ({
   has_scripts: false,
   unsupported_fields: [],
   drama_steps: [],
+  in_use: false,
   updated_at: "2026-01-01T00:00:00Z",
   ...extra,
 });
@@ -213,7 +218,7 @@ describe("导入预检的文案", () => {
 
   test("将要发生什么：新技能、同名新版本、被拦住", () => {
     expect(planSummary(view({ plan: { action: "create", version: 1, enabled: false } }))).toBe(
-      "将创建技能 demo，v1，默认停用",
+      "将创建技能 demo，v1",
     );
     expect(
       planSummary(
@@ -233,23 +238,6 @@ describe("导入预检的文案", () => {
 });
 
 describe("列表", () => {
-  const list = [
-    item({ name: "a", title: "对白润色", enabled: true, description: "改对白" }),
-    item({ name: "b", title: "九宫格", enabled: false, description: "拆镜头" }),
-    item({ name: "c", title: "剧本拆镜", source: "builtin", readonly: true, enabled: true }),
-  ];
-
-  test("原地替换当页里同名的一行，其它行不动", () => {
-    const next = replaceSkillRow(list, item({ name: "b", title: "九宫格", enabled: true }));
-    expect(next.map((i) => i.enabled)).toEqual([true, true, true]);
-    expect(next[0]).toBe(list[0]);
-    expect(next[2]).toBe(list[2]);
-  });
-
-  test("当页没有这一行（翻到别页、被筛掉）时列表原样返回", () => {
-    expect(replaceSkillRow(list, item({ name: "zzz" }))).toBe(list);
-  });
-
   test("版本标记：内置显示 —，待生效带最新版本号", () => {
     expect(versionBadge(item({ source: "builtin", active_version: null }))).toEqual({
       active: "—",
@@ -267,19 +255,76 @@ describe("列表", () => {
     });
   });
 
-  test("开关被禁用的原因：内置不能改；没有生效版本不能启用", () => {
-    expect(toggleBlockReason(item({ readonly: true, source: "builtin" }))).toBe(
-      "内置技能随版本发布，不能停用",
-    );
-    expect(toggleBlockReason(item({ active_version: null }))).toBe("没有生效版本，无法启用");
-    expect(toggleBlockReason(item({}))).toBeNull();
-    expect(toggleBlockReason(item({ active_version: null, enabled: true }))).toBeNull();
+  test("删除被禁用的原因：内置、还有场景开着", () => {
+    expect(deleteBlockReason(item({ readonly: true }))).toBe("内置技能不能删除");
+    expect(deleteBlockReason(item({ enabled: true }))).toBe("请先关闭所有使用场景");
+    expect(deleteBlockReason(item({ drama_steps: ["video"] }))).toBe("请先关闭所有使用场景");
+    expect(deleteBlockReason(item({}))).toBeNull();
+  });
+});
+
+describe("使用场景", () => {
+  test("六个场景按固定顺序：画布 Agent 在前，短剧五环节随后", () => {
+    expect(SKILL_SCOPES.map((s) => s.key)).toEqual([
+      "agent",
+      "plan",
+      "scripts",
+      "assets",
+      "asset_prompts",
+      "video",
+    ]);
+    expect(SKILL_SCOPES.map((s) => s.short)).toEqual([
+      "画布 Agent",
+      "规划",
+      "剧本",
+      "拆解",
+      "资产图",
+      "视频",
+    ]);
+    expect(SKILL_SCOPES.map((s) => s.group)).toEqual([
+      "canvas",
+      "drama",
+      "drama",
+      "drama",
+      "drama",
+      "drama",
+    ]);
   });
 
-  test("删除被禁用的原因：内置、启用中", () => {
-    expect(deleteBlockReason(item({ readonly: true }))).toBe("内置技能不能删除");
-    expect(deleteBlockReason(item({ enabled: true }))).toBe("请先停用再删除");
-    expect(deleteBlockReason(item({}))).toBeNull();
+  test("画布 Agent 看 enabled，短剧环节看 drama_steps", () => {
+    const it = item({ enabled: true, drama_steps: ["video"] });
+    expect(scopeOn(it, "agent")).toBe(true);
+    expect(scopeOn(it, "video")).toBe(true);
+    expect(scopeOn(it, "plan")).toBe(false);
+  });
+
+  test("列表标签：只列开着的场景，顺序固定，与后端返回顺序无关", () => {
+    const it = item({ enabled: true, drama_steps: ["video", "scripts", "plan"] });
+    expect(scopeTags(it).map((s) => s.key)).toEqual(["agent", "plan", "scripts", "video"]);
+    expect(scopeTags(item({}))).toEqual([]);
+  });
+
+  test("改一个场景得到新视图：短剧环节保持固定顺序，in_use 跟着变，原对象不动", () => {
+    const base = item({ drama_steps: ["video"] });
+    const next = withScope(base, "plan", true);
+    expect(next.drama_steps).toEqual(["plan", "video"]);
+    expect(next.in_use).toBe(true);
+    expect(base.drama_steps).toEqual(["video"]);
+    const off = withScope(withScope(next, "plan", false), "video", false);
+    expect(off.drama_steps).toEqual([]);
+    expect(off.in_use).toBe(false);
+    expect(withScope(base, "agent", true)).toMatchObject({ enabled: true, in_use: true });
+  });
+
+  test("开关被禁用的原因：内置只读；没有生效版本不能打开，但可以关", () => {
+    const builtin = item({ readonly: true, source: "builtin", enabled: true });
+    expect(scopeBlockReason(builtin, "agent")).toBe("内置技能随版本发布，不能修改");
+    expect(scopeBlockReason(builtin, "video")).toBe("内置技能随版本发布，不能修改");
+    const draft = item({ active_version: null, drama_steps: ["video"] });
+    expect(scopeBlockReason(draft, "plan")).toBe("没有生效版本，无法启用");
+    expect(scopeBlockReason(draft, "agent")).toBe("没有生效版本，无法启用");
+    expect(scopeBlockReason(draft, "video")).toBeNull();
+    expect(scopeBlockReason(item({}), "agent")).toBeNull();
   });
 });
 
@@ -298,11 +343,13 @@ describe("stripFrontmatter", () => {
 });
 
 describe("importedMessage", () => {
-  test("新技能默认停用；新版本说明生效版本不变", () => {
-    expect(importedMessage(view({}))).toBe("已导入「demo」v1，默认停用");
+  test("新技能写明用在几处；新版本说明生效版本不变", () => {
+    expect(importedMessage(view({}), 0)).toBe("已导入「demo」，暂未使用");
+    expect(importedMessage(view({}), 2)).toBe("已导入「demo」，用在 2 处");
     expect(
       importedMessage(
         view({ plan: { action: "new_version", version: 3, active_version: 2, enabled: true } }),
+        0,
       ),
     ).toBe("已为「demo」新增 v3，生效版本不变，需要在详情里手动切换");
   });
@@ -319,5 +366,19 @@ describe("formatDateTime / versionState", () => {
     expect(versionState(3, 2)).toBe("pending");
     expect(versionState(1, 2)).toBe("history");
     expect(versionState(1, null)).toBe("history");
+  });
+});
+
+describe("formatRelative", () => {
+  const now = new Date("2026-11-17T12:00:00");
+  test("一分钟内刚刚；一小时内按分钟；一天内按小时；一周内按天；更早给日期", () => {
+    expect(formatRelative("2026-11-17T11:59:40", now)).toBe("刚刚");
+    expect(formatRelative("2026-11-17T11:15:00", now)).toBe("45 分钟前");
+    expect(formatRelative("2026-11-17T03:00:00", now)).toBe("9 小时前");
+    expect(formatRelative("2026-11-14T12:00:00", now)).toBe("3 天前");
+    expect(formatRelative("2026-10-07T19:48:00", now)).toBe("2026-10-07");
+  });
+  test("解析不了原样返回", () => {
+    expect(formatRelative("不是时间", now)).toBe("不是时间");
   });
 });

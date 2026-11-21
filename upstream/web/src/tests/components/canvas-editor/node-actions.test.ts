@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   hasNodeActions,
   registerNodeActions,
+  setModelById,
   submitNodeById,
   submitNodeWhenReady,
   submitWithVoiceById,
@@ -196,5 +197,25 @@ describe("等节点就绪再提交 submitNodeWhenReady", () => {
     expect(await submitNodeWhenReady("n-never", { timeoutMs: 80, intervalMs: 10 })).toBe(
       "节点还没准备好",
     );
+  });
+});
+
+describe("按节点 ID 换模型 setModelById", () => {
+  test("节点提供换模型：交给节点去换，返回 true", () => {
+    const picked: string[] = [];
+    const off = registerNodeActions("n-model", () => ({
+      ...actions(null),
+      setModel: (key) => picked.push(key),
+    }));
+    expect(setModelById("n-model", "m2")).toBe(true);
+    expect(picked).toEqual(["m2"]);
+    off();
+  });
+
+  test("没登记或节点不提供换模型：返回 false", () => {
+    expect(setModelById("never-registered", "m2")).toBe(false);
+    const off = registerNodeActions("n-no-model", () => actions(null));
+    expect(setModelById("n-no-model", "m2")).toBe(false);
+    off();
   });
 });

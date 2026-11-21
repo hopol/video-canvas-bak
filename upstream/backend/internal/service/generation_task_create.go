@@ -335,7 +335,7 @@ func (s *GenerationTaskService) insertAndFreeze(ctx context.Context, task *model
 	}
 	var existing *model.GenerationTask
 	err = s.repo.WithTx(ctx, func(tx repository.GenerationTaskTx) error {
-		// 0. 片段媒体先锁短剧项目，再锁账户；与短剧任务采用同一顺序，防止同集并发与死锁。
+		// 0. 片段媒体先锁短剧项目，再锁账户；与短剧任务采用同一顺序，防止片段与同集分镜、合成并发穿透以及死锁。
 		if strings.HasPrefix(task.NodeID, "seg:") {
 			if existing, err = s.findIdempotent(ctx, tx, userID, key); err != nil || existing != nil {
 				return err

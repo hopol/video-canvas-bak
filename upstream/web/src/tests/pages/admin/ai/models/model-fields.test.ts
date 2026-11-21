@@ -12,6 +12,13 @@ describe("fieldOfPath：校验问题定位到字段", () => {
     });
   });
 
+  test("路径前缀校验定位到基本信息的路径前缀输入框", () => {
+    expect(fieldOfPath("channels[0].path_prefix")).toEqual({
+      tab: "basic",
+      id: "model-path-prefix",
+    });
+  });
+
   test("协议问题定位到“能力与协议”区块，渠道问题仍定位到所属渠道", () => {
     expect(fieldOfPath("channels[0].protocol")).toEqual({ tab: "basic", id: "model-protocol" });
     expect(fieldOfPath("channels[0].protocol.settings.region")).toEqual({

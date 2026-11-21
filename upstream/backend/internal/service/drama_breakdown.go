@@ -30,9 +30,10 @@ func (s *DramaService) breakdownBatches(ctx context.Context, run *dramaRun, vars
 		units = append(units, drama.Unit{No: ep.No, Text: ep.ScriptMD, Chars: utf8.RuneCountInString(ep.ScriptMD)})
 		byNo[ep.No] = ep
 	}
-	batches := drama.ScriptBatches(units)
+	batches := drama.ScriptBatches(units, dramaBatchBudget(&run.snapshot))
 	cp := readDramaCheckpoint(run.job.Output)
 	models := dramaImageModels(run.project).ByType()
+	params := dramaImageParams(run.project).ByType()
 	var mu sync.Mutex // 保护 finished 与 run.job.Progress
 	finished := 0
 	g, gctx := errgroup.WithContext(ctx)
@@ -51,28 +52,55 @@ func (s *DramaService) breakdownBatches(ctx context.Context, run *dramaRun, vars
 			continue
 		}
 		g.Go(func() error {
-			v := maps.Clone(vars)
-			v["episodes"] = dramaScriptInputs(eps)
-			out, cost, err := s.callDrama(gctx, run.job, &run.snapshot, "breakdown", "batch="+episodeRange(scope), v, func(x any) error { return validateBreakdownScope(x.(drama.BreakdownOutput), scope) })
-			if err != nil {
-				return err
-			}
-			created, err := s.canvas.ApplyBreakdown(gctx, run.job.UserID, run.job.DramaID, run.project.CanvasID, run.job.ID,
-				DramaBreakdownBatch{Episodes: scope, Assets: out.(drama.BreakdownOutput).Assets, Cost: cost, Models: models})
-			if err != nil {
+			if err := s.breakdownScope(gctx, run, vars, eps, cp.Done, models, params); err != nil {
 				return err
 			}
 			mu.Lock()
 			finished++
-			err = s.dramaProgress(gctx, run.job, finished*90/len(batches))
+			err := s.dramaProgress(gctx, run.job, finished*90/len(batches))
 			mu.Unlock()
-			if err != nil {
-				return err
-			}
-			return s.promptsDuringBreakdown(gctx, run, vars, created)
+			return err
 		})
 	}
 	return g.Wait()
+}
+
+// breakdownScope 拆解一组集：资产写入画布后接着写这组新资产的提示词。输出超过最大输出被截断时对半拆开重跑，
+// 单集还被截断就失败；重跑时已写入画布的子组（检查点 Done）直接跳过。
+func (s *DramaService) breakdownScope(ctx context.Context, run *dramaRun, vars map[string]any, eps []model.DramaEpisode, done []int,
+	models map[string]string, params map[string]map[string]string) error {
+	scope := dramaEpisodeNumbers(eps)
+	if containsAll(done, scope) {
+		return nil
+	}
+	v := maps.Clone(vars)
+	v["episodes"] = dramaScriptInputs(eps)
+	// 创作段写资产设定稿，格式段整理成标准资产清单；集号范围只在格式段校验
+	call := "batch=" + episodeRange(scope)
+	draft, draftCost, err := s.callDrama(ctx, run.job, &run.snapshot, "breakdown", call, v, nil)
+	var out any
+	if err == nil {
+		var formatCost int
+		out, formatCost, err = s.callDrama(ctx, run.job, &run.snapshot, "breakdown_format", call, map[string]any{"draft_md": draft, "episode_numbers": scope}, func(x any) error { return validateBreakdownScope(x.(drama.BreakdownOutput), scope) })
+		draftCost += formatCost
+	}
+	if outputTruncated(err) && len(eps) > 1 {
+		// 被截断的那次调用没有结果，不扣费；两半各自写画布、各自扣费
+		half := len(eps) / 2
+		if err = s.breakdownScope(ctx, run, vars, eps[:half], done, models, params); err != nil {
+			return err
+		}
+		return s.breakdownScope(ctx, run, vars, eps[half:], done, models, params)
+	}
+	if err != nil {
+		return err
+	}
+	created, err := s.canvas.ApplyBreakdown(ctx, run.job.UserID, run.job.DramaID, run.project.CanvasID, run.job.ID,
+		DramaBreakdownBatch{Episodes: scope, Assets: out.(drama.BreakdownOutput).Assets, Cost: draftCost, Models: models, Params: params})
+	if err != nil {
+		return err
+	}
+	return s.promptsDuringBreakdown(ctx, run, vars, created)
 }
 
 // promptsDuringBreakdown 在拆解中为一批新资产写提示词。写不成（输出不合格、上游出错等）不影响拆解：
@@ -105,7 +133,22 @@ func (s *DramaService) promptAssets(ctx context.Context, run *dramaRun, vars map
 	}
 	v := maps.Clone(vars)
 	v["assets"] = assets
-	out, cost, err := s.callDrama(ctx, run.job, &run.snapshot, "asset_prompts", "", v, func(x any) error { return validatePromptCoverage(x.(drama.AssetPromptsOutput), assets) })
+	// 创作段写画面描述，格式段按节点编号整理成提示词条目；安全过滤可能发生在任一段
+	draft, cost, err := s.callDrama(ctx, run.job, &run.snapshot, "asset_prompts", "", v, nil)
+	var out any
+	if err == nil {
+		var formatCost int
+		out, formatCost, err = s.callDrama(ctx, run.job, &run.snapshot, "asset_prompts_format", "", map[string]any{"draft_md": draft, "assets": assets}, func(x any) error { return validatePromptCoverage(x.(drama.AssetPromptsOutput), assets) })
+		cost += formatCost
+	}
+	// 整组被截断：对半拆开分别写；单个资产还被截断就交给调用方失败
+	if outputTruncated(err) && len(assets) > 1 {
+		half := len(assets) / 2
+		if err = s.promptAssets(ctx, run, vars, assets[:half]); err != nil {
+			return err
+		}
+		return s.promptAssets(ctx, run, vars, assets[half:])
+	}
 	if contentFiltered(err) {
 		if len(assets) == 1 {
 			return s.canvas.ApplyPrompts(ctx, run.job.UserID, run.project.CanvasID, run.job.ID, run.job.Step, nil, assets, 0)

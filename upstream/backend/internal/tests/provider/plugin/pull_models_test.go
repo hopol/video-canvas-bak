@@ -66,6 +66,34 @@ func TestListUpstreamModels_baseURL已带v1不重复拼接(t *testing.T) {
 	}
 }
 
+// base_url 末段已是版本号（/v4、/api/v3、/v1beta）时只补 /models，不再多拼一层 /v1。
+func TestListUpstreamModels_baseURL末段是版本号只补models(t *testing.T) {
+	for _, tc := range []struct{ name, base, want string }{
+		{"不带版本段补 /v1/models", "", "/v1/models"},
+		{"带路径但不是版本段", "/api/paas", "/api/paas/v1/models"},
+		{"/v4", "/v4", "/v4/models"},
+		{"多段 + /v3", "/api/v3", "/api/v3/models"},
+		{"/v1beta", "/v1beta", "/v1beta/models"},
+		{"带末尾斜杠", "/v4/", "/v4/models"},
+		{"v 开头的普通词不算版本段", "/video", "/video/v1/models"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				_, _ = w.Write([]byte(`{"data":[]}`))
+			}))
+			defer srv.Close()
+			if _, err := pullExecutor(func() bool { return true }).ListUpstreamModels(context.Background(), provider.ChannelSnapshot{Key: "c1", BaseURL: srv.URL + tc.base}, "k"); err != nil {
+				t.Fatal(err)
+			}
+			if gotPath != tc.want {
+				t.Fatalf("路径 = %q，期望 %q", gotPath, tc.want)
+			}
+		})
+	}
+}
+
 func TestListUpstreamModels_失败分类(t *testing.T) {
 	cases := []struct {
 		name   string

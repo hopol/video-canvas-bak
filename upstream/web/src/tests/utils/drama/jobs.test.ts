@@ -4,8 +4,11 @@ import type { DramaJob } from "@/api/drama/type";
 import {
   activeStoryboardJob,
   busyReason,
-  bannerJobs,
-  coveredInPlace,
+  episodesLabel,
+  failedJobs,
+  runningByEpisode,
+  taskGroups,
+  taskSummary,
   jobRunningText,
   jobStage,
   isActiveJob,
@@ -13,7 +16,8 @@ import {
   jobConflictReason,
   userJobs,
   planningRow,
-  planningEtaMinutes,
+  pipelineEta,
+  etaLabel,
   jobTitle,
   mergeJob,
   pruneFinished,
@@ -32,6 +36,7 @@ const job = (patch: Partial<DramaJob> = {}): DramaJob => ({
   errorCode: 0,
   errorMessage: "",
   createdAt: "2026-10-28T10:00:00Z",
+  startedAt: null,
   finishedAt: null,
   lane: "user",
   batchFrom: null,
@@ -176,33 +181,8 @@ describe("展示与禁用原因", () => {
   });
 });
 
-describe("页面里就地显示进度的任务，顶部进度条不再重复", () => {
-  const view = { analyzingView: false, storyboardEp: null };
-
-  test("正在看第 1 集片场：这一集的分镜任务也进顶部，和看别的集时一致", () => {
-    const sb = job({ step: "storyboard", episodes: [1] });
-    expect(coveredInPlace(sb, { ...view, storyboardEp: 1 })).toBe(false);
-  });
-
-  test("看的是别的集或不在片场：照常进顶部", () => {
-    const sb = job({ step: "storyboard", episodes: [1] });
-    expect(coveredInPlace(sb, { ...view, storyboardEp: 2 })).toBe(false);
-    expect(coveredInPlace(sb, view)).toBe(false);
-  });
-
-  test("分镜失败了不算就地显示：顶部照样给出原因和重试", () => {
-    const failed = job({ step: "storyboard", episodes: [1], status: "failed" });
-    expect(coveredInPlace(failed, { ...view, storyboardEp: 1 })).toBe(false);
-  });
-
-  test("研读视图开着时，研读和大纲任务不进顶部；其他任务照常", () => {
-    const on = { ...view, analyzingView: true };
-    expect(coveredInPlace(job({ step: "analyze", episodes: [] }), on)).toBe(true);
-    expect(coveredInPlace(job({ step: "outline", episodes: [] }), on)).toBe(true);
-    expect(coveredInPlace(job({ step: "breakdown" }), on)).toBe(false);
-  });
-
-  test("activeStoryboardJob：找出正在给这一集生成分镜的任务", () => {
+describe("activeStoryboardJob", () => {
+  test("找出正在给这一集生成分镜的任务", () => {
     const sb = job({ id: "s", step: "storyboard", episodes: [2] });
     const jobs = [job({ id: "b" }), sb, job({ id: "d", step: "storyboard", status: "succeeded" })];
     expect(activeStoryboardJob(jobs, 2)?.id).toBe("s");
@@ -210,28 +190,139 @@ describe("页面里就地显示进度的任务，顶部进度条不再重复", (
   });
 });
 
-describe("页内进度条 bannerJobs", () => {
-  test("进行中的都显示", () => {
-    const jobs = [job({ id: "a", status: "running" }), job({ id: "b", status: "queued" })];
-    expect(bannerJobs(jobs).map((j) => j.id)).toEqual(["a", "b"]);
+describe("任务面板：失败的任务", () => {
+  test("每条失败都列出（批量分镜可能几集同时失败），自动规划的不算", () => {
+    const jobs = [
+      job({ id: "a", step: "storyboard", episodes: [2], status: "failed" }),
+      job({ id: "b", step: "storyboard", episodes: [3], status: "failed" }),
+      job({ id: "p", step: "plan", lane: "pipeline", episodes: [], status: "failed" }),
+      job({ id: "c", status: "canceled" }),
+    ];
+    expect(failedJobs(jobs).map((j) => j.id)).toEqual(["a", "b"]);
   });
 
-  test("最新一条失败了才显示它；已有更新的成功任务就不显示旧失败", () => {
-    const failedNewest = [
-      job({ id: "n", status: "failed", createdAt: "2026-10-28T11:00:00Z" }),
-      job({ id: "o", status: "succeeded", createdAt: "2026-10-28T10:00:00Z" }),
+  test("同一步骤、同一集后来又提交过（重试成功或正在跑）的旧失败不再显示；别的集不受影响", () => {
+    const jobs = [
+      job({
+        id: "new",
+        step: "storyboard",
+        episodes: [2],
+        status: "succeeded",
+        createdAt: "2026-10-28T11:00:00Z",
+      }),
+      job({
+        id: "old",
+        step: "storyboard",
+        episodes: [2],
+        status: "failed",
+        createdAt: "2026-10-28T10:00:00Z",
+      }),
+      job({
+        id: "other",
+        step: "storyboard",
+        episodes: [3],
+        status: "failed",
+        createdAt: "2026-10-28T10:00:00Z",
+      }),
     ];
-    expect(bannerJobs(failedNewest).map((j) => j.id)).toEqual(["n"]);
-    const succeededNewest = [
-      job({ id: "n", status: "succeeded", createdAt: "2026-10-28T11:00:00Z" }),
-      job({ id: "o", status: "failed", createdAt: "2026-10-28T10:00:00Z" }),
-    ];
-    expect(bannerJobs(succeededNewest)).toEqual([]);
+    expect(failedJobs(jobs).map((j) => j.id)).toEqual(["other"]);
+  });
+});
+
+describe("任务面板：按步骤分组", () => {
+  test("进行中的按步骤合成一组，组内按集号排；组的顺序按最早出现", () => {
+    const groups = taskGroups([
+      job({ id: "s5", step: "storyboard", episodes: [5], progress: 0, status: "queued" }),
+      job({ id: "s2", step: "storyboard", episodes: [2], progress: 40 }),
+      job({ id: "sc", step: "scripts", episodes: [7, 8], progress: 10 }),
+      job({ id: "f", step: "storyboard", episodes: [3], status: "failed" }),
+    ]);
+    expect(groups.map((g) => [g.step, g.jobs.map((j) => j.id), g.progress])).toEqual([
+      ["storyboard", ["s2", "s5"], 20],
+      ["scripts", ["sc"], 10],
+    ]);
+    expect(groups[0].episodes).toEqual([2, 5]);
+  });
+});
+
+describe("分集栏：每集正在跑的任务", () => {
+  test("排队或进行中的用户任务按集号索引；结束的、自动规划的不算", () => {
+    const map = runningByEpisode([
+      job({ id: "a", step: "storyboard", episodes: [2] }),
+      job({ id: "b", step: "scripts", episodes: [3, 4], status: "queued" }),
+      job({ id: "c", step: "storyboard", episodes: [5], status: "succeeded" }),
+      job({ id: "p", step: "plan", lane: "pipeline", episodes: [6] }),
+    ]);
+    expect([...map].map(([no, j]) => [no, j.id])).toEqual([
+      [2, "a"],
+      [3, "b"],
+      [4, "b"],
+    ]);
+  });
+});
+
+describe("集号范围的写法", () => {
+  test("一集、连续、不连续（超过 4 个写「等」）", () => {
+    expect(episodesLabel([3])).toBe("第 3 集");
+    expect(episodesLabel([4, 2, 3, 5])).toBe("第 2–5 集");
+    expect(episodesLabel([1, 3, 7])).toBe("第 1、3、7 集");
+    expect(episodesLabel([1, 3, 5, 7, 9])).toBe("第 1、3、5、7 等 5 集");
+  });
+});
+
+describe("任务胶囊的摘要", () => {
+  const plan = {
+    kind: "running",
+    title: "正在规划第 301–312 章",
+    detail: "",
+    progress: 60,
+  } as const;
+
+  test("没有进行中、没有失败、规划没暂停：不显示", () => {
+    expect(taskSummary([job({ status: "succeeded" })], null)).toBeNull();
   });
 
-  test("没有任务或只有成功、取消时为空", () => {
-    expect(bannerJobs([])).toEqual([]);
-    expect(bannerJobs([job({ status: "canceled" })])).toEqual([]);
+  test("只有一个任务：写任务名和集号，进度就是它的", () => {
+    expect(taskSummary([job({ step: "storyboard", episodes: [2], progress: 18 })], null)).toEqual({
+      label: "分镜脚本 · 第 2 集",
+      progress: 18,
+      failed: 0,
+    });
+    expect(taskSummary([], plan)).toEqual({ label: plan.title, progress: 60, failed: 0 });
+  });
+
+  test("多个任务：写个数，进度取平均；规划也算一个", () => {
+    const jobs = [
+      job({ id: "a", progress: 20 }),
+      job({ id: "b", step: "storyboard", progress: 40 }),
+    ];
+    expect(taskSummary(jobs, plan)).toEqual({ label: "3 个任务", progress: 40, failed: 0 });
+  });
+
+  test("有失败：数上失败的（含规划因错暂停）；只剩失败时没有进度", () => {
+    const paused = {
+      kind: "paused",
+      tone: "error",
+      title: "分集规划暂停",
+      reason: "",
+      actions: [],
+    } as const;
+    expect(taskSummary([job({ status: "failed" })], paused)).toEqual({
+      label: null,
+      progress: null,
+      failed: 2,
+    });
+  });
+
+  test("规划被用户暂停、别的都没有：胶囊写「分集规划已暂停」，方便点开继续", () => {
+    const paused = {
+      kind: "paused",
+      tone: "muted",
+      title: "分集规划已暂停",
+      reason: "",
+      actions: [],
+    } as const;
+    expect(taskSummary([], paused)).toEqual({ label: "分集规划已暂停", progress: null, failed: 0 });
   });
 });
 
@@ -294,6 +385,25 @@ describe("JobBar 规划行 planningRow", () => {
     ]);
     expect(row).toMatchObject({ kind: "running", title: "正在粗读全书", progress: 30 });
     expect(row?.kind === "running" && row.detail).toContain("研读");
+  });
+
+  test("研读中有粗读中位耗时：进度按已用时间 ÷ 中位耗时往前走，最多 90%", () => {
+    const now = Date.parse("2026-11-04T12:00:00Z");
+    const eta = { analyzeSeconds: 40, planSeconds: 0, planBatchesLeft: 0 };
+    const analyze = (seconds: number) =>
+      job({
+        lane: "pipeline",
+        step: "analyze",
+        episodes: [],
+        progress: 0,
+        startedAt: new Date(now - seconds * 1000).toISOString(),
+      });
+    expect(planningRow(drama({ eta }), [analyze(10)], now)).toMatchObject({ progress: 25 });
+    expect(planningRow(drama({ eta }), [analyze(120)], now)).toMatchObject({ progress: 90 });
+    // 历史不足：保持后端给的进度
+    expect(
+      planningRow(drama({ eta: { ...eta, analyzeSeconds: 0 } }), [analyze(10)], now),
+    ).toMatchObject({ progress: 0 });
   });
 
   test("规划中：正在规划第 a–b 章 · 已出 N 集目录，进度按规划游标 / 范围终点", () => {
@@ -367,35 +477,68 @@ describe("JobBar 规划行 planningRow", () => {
   });
 });
 
-describe("规划还要多久 planningEtaMinutes", () => {
-  const hour = 3_600_000;
-  const created = (now: number, agoMs: number) => new Date(now - agoMs).toISOString();
+describe("自动规划还要多久 pipelineEta", () => {
+  const now = Date.parse("2026-11-04T12:00:00Z");
+  const ago = (seconds: number) => new Date(now - seconds * 1000).toISOString();
+  const eta = { analyzeSeconds: 40, planSeconds: 120, planBatchesLeft: 3 };
+  const drama = (patch: Record<string, unknown> = {}) => ({
+    phase: "running" as const,
+    eta,
+    ...patch,
+  });
+  const analyze = (startedAt: string | null) =>
+    job({ lane: "pipeline", step: "analyze", episodes: [], startedAt, progress: 0 });
+  const plan = (startedAt: string | null) =>
+    job({ lane: "pipeline", step: "plan", episodes: [], startedAt });
 
-  test("按已规划的速度推算：1 小时规划了 300 个，还剩 900 个，约 180 分钟", () => {
-    const now = Date.parse("2026-11-04T12:00:00Z");
-    expect(
-      planningEtaMinutes({ createdAt: created(now, hour), planCursor: 300, rangeEnd: 1200 }, now),
-    ).toBe(180);
+  test("粗读中：粗读剩余 = 中位耗时 − 已跑时间；规划按批次 × 每批中位耗时；合计两者", () => {
+    expect(pipelineEta(drama(), [analyze(ago(10))], now)).toEqual({
+      analyze: 30,
+      plan: 360,
+      total: 390,
+    });
   });
 
-  test("还没规划出任何单元、或已规划完、或时间不对：没有预估", () => {
-    const now = Date.parse("2026-11-04T12:00:00Z");
-    expect(
-      planningEtaMinutes({ createdAt: created(now, hour), planCursor: 0, rangeEnd: 100 }, now),
-    ).toBeNull();
-    expect(
-      planningEtaMinutes({ createdAt: created(now, hour), planCursor: 100, rangeEnd: 100 }, now),
-    ).toBeNull();
-    expect(
-      planningEtaMinutes({ createdAt: created(now, -hour), planCursor: 10, rangeEnd: 100 }, now),
-    ).toBeNull();
+  test("粗读还在排队：剩余就是完整的中位耗时", () => {
+    expect(pipelineEta(drama(), [analyze(null)], now).analyze).toBe(40);
   });
 
-  test("最少 1 分钟", () => {
-    const now = Date.parse("2026-11-04T12:00:00Z");
+  test("超过中位耗时：剩余为 0（界面写「即将完成」），不出现负数", () => {
+    expect(pipelineEta(drama(), [analyze(ago(90))], now)).toMatchObject({ analyze: 0, total: 360 });
+  });
+
+  test("规划中：当前批扣掉已跑时间，再加后面的批次", () => {
+    expect(pipelineEta(drama(), [plan(ago(20))], now)).toEqual({
+      analyze: null,
+      plan: 340,
+      total: 340,
+    });
+  });
+
+  test("历史不足（秒数为 0）的步骤不估：粗读不知道就没有合计，规划不知道也没有合计", () => {
     expect(
-      planningEtaMinutes({ createdAt: created(now, 1000), planCursor: 99, rangeEnd: 100 }, now),
-    ).toBe(1);
+      pipelineEta(drama({ eta: { ...eta, analyzeSeconds: 0 } }), [analyze(ago(10))], now),
+    ).toEqual({ analyze: null, plan: 360, total: null });
+    expect(pipelineEta(drama({ eta: { ...eta, planSeconds: 0 } }), [plan(ago(10))], now)).toEqual({
+      analyze: null,
+      plan: null,
+      total: null,
+    });
+  });
+
+  test("没有预计原料或不在规划中：都没有", () => {
+    const none = { analyze: null, plan: null, total: null };
+    expect(pipelineEta(drama({ eta: null }), [analyze(ago(10))], now)).toEqual(none);
+    expect(pipelineEta(drama({ phase: "paused" }), [], now)).toEqual(none);
+  });
+});
+
+describe("还需多久的文案 etaLabel", () => {
+  test("0 秒写「即将完成」，不到一分钟写「还需不到 1 分钟」，其余按分钟 / 小时", () => {
+    expect(etaLabel(0)).toBe("即将完成");
+    expect(etaLabel(30)).toBe("还需不到 1 分钟");
+    expect(etaLabel(390)).toBe("还需约 7 分钟");
+    expect(etaLabel(9000)).toBe("还需约 2.5 小时");
   });
 });
 

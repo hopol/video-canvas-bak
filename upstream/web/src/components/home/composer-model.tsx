@@ -65,7 +65,11 @@ export function ModelMenu({
         <span className="truncate max-md:hidden">{value.label}</span>
         <ChevronDown className="size-3.5 shrink-0 transition-transform duration-120 group-data-popup-open/model:rotate-180" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent side={side} sideOffset={6} className="max-h-80 w-80 overflow-y-auto">
+      <DropdownMenuContent
+        side={side}
+        sideOffset={6}
+        className="max-h-[min(20rem,var(--available-height))] w-80 overflow-y-auto"
+      >
         <DropdownMenuRadioGroup value={value.key} onValueChange={onChange}>
           {models.map((model) => (
             <DropdownMenuRadioItem

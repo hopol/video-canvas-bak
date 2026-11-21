@@ -13,6 +13,7 @@ import { SPRING } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useDramaSegmentsStore } from "@/store/drama-segments";
 import { deleteEpisodeConfirm, editBlockReason, episodeAfterDelete } from "@/utils/drama/episodes";
+import { runningByEpisode } from "@/utils/drama/jobs";
 import {
   episodePips,
   type PipState,
@@ -22,6 +23,7 @@ import {
 
 import { ContinuePlanDialog } from "./continue-plan-dialog";
 import { useWorkspace } from "./context";
+import { ProgressRing } from "./job-bar";
 
 /** 分集栏一行的高度（含行距）；集多时只渲染可见的那几行 */
 const ROW_SIZE = 56;
@@ -88,6 +90,8 @@ export function EpisodeRail({
   const scroller = useRef<HTMLDivElement>(null);
   /** 有任务在跑、或正在规划时不能删集：任务按集号写回，删集补位会让它写错集；规划游标也会错位 */
   const blocked = editBlockReason(drama.phase, jobs);
+  /** 每集正在跑的用户任务（写剧本 / 拆解 / 分镜 / 合成）：集号右上角挂小圆环 */
+  const running = runningByEpisode(jobs);
   const addBlocked = drama.phase === "running" ? "正在规划，完成或暂停后再新增" : null;
   // useVirtualizer 的返回值不能被 React Compiler 记忆化；这里只在本组件内使用，不传给 memo 子组件
   // oxlint-disable-next-line react/incompatible-library
@@ -212,11 +216,20 @@ export function EpisodeRail({
                     label={`第 ${episode.no} 集 · ${episode.title}`}
                     onClick={() => onPick(episode.no)}
                     corner={
-                      episode.locked && (
-                        <Lock
-                          aria-hidden
-                          className="text-muted-foreground absolute top-1.5 right-1.5 size-2.5"
+                      running.get(episode.no) ? (
+                        <ProgressRing
+                          size={12}
+                          progress={running.get(episode.no)!.progress}
+                          queued={running.get(episode.no)!.status === "queued"}
+                          className="absolute top-1.5 right-1.5"
                         />
+                      ) : (
+                        episode.locked && (
+                          <Lock
+                            aria-hidden
+                            className="text-muted-foreground absolute top-1.5 right-1.5 size-2.5"
+                          />
+                        )
                       )
                     }
                   >

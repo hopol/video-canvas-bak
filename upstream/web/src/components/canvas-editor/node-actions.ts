@@ -12,6 +12,8 @@ export type NodeActions = {
    * 不能靠事后读节点数据判断成败：画布节点是受控状态，提交刚结束时 status 还没同步过来。
    */
   submit: () => Promise<string | null>;
+  /** 换成另一个模型（参数按新模型的能力迁移，新模型不支持的直接丢掉，不弹确认）；批量生成前统一换模型用 */
+  setModel?: (key: string) => void;
   /** 音色（只有角色卡有） */
   voice?: {
     /** 此刻不能生成音色的原因（没写音色描述、音色正在生成……）；可以返回 null */
@@ -22,6 +24,8 @@ export type NodeActions = {
 };
 
 const registry = new Map<string, NodeActions>();
+/** 每个节点登记时给的原始读取函数（registry 里是包过一层的） */
+const readers = new Map<string, () => NodeActions | null>();
 
 /** 节点此刻还提供不了动作（没登记，或读到的动作为空）时给的原因 */
 const NOT_READY = "节点还没准备好";
@@ -35,6 +39,7 @@ const NO_VOICE = "这个节点不能生成音色";
  * @returns 撤销登记
  */
 export function registerNodeActions(id: string, read: () => NodeActions | null): () => void {
+  readers.set(id, read);
   registry.set(id, {
     // blockedReason 返回 null 表示「可以提交」，不能和「读不到动作」混为一谈，所以这里不能用 ??
     blockedReason: () => {
@@ -54,6 +59,7 @@ export function registerNodeActions(id: string, read: () => NodeActions | null):
   });
   return () => {
     registry.delete(id);
+    readers.delete(id);
   };
 }
 
@@ -73,6 +79,18 @@ export function useRegisterNodeActions(id: string, actions: NodeActions | null) 
     if (!available) return;
     return registerNodeActions(id, () => latest.current);
   }, [id, available]);
+}
+
+/**
+ * 把一个节点换成另一个模型。
+ * @returns 节点接手了返回 true；没登记、或不提供换模型时返回 false
+ */
+export function setModelById(id: string, key: string): boolean {
+  // registry 里包过一层，要现读节点自己的动作才知道它支不支持换模型
+  const own = readers.get(id)?.();
+  if (!own?.setModel) return false;
+  own.setModel(key);
+  return true;
 }
 
 /** 节点是否登记了生成动作 */

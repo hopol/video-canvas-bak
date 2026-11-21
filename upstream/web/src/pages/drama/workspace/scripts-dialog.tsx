@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Link2Off } from "lucide-react";
+import { Link2Off, Loader2 } from "lucide-react";
 
 import { submitJob } from "@/api/drama";
 import { dramaErrorMessage } from "@/api/drama/errors";
+import { DialogSession } from "@/components/dialog-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -47,11 +48,15 @@ export function ScriptsBody({
   /** 预先选中的集（从某一集的空状态点「生成剧本」进来） */
   initial?: number[];
 }) {
-  const { drama, refresh } = useWorkspace();
-  const options = scriptOptions(drama.episodes);
-  const [selected, setSelected] = useState<number[]>(() =>
-    initial && initial.length > 0 ? initial : defaultScriptSelection(drama.episodes),
-  );
+  const { drama, jobs, refresh } = useWorkspace();
+  const options = scriptOptions(drama.episodes, jobs);
+  const [selected, setSelected] = useState<number[]>(() => {
+    // 预选的集正在拆解 / 生成时不选上，免得重复提交
+    const usable = (initial ?? []).filter((no) =>
+      options.some((option) => option.no === no && !option.disabled),
+    );
+    return usable.length > 0 ? usable : defaultScriptSelection(drama.episodes, jobs);
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,7 +74,7 @@ export function ScriptsBody({
       prev.includes(no) ? prev.filter((n) => n !== no) : [...prev, no].sort((a, b) => a - b),
     );
   const available = options.filter((option) => !option.disabled).map((option) => option.no);
-  const unscripted = defaultScriptSelection(drama.episodes);
+  const unscripted = defaultScriptSelection(drama.episodes, jobs);
 
   const start = async () => {
     if (!submit.ok || submitting) return;
@@ -182,6 +187,7 @@ export function ScriptsBody({
           取消
         </Button>
         <Button disabled={!submit.ok || submitting} onClick={() => void start()}>
+          {submitting && <Loader2 className="animate-spin" />}
           {submit.label}
         </Button>
       </DialogFooter>
@@ -206,7 +212,9 @@ export function ScriptsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
-        {open && <ScriptsBody initial={initial} onClose={() => onOpenChange(false)} />}
+        <DialogSession open={open}>
+          <ScriptsBody initial={initial} onClose={() => onOpenChange(false)} />
+        </DialogSession>
       </DialogContent>
     </Dialog>
   );

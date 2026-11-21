@@ -1,6 +1,9 @@
 # 安装：pip install pre-commit（或 brew install pre-commit），然后在仓库根目录执行 pre-commit install
 # 手动全量运行：pre-commit run --all-files
-default_install_hook_types: [pre-commit]
+# 同时装 commit-msg 钩子（检查 CHANGELOG）；之前只装过 pre-commit 的需要重新执行一次 pre-commit install
+default_install_hook_types: [pre-commit, commit-msg]
+# 没写 stages 的钩子只在 pre-commit 阶段跑，避免 commit-msg 阶段把消息文件当成代码去检查
+default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -74,3 +77,11 @@ repos:
         language: system
         files: ^web/(src/.*\.(ts|tsx)|tsconfig.*\.json)$
         pass_filenames: false
+
+      # feat / fix / perf 和破坏性变更要在 CHANGELOG.md 的 [Unreleased] 新增条目，正文写 `Changelog: skip` 可豁免
+      - id: changelog
+        name: CHANGELOG [Unreleased]
+        entry: node scripts/changelog-check.mjs commit-msg
+        language: system
+        stages: [commit-msg]
+        always_run: true

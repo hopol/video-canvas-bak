@@ -8,7 +8,16 @@ import type {
   UnitKind,
 } from "@/api/drama/type";
 
-import { CUSTOM_STYLE_KEY, DEFAULT_EPISODE_SECONDS, EPISODE_SECOND_OPTIONS } from "./options";
+import type { Capabilities } from "@/api/model/type";
+import { parseAspect } from "@/utils/canvas/node-frame";
+import { matchOption, openParams, type ParamEntry } from "@/utils/tasks/capabilities";
+
+import {
+  CUSTOM_STYLE_KEY,
+  DEFAULT_EPISODE_SECONDS,
+  MAX_EPISODE_SECONDS,
+  MIN_EPISODE_SECONDS,
+} from "./options";
 import { PROMPT_STEPS } from "./prompts";
 
 /** 开拍设置可选的画幅（宽、高用来画比例示意框） */
@@ -21,9 +30,6 @@ export const START_RATIOS: { key: StartRatio; w: number; h: number }[] = [
 /** 默认画幅：竖屏短剧常用 */
 export const DEFAULT_START_RATIO: StartRatio = "9:16";
 
-/** 文本模型上下文下限（Token）：低于它装不下一批完整原文 */
-export const MIN_MODEL_CONTEXT = 128_000;
-
 /** 三类资产各自的图片模型 */
 export interface StartImageModels {
   character: string;
@@ -34,10 +40,99 @@ export interface StartImageModels {
 /** 图片模型全部不指定 */
 export const emptyImageModels = (): StartImageModels => ({ character: "", scene: "", prop: "" });
 
+/** 三类资产 */
+export type AssetSlot = keyof StartImageModels;
+
+/** 一类资产在弹窗里手动选的比例、分辨率；空串 = 没选过 */
+export interface AssetParamPicks {
+  ratio: string;
+  resolution: string;
+}
+
+/** 三类资产各自手动选的比例、分辨率 */
+export type StartImageParams = Record<AssetSlot, AssetParamPicks>;
+
+/** 比例、分辨率都没手动选 */
+export const emptyImageParams = (): StartImageParams => ({
+  character: { ratio: "", resolution: "" },
+  scene: { ratio: "", resolution: "" },
+  prop: { ratio: "", resolution: "" },
+});
+
+/** 没手动选比例时各类资产想要的比例：人物三视图、场景宽银幕、物品横图 */
+export const ASSET_DEFAULT_RATIOS: Record<AssetSlot, string> = {
+  character: "16:9",
+  scene: "21:9",
+  prop: "16:9",
+};
+
+/** 比例参数的两种写法，和画布节点一致 */
+const RATIO_PARAM_NAMES = ["aspect_ratio", "ratio"];
+
+/** 模型里能预设的比例、分辨率参数（开放的枚举）；模型没有的项为 undefined */
+export function assetParamFields(caps: Capabilities | undefined): {
+  ratio?: ParamEntry;
+  resolution?: ParamEntry;
+} {
+  const fields = openParams(caps).filter((field) => field.type === "enum");
+  return {
+    ratio: fields.find((field) => RATIO_PARAM_NAMES.includes(field.name)),
+    resolution: fields.find((field) => field.name === "resolution"),
+  };
+}
+
+/**
+ * 在选项里找和 want 最接近的比例（按宽高比的对数差）。
+ * @returns 选项里有 want 就是它；都认不出（如只有 Auto）为 undefined
+ */
+export function closestRatio(options: readonly unknown[], want: string): string | undefined {
+  const exact = options.find((option) => String(option) === want);
+  if (exact !== undefined) return String(exact);
+  const target = parseAspect(want);
+  if (target === null) return undefined;
+  let best: string | undefined;
+  let gap = Infinity;
+  for (const option of options) {
+    const value = parseAspect(option);
+    if (value === null) continue;
+    const d = Math.abs(Math.log(value / target));
+    if (d < gap) {
+      gap = d;
+      best = String(option);
+    }
+  }
+  return best;
+}
+
+/**
+ * 按模型把一类资产的比例、分辨率落到下拉里能选中的值：比例取手动选的（没选取类型默认）最接近的一项，
+ * 认不出时用模型默认；分辨率手动选的模型有就用，否则用模型默认。只在读取时推导，不回写。
+ * @returns 参数名 → 取值，如 { aspect_ratio: "16:9", resolution: "2K" }；模型没有的参数不出现
+ */
+export function settleAssetParams(
+  caps: Capabilities | undefined,
+  slot: AssetSlot,
+  picks: AssetParamPicks,
+): Record<string, string> {
+  const { ratio, resolution } = assetParamFields(caps);
+  const out: Record<string, string> = {};
+  if (ratio) {
+    const value =
+      closestRatio(ratio.options ?? [], picks.ratio || ASSET_DEFAULT_RATIOS[slot]) ??
+      (ratio.default === undefined ? undefined : String(ratio.default));
+    if (value !== undefined) out[ratio.name] = value;
+  }
+  if (resolution) {
+    const value = matchOption(resolution, picks.resolution) ?? resolution.default;
+    if (value !== undefined) out[resolution.name] = String(value);
+  }
+  return out;
+}
+
 /** 用户在弹窗里确认的原文类型；识别不出且没选时为 null */
 export type StartKind = "script" | "novel";
 
-/** 四个环节的提示词选择（每个环节都有值，默认内置） */
+/** 五个环节的提示词选择（每个环节都有值，默认内置） */
 export type StartPrompts = Record<PromptStep, PromptChoice>;
 
 /** 开拍设置弹窗里用户可改的全部内容 */
@@ -62,19 +157,23 @@ export interface StartForm {
   videoModel: string;
   /** 人物 / 场景 / 物品资产各自的图片模型 key，空串 = 不指定 */
   imageModels: StartImageModels;
-  /** 四个环节的提示词选择 */
+  /** 人物 / 场景 / 物品资产各自手动选的比例、分辨率 */
+  imageParams: StartImageParams;
+  /** 五个环节的提示词选择 */
   prompts: StartPrompts;
 }
 
 /** 记住的上次选择：规划范围每本书不同，不记 */
 export type StartPrefs = Omit<StartForm, "kind" | "rangeEnd">;
 
-/** 四个环节全是内置 */
+/** 各环节全是内置 */
 export const builtinPrompts = (): StartPrompts => ({
-  adapt: { source: "builtin" },
+  plan: { source: "builtin" },
+  scripts: { source: "builtin" },
   assets: { source: "builtin" },
   asset_prompts: { source: "builtin" },
   video: { source: "builtin" },
+  board: { source: "builtin" },
 });
 
 const UNIT_WORD: Record<UnitKind, string> = {
@@ -136,17 +235,8 @@ export function secondsLock(
 }
 
 /**
- * 文本模型为什么不能选：上下文已知且低于 128k 才禁用；没有配置上下文的不拦（交给后端 67022 兜底）
- * @param window 模型上下文窗口（Token），未知为 undefined 或 0
- */
-export function modelDisabledReason(window: number | undefined): string | null {
-  if (!window || window >= MIN_MODEL_CONTEXT) return null;
-  return "上下文低于 128k，装不下一批完整原文";
-}
-
-/**
  * 「开始」为什么不能点；可以点返回 null
- * @param state 类型是否已确认、画风是否已有、所选模型是否被禁用
+ * @param state 类型是否已确认、画风是否已有、估价是否说所选模型装不下原文（67022）
  */
 export function startBlockReason(state: {
   kind: StartKind | null;
@@ -155,11 +245,11 @@ export function startBlockReason(state: {
 }): string | null {
   if (!state.kind) return "先确认是剧本还是小说";
   if (!state.styleKey) return "先选一个画风";
-  if (state.modelBlocked) return "所选模型上下文低于 128k，请换一个";
+  if (state.modelBlocked) return "所选模型装不下原文，请换一个";
   return null;
 }
 
-/** 提示词选择转成请求里的 prompts：四个环节都显式带上 */
+/** 提示词选择转成请求里的 prompts：各环节都显式带上 */
 export function promptsToChoices(prompts: StartPrompts): Record<PromptStep, PromptChoice> {
   const out = {} as Record<PromptStep, PromptChoice>;
   for (const { key } of PROMPT_STEPS) out[key] = { ...prompts[key] };
@@ -172,16 +262,34 @@ function pickedImageModels(models: StartImageModels): CreateDramaInput["imageMod
   return Object.keys(picked).length > 0 ? picked : undefined;
 }
 
+/** 三类资产的参数里只留有值的；一个都没有返回 undefined（请求里整个不带） */
+function pickedImageParams(
+  params: Partial<Record<AssetSlot, Record<string, string>>> | undefined,
+): CreateDramaInput["imageParams"] {
+  const picked = Object.fromEntries(
+    Object.entries(params ?? {}).filter(([, value]) => Object.keys(value ?? {}).length > 0),
+  );
+  return Object.keys(picked).length > 0 ? picked : undefined;
+}
+
 /**
- * 弹窗内容转成建剧请求。剧本型输入：剧本改编强制内置、规划范围恒为全部（剧本一次切完）。
+ * 弹窗内容转成建剧请求。剧本型输入：分集规划、分集剧本强制内置，规划范围恒为全部（剧本一次切完）。
  * @param pre 预检结果
  * @param form 弹窗里的设置，kind 必须已确认
+ * @param imageParams 三类资产按各自模型落好的比例、分辨率（settleAssetParams 的结果）
  */
-export function buildCreateInput(pre: SourcePreflight, form: StartForm): CreateDramaInput {
+export function buildCreateInput(
+  pre: SourcePreflight,
+  form: StartForm,
+  imageParams?: Partial<Record<AssetSlot, Record<string, string>>>,
+): CreateDramaInput {
   if (!form.kind) throw new Error("原文类型未确认");
   const script = form.kind === "script";
   const prompts = promptsToChoices(form.prompts);
-  if (script) prompts.adapt = { source: "builtin" };
+  if (script) {
+    prompts.plan = { source: "builtin" };
+    prompts.scripts = { source: "builtin" };
+  }
   return {
     sourceToken: pre.sourceToken,
     sourceKind: form.kind,
@@ -194,6 +302,7 @@ export function buildCreateInput(pre: SourcePreflight, form: StartForm): CreateD
     textModel: form.textModel,
     videoModel: form.videoModel || undefined,
     imageModels: pickedImageModels(form.imageModels),
+    imageParams: pickedImageParams(imageParams),
     prompts,
   };
 }
@@ -203,6 +312,12 @@ const PREFS_KEY = "drama-start-prefs";
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
+/** 记住的一类资产比例、分辨率；类型不对的项按没选 */
+const loadPicks = (value: Partial<AssetParamPicks> | undefined): AssetParamPicks => ({
+  ratio: str(value?.ratio),
+  resolution: str(value?.resolution),
+});
+
 /** 读上次的选择；没有、损坏或存储不可用时返回 null；画幅、时长不合法时回落默认 */
 export function loadStartPrefs(): StartPrefs | null {
   try {
@@ -211,8 +326,11 @@ export function loadStartPrefs(): StartPrefs | null {
     const data = JSON.parse(raw) as Partial<StartPrefs> | null;
     if (!data || typeof data !== "object") return null;
     const prompts = builtinPrompts();
+    // 老版本把分集规划和分集剧本记成一个「剧本改编」(adapt)：同时带给两个环节，找不到的由 reconcilePrompts 回落内置
+    const saved = data.prompts as (Partial<StartPrompts> & { adapt?: PromptChoice }) | undefined;
+    const legacy = saved?.adapt;
     for (const { key } of PROMPT_STEPS) {
-      const choice = data.prompts?.[key];
+      const choice = saved?.[key] ?? (key === "plan" || key === "scripts" ? legacy : undefined);
       if (choice && ["builtin", "mine", "skill"].includes(choice.source)) prompts[key] = choice;
     }
     return {
@@ -222,15 +340,24 @@ export function loadStartPrefs(): StartPrefs | null {
       genre: typeof data.genre === "string" ? data.genre : "",
       styleKey: typeof data.styleKey === "string" ? data.styleKey : "",
       styleCustom: typeof data.styleCustom === "string" ? data.styleCustom : "",
-      seconds: (EPISODE_SECOND_OPTIONS as readonly number[]).includes(data.seconds ?? 0)
-        ? (data.seconds as number)
-        : DEFAULT_EPISODE_SECONDS,
+      seconds:
+        typeof data.seconds === "number" &&
+        Number.isInteger(data.seconds) &&
+        data.seconds >= MIN_EPISODE_SECONDS &&
+        data.seconds <= MAX_EPISODE_SECONDS
+          ? data.seconds
+          : DEFAULT_EPISODE_SECONDS,
       textModel: typeof data.textModel === "string" ? data.textModel : "",
       videoModel: typeof data.videoModel === "string" ? data.videoModel : "",
       imageModels: {
         character: str(data.imageModels?.character),
         scene: str(data.imageModels?.scene),
         prop: str(data.imageModels?.prop),
+      },
+      imageParams: {
+        character: loadPicks(data.imageParams?.character),
+        scene: loadPicks(data.imageParams?.scene),
+        prop: loadPicks(data.imageParams?.prop),
       },
       prompts,
     };
@@ -251,6 +378,7 @@ export function saveStartPrefs(form: StartForm): void {
       textModel: form.textModel,
       videoModel: form.videoModel,
       imageModels: form.imageModels,
+      imageParams: form.imageParams,
       prompts: form.prompts,
     };
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));

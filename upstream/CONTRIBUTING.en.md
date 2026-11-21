@@ -69,9 +69,21 @@ docs(design): 3D 导演台补充面板可拖动调节的设计记录
 
 Notes:
 
-- **Commit messages go into the changelog verbatim** (CHANGELOG is generated from commits by git-cliff), so write something users can understand. No "wip", "fix bug" or "update".
+- Write commit messages people can understand. No "wip", "fix bug" or "update".
 - One commit, one independently understandable change. A schema change goes in the same commit as its migration file and tests.
-- **Do not edit** `CHANGELOG.md` or `VERSION` by hand; the release process maintains them.
+- **Do not edit** `VERSION` by hand; the release process maintains it.
+
+### Changelog
+
+Changelog entries are written during development, not assembled from commits at release time. We follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
+
+- `feat` / `fix` / `perf` and breaking changes (`type!:` or `BREAKING CHANGE:` in the body) must add an entry under `## [Unreleased]` at the top of `CHANGELOG.md` **in the same commit or PR**.
+- Sections are limited to: `新增` (added), `改进` (improved), `修复` (fixed), `废弃` (deprecated), `破坏性变更` (breaking), `文档` (docs). Create the section if missing; entries start with `- `.
+- Write for users, in Simplified Chinese: describe the user-visible result, one change per entry, no function or file names.
+- Do not edit released sections; maintainers turn `[Unreleased]` into the new version at release time.
+- If there is genuinely nothing user-visible (refactors, tests and CI never need entries; a `feat` that is internal only), add a `Changelog: skip` line to the commit body, or ask a maintainer to label the PR `skip-changelog`.
+
+After `pre-commit install`, a `commit-msg` hook checks this on commit; the `Changelog` check on PRs does the same.
 
 ## Pre-submit checks
 
@@ -122,7 +134,7 @@ Running `pre-commit install` is recommended; it runs most of these checks on com
 
 ## Releases
 
-Maintainers handle releases (updating `VERSION` and `CHANGELOG.md`, tagging `v*`). Do not change those files in a PR. See the [development guide](docs/development.en.md#ci-and-releases).
+Maintainers handle releases (turning `[Unreleased]` in `CHANGELOG.md` into the new version, updating `VERSION`, tagging `v*`). In a PR, only add entries under `[Unreleased]`; do not touch `VERSION` or released sections. See the [development guide](docs/development.en.md#ci-and-releases).
 
 ## Code of conduct
 

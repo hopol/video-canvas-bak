@@ -12,9 +12,10 @@ import {
   DialogTitle,
 } from "@/components/admin-ui/dialog";
 import { Stepper, StepperItem } from "@/components/admin-ui/stepper";
+import { ToggleChip } from "@/components/admin-ui/toggle-chip";
 import { Button } from "@/components/ui/button";
 import { DURATION, EASE_OUT, TAP } from "@/lib/motion";
-import { confirmBlockReason } from "@/utils/admin/agent-skill";
+import { confirmBlockReason, SKILL_SCOPES } from "@/utils/admin/agent-skill";
 import { stepOf } from "@/utils/admin/agent-skill-import";
 
 import { FileWorkbench } from "./file-workbench";
@@ -31,6 +32,7 @@ const STEP_MOTION = {
 
 /**
  * 导入对话框（居中大对话框，两步）：1 选择文件（含上传与预检进度）→ 2 检查并确认。
+ * 第 2 步是新技能时，底部可以顺手勾「用在哪里」（默认都不勾）；导入已有技能的新版本时不出现。
  * 两步尺寸不变，避免尺寸动画；窄屏全屏。⌘/Ctrl+↵ 在第 2 步确认；Esc 关闭（导入成本很低，不弹确认）。
  * 确认中不允许关闭。关闭由页面决定（页面在退出动画播完后才重置状态，内容不会提前闪回第 1 步）。
  * @param open 是否打开
@@ -52,7 +54,8 @@ export function ImportDialog({
   onClose: () => void;
   onExited: () => void;
 }) {
-  const { state, begin, cancel, reselect, confirm } = importer;
+  const { state, scopes, setScopes, begin, cancel, reselect, confirm } = importer;
+  const creating = state.step === "review" && state.view.plan.action === "create";
   const step = stepOf(state);
   const confirming = state.step === "review" && state.confirming;
   const reason = state.step === "review" ? confirmBlockReason(state.view) : null;
@@ -128,6 +131,37 @@ export function ImportDialog({
                 <Button variant="outline" disabled={confirming} onClick={reselect}>
                   重新选择
                 </Button>
+                {creating && (
+                  <div
+                    role="group"
+                    aria-label="用在哪里"
+                    className="flex min-w-0 items-center gap-1.5 overflow-x-auto max-md:hidden"
+                  >
+                    <span className="text-muted-foreground shrink-0 text-xs">用在哪里</span>
+                    {SKILL_SCOPES.map((scope) => {
+                      const on = scopes.includes(scope.key);
+                      return (
+                        <ToggleChip
+                          key={scope.key}
+                          pressed={on}
+                          disabled={confirming}
+                          title={scope.group === "drama" ? `短剧 · ${scope.name}` : scope.name}
+                          onClick={() =>
+                            setScopes(
+                              on
+                                ? scopes.filter((k) => k !== scope.key)
+                                : SKILL_SCOPES.map((s) => s.key).filter(
+                                    (k) => k === scope.key || scopes.includes(k),
+                                  ),
+                            )
+                          }
+                        >
+                          {scope.short}
+                        </ToggleChip>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="ml-auto flex items-center gap-2">
                   {reason && (
                     <span className="text-xs text-red-600 dark:text-red-400" role="status">

@@ -55,6 +55,14 @@ const VARIANT = {
   },
 } as const;
 
+/** track 的大一档（size="md"，资产页的范围切换）：按钮 h-8、字 14px、左右留白 16px，比默认大一点 */
+const TRACK_MD = {
+  root: "bg-muted gap-0 rounded-[10px] p-[3px]",
+  button: "h-8! rounded-lg px-4 text-[14px]",
+  selected: "text-foreground font-medium",
+  thumb: "bg-background rounded-lg shadow-sm",
+} as const;
+
 /**
  * 分段控件：选中项底下的滑块用 layoutId 跟着点击位置滑过去。
  * 首页的「全部 / 个人 / 协作」、所有画布页的疏密切换、创作页的模式切换和资产页的范围切换共用。
@@ -71,7 +79,7 @@ export function Segmented<T extends string>({
   options: SegmentedOption<T>[];
   value: T;
   onChange: (value: T) => void;
-  /** sm 是 h-8，md 是 h-9；track 和 pill 的高度由外观决定 */
+  /** sm 是 h-8，md 是 h-9；pill 的高度由外观决定；track 默认小号，md 是大一档（资产页范围切换） */
   size?: "sm" | "md";
   variant?: SegmentedVariant;
   /** 整个控件的读屏名字 */
@@ -79,7 +87,7 @@ export function Segmented<T extends string>({
   className?: string;
 }) {
   const layoutId = useId();
-  const style = VARIANT[variant];
+  const style = variant === "track" && size === "md" ? TRACK_MD : VARIANT[variant];
 
   return (
     <div

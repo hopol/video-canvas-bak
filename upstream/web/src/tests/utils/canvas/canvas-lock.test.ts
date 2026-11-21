@@ -35,6 +35,8 @@ function fakeLocks(): LockLike {
 
   return {
     request(name, options, callback) {
+      // 强夺：真实实现会把占用方手里的锁直接没收，这里就当新请求立刻拿到
+      if (options.steal) return run(name, callback);
       if (options.ifAvailable) {
         return holders.has(name) ? callback(null) : run(name, callback);
       }
@@ -85,11 +87,11 @@ describe("watchCanvasLock", () => {
   test("先开的标签页关闭后，后开的自动接管", async () => {
     const locks = fakeLocks();
     const second: string[] = [];
-    const stopFirst = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
+    const firstWatch = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
     await tick();
     watchCanvasLock({ name: "canvas:7:c1", locks, onChange: (s) => second.push(s) });
     await tick();
-    stopFirst();
+    firstWatch.stop();
     await tick();
     expect(second).toEqual(["waiting", "held"]);
   });
@@ -97,16 +99,16 @@ describe("watchCanvasLock", () => {
   test("等待中就离开：之后锁被释放也不会再通知，更不会抢走锁", async () => {
     const locks = fakeLocks();
     const second: string[] = [];
-    const stopFirst = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
+    const firstWatch = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
     await tick();
-    const stopSecond = watchCanvasLock({
+    const secondWatch = watchCanvasLock({
       name: "canvas:7:c1",
       locks,
       onChange: (s) => second.push(s),
     });
     await tick();
-    stopSecond();
-    stopFirst();
+    secondWatch.stop();
+    firstWatch.stop();
     await tick();
     expect(second).toEqual(["waiting"]);
     // 锁已经空出来：新开的标签页能直接拿到
@@ -119,7 +121,7 @@ describe("watchCanvasLock", () => {
   test("占用方很快释放（刚离开画布、锁还没传过来）：不出现「已在另一个标签页打开」，直接进入", async () => {
     const locks = fakeLocks();
     const second: string[] = [];
-    const stopFirst = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
+    const firstWatch = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
     await tick();
     watchCanvasLock({
       name: "canvas:7:c1",
@@ -128,7 +130,7 @@ describe("watchCanvasLock", () => {
       onChange: (s) => second.push(s),
     });
     await tick();
-    stopFirst();
+    firstWatch.stop();
     await tick();
     await sleep(80);
     expect(second).toEqual(["held"]);
@@ -156,14 +158,14 @@ describe("watchCanvasLock", () => {
     const second: string[] = [];
     watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
     await tick();
-    const stop = watchCanvasLock({
+    const watch = watchCanvasLock({
       name: "canvas:7:c1",
       locks,
       waitingDelayMs: 40,
       onChange: (s) => second.push(s),
     });
     await tick();
-    stop();
+    watch.stop();
     await sleep(80);
     expect(second).toEqual([]);
   });
@@ -193,5 +195,83 @@ describe("watchCanvasLock", () => {
     watchCanvasLock({ name: "canvas:7:c1", locks, onChange: (s) => states.push(s) });
     await tick();
     expect(states).toEqual(["held"]);
+  });
+});
+
+describe("让位与强夺", () => {
+  test("让出编辑权：自己转成等待，排队的一方立刻拿到锁", async () => {
+    const locks = fakeLocks();
+    const first: string[] = [];
+    const second: string[] = [];
+    const handle = watchCanvasLock({
+      name: "canvas:7:c1",
+      locks,
+      onChange: (s) => first.push(s),
+    });
+    await tick();
+    watchCanvasLock({ name: "canvas:7:c1", locks, onChange: (s) => second.push(s) });
+    await tick();
+    expect(first).toEqual(["held"]);
+    expect(second).toEqual(["waiting"]);
+
+    handle.release();
+    await tick();
+    expect(handle.holds).toBe(false);
+    expect(first).toEqual(["held", "waiting"]);
+    expect(second).toEqual(["waiting", "held"]);
+  });
+
+  test("让位之后不再自动抢回来：另一个标签页关掉，本页仍是只读，要用户自己接管", async () => {
+    const locks = fakeLocks();
+    const first: string[] = [];
+    const handle = watchCanvasLock({
+      name: "canvas:7:c1",
+      locks,
+      onChange: (s) => first.push(s),
+    });
+    await tick();
+    const other = watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
+    await tick();
+    handle.release();
+    await tick();
+    other.stop();
+    await tick();
+    await sleep(40);
+    expect(first).toEqual(["held", "waiting"]);
+    expect(handle.holds).toBe(false);
+  });
+
+  test("对方没响应时强夺：放弃排队，直接进入可编辑", async () => {
+    const locks = fakeLocks();
+    watchCanvasLock({ name: "canvas:7:c1", locks, onChange: () => {} });
+    await tick();
+    const second: string[] = [];
+    const handle = watchCanvasLock({
+      name: "canvas:7:c1",
+      locks,
+      onChange: (s) => second.push(s),
+    });
+    await tick();
+    expect(second).toEqual(["waiting"]);
+
+    handle.steal();
+    await tick();
+    expect(handle.holds).toBe(true);
+    expect(second).toEqual(["waiting", "held"]);
+  });
+
+  test("没有 Web Locks 时让位仍然有效：状态推回等待，只是没有锁可放", async () => {
+    const states: string[] = [];
+    const handle = watchCanvasLock({
+      name: "canvas:7:c1",
+      locks: undefined,
+      onChange: (s) => states.push(s),
+    });
+    await tick();
+    expect(handle.holds).toBe(true);
+    handle.release();
+    await tick();
+    expect(states).toEqual(["held", "waiting"]);
+    expect(handle.holds).toBe(false);
   });
 });

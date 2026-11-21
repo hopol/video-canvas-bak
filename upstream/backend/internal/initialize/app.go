@@ -29,6 +29,7 @@ import (
 	"video-canvas/internal/pkg/logger"
 	"video-canvas/internal/pkg/videoframe"
 	"video-canvas/internal/pkg/ws"
+	"video-canvas/internal/provider/arkasset"
 	"video-canvas/internal/provider/fx"
 	"video-canvas/internal/provider/plugin"
 	"video-canvas/internal/provider/pluginrunner"
@@ -155,13 +156,16 @@ func NewApp(cfg *config.Config) (*App, error) {
 		closeDB(db)
 		return nil, err
 	}
+	virtualHumanRepo := repository.NewVirtualHumanRepository(db)
+	filedAssets := service.NewFiledAssetResolver(virtualHumanRepo)
 	executor := plugin.New(plugin.Options{
-		Runner:    runnerClient,
-		Codes:     pluginCodeStore{repo: aiPluginRepo},
-		Secrets:   aiCfgSvc,
-		Assets:    assetSvc,
-		Saver:     assetSvc,
-		IPAllowed: outboundIPPolicy(cfg),
+		Runner:      runnerClient,
+		Codes:       pluginCodeStore{repo: aiPluginRepo},
+		Secrets:     aiCfgSvc,
+		Assets:      assetSvc,
+		Saver:       assetSvc,
+		FiledAssets: filedAssets, // 真人库里备案可用的图片换成 asset://
+		IPAllowed:   outboundIPPolicy(cfg),
 	})
 
 	// 生成任务：提交 / 对账 / 取消 / 积分事务
@@ -180,8 +184,10 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// 短剧流水线的文本步骤用后台的 Agent 模型（经 LLM 网关直接请求渠道）与账户计价；拆解写画布与角色卡由同一事务提交。
 	skillSvc := agentsvc.NewSkillService(repository.NewAgentSkillRepository(db), storeRegistry, auditRepo, agentsvc.SkillOptions{})
 	dramaRepo := repository.NewDramaRepository(db)
-	dramaCanvasSvc := service.NewDramaCanvasService(repository.NewDramaCanvasRepository(db), hub)
-	dramaSegments := service.NewDramaSegmentService(service.DramaSegmentDeps{Repo: dramaRepo, Tasks: taskSvc, Assets: assetSvc, Broadcaster: hub})
+	dramaCanvasRepo := repository.NewDramaCanvasRepository(db)
+	dramaCanvasSvc := service.NewDramaCanvasService(dramaCanvasRepo, hub)
+	// 片段服务也管片场里的故事板：后端写短剧画布上的故事板节点，任务结束后把结果写回
+	dramaSegments := service.NewDramaSegmentService(service.DramaSegmentDeps{Repo: dramaRepo, Tasks: taskSvc, Assets: assetSvc, Broadcaster: hub, Canvas: dramaCanvasRepo})
 	// 短剧和环节协议层共用同一个 LLM 网关实例，渠道限流（RPS / 并发）才是对两者合计生效。
 	textGateway := llmgateway.New(llmgateway.Options{IPAllowed: outboundIPPolicy(cfg), Observer: llmlog.Observer{}})
 	dramaSvc := service.NewDramaService(service.DramaDeps{
@@ -193,6 +199,13 @@ func NewApp(cfg *config.Config) (*App, error) {
 	})
 	// 片场转写用短剧服务的文本模型调用；两者互相依赖，组装完再注入。
 	dramaSegments.SetAdapter(dramaSvc)
+	// 「剧本改编」拆成分集规划 / 分集剧本后，修补项目快照里的旧设置（迁移 0041 只能拆提示词表，编码 id 要在这里换）。
+	// 失败不阻塞启动：读取时会按旧 id 兜底拆分，下次启动再修补。
+	if n, err := service.SplitAdaptPromptSettings(context.Background(), dramaRepo); err != nil {
+		logger.Warn("修补短剧项目的剧本改编提示词设置失败，下次启动重试", zap.Error(err))
+	} else if n > 0 {
+		logger.Info("已把短剧项目的剧本改编提示词设置拆成分集规划和分集剧本", zap.Int("projects", n))
+	}
 
 	// 环节协议层（stepkit）：注册表在这里创建，业务包（营销等）在 registerSteps 里登记自己的环节；
 	// 后台「环节技能」页读写绑定与试跑，业务运行环节前用 stepSvc.Resolver() 取当前生效的方法。
@@ -211,7 +224,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 		Repo: marketingRepo, Steps: stepRegistry, Resolver: stepSvc.Resolver(), Caller: stepCaller, Models: aiCfgSvc,
 		Assets: assetSvc, Tasks: taskSvc, Canvases: canvasProjectSvc, Frames: newVideoFrames(), Credits: settingsSvc, Broadcaster: hub,
 	})
-	// 生成任务的关联业务观察者：短剧片段和营销脚本各按节点前缀认领自己的任务。
+	// 生成任务的关联业务观察者：短剧片段和营销脚本各按节点前缀认领自己的任务；短剧画布上的故事板图片任务由片段服务认领。
 	taskSvc.SetTaskObserver(service.TaskObservers{dramaSegments, marketingSvc})
 	// 分镜表拆分镜：异步任务，提交、worker 执行和推送都在这个服务里；队列晚于它创建，入队器稍后回填到仓储
 	storyboardSvc := service.NewStoryboardService(service.StoryboardDeps{
@@ -250,6 +263,9 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// 插件与渠道管理同助手共用服务；审批写入复用原有预检、校验与版本分配。
 	aiPluginSvc := service.NewAIPluginService(aiPluginRepo, aiCfgSvc, aiChannelRepo, plugin.NewPrechecker(runnerClient), aiCfgSvc)
 	aiChannelSvc := service.NewAIChannelService(aiChannelRepo, aiCfgSvc, aiCfgSvc, executor, aiChannelRepo, aiCfgSvc)
+	// 方舟虚拟人像库：真人库和生成时的审核状态查询共用一个客户端；解析器比渠道服务先建，这里补上备案目标
+	arkAssets := arkasset.New(arkasset.Options{})
+	filedAssets.UseFiling(aiChannelSvc, arkAssets)
 	adminAuditRepo := repository.NewAdminAssistantRepository(db)
 	adminUsers := service.NewAdminUserService(userRepo, auditRepo, settingsSvc, service.WithAdminControls(service.AdminControls{
 		Credits: taskRepo, // 积分调整与任务冻结 / 结算共用 LockCredit 行锁
@@ -379,6 +395,10 @@ func NewApp(cfg *config.Config) (*App, error) {
 		AssetLibrary: handler.NewAssetLibraryHandler(service.NewAssetLibraryService(service.AssetLibraryDeps{
 			Folders: repository.NewAssetFolderRepository(db), Items: repository.NewAssetLibraryRepository(db),
 			Assets: assetRepo, Canvases: canvasProjectRepo, Views: assetSvc,
+		})),
+		VirtualHuman: handler.NewVirtualHumanHandler(service.NewVirtualHumanService(service.VirtualHumanDeps{
+			Repo: virtualHumanRepo, Canvases: canvasProjectRepo, Assets: assetSvc, AssetRows: assetRepo, Views: assetSvc,
+			Filing: aiChannelSvc, Client: arkAssets,
 		})),
 		Files:        handler.NewFilesHandler(assetSvc),
 		AIModel:      handler.NewAIModelHandler(aiCfgSvc),

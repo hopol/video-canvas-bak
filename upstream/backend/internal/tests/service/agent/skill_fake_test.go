@@ -215,7 +215,7 @@ func (r *memSkillRepo) ReserveVersion(_ context.Context, in repository.ReserveSk
 	defer r.mu.Unlock()
 	s := r.byName(in.Name)
 	if s == nil {
-		s = &model.AgentSkill{ID: r.id(), Name: in.Name, Title: in.Title, CreatedBy: in.CreatedBy}
+		s = &model.AgentSkill{ID: r.id(), Name: in.Name, Title: in.Title, CreatedBy: in.CreatedBy, Enabled: in.Enabled, DramaSteps: append([]string{}, in.DramaSteps...)}
 		r.skills[s.ID] = s
 	}
 	s.LatestVersion++
@@ -301,7 +301,7 @@ func (r *memSkillRepo) DeleteSkill(_ context.Context, skillID uint64) error {
 	if s == nil {
 		return repository.ErrNotFound
 	}
-	if s.Enabled {
+	if s.Enabled || len(s.DramaSteps) > 0 {
 		return repository.ErrInUse
 	}
 	for _, v := range r.versions {

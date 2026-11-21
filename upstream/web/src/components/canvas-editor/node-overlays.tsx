@@ -90,7 +90,7 @@ export function NodeOverlays({
   children?: (width: number) => ReactNode;
 }) {
   const previewNode = useNodePreview();
-  const { toolbarExtra, toolbarVisible } = useNodeExtensions();
+  const { toolbarExtra, toolbarVisible, readOnly } = useNodeExtensions();
   const { width, shift } = usePanelPlacement(id);
   const paneBusy = usePaneBusy();
   const nodeDragging = useNodeDragging(id);
@@ -112,7 +112,7 @@ export function NodeOverlays({
 
   const config = NODE_TOOLBAR[data.kind];
   const gate = toolbarGate(data);
-  const toolbarMode = resolveToolbar(gate, data, toolbarVisible);
+  const toolbarMode = resolveToolbar(gate, data, toolbarVisible, readOnly);
   /** 点「扩图」：只进入扩图模式、摆出框和面板，不生成任何图片；没有能做扩图的模型就不进 */
   const startOutpaint = useCallback(() => {
     if (imageModels.status !== "ready") {
@@ -210,6 +210,9 @@ export function NodeOverlays({
     pointerEvents: paneBusy ? ("none" as const) : undefined,
   };
   const exit = { opacity: 0, transition: { duration: DURATION.exit, ease: EASE_OUT } };
+
+  // 只读预览：功能区、生成面板、扩图 / 切分 / 涂鸦 / 修剪 / 选帧这些入口一个都不摆
+  if (readOnly) return null;
 
   // 拖着这个节点时两块都收起，松手后重新浮出来
   if (nodeDragging) return null;

@@ -43,7 +43,7 @@ type SkillRepo interface {
 	SetTitle(ctx context.Context, skillID uint64, title string) error
 	// MarkVersionDeleting 把 ready 版本标为 deleting；不存在返回 ErrNotFound，是生效版本返回 ErrInUse。
 	MarkVersionDeleting(ctx context.Context, skillID uint64, version int) error
-	// DeleteSkill 删除技能行并把全部版本标为 deleting；启用中返回 ErrInUse。
+	// DeleteSkill 删除技能行并把全部版本标为 deleting；画布 Agent 或任一短剧环节开着时返回 ErrInUse。
 	DeleteSkill(ctx context.Context, skillID uint64) error
 	// ListEnabled 返回已启用且生效版本就绪的技能。
 	ListEnabled(ctx context.Context) ([]repository.EnabledSkill, error)
@@ -122,6 +122,7 @@ type SkillImportView struct {
 // SkillItem 是管理页列表里的一行。
 type SkillItem struct {
 	DramaSteps        []string  `json:"drama_steps"`
+	InUse             bool      `json:"in_use"` // 画布 Agent 或任一短剧环节开着；派生，不落库
 	Name              string    `json:"name"`
 	Title             string    `json:"title"`
 	Description       string    `json:"description"`
@@ -177,6 +178,13 @@ type SkillFileContent struct {
 	Binary    bool   `json:"binary"`
 	Text      string `json:"text,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// SkillScope 是导入新技能时一并勾选的使用场景：Enabled 即画布 Agent，DramaSteps 是短剧环节。
+// 只在确认结果为新技能时生效；导入已有技能的新版本时忽略，沿用技能现有设置。
+type SkillScope struct {
+	Enabled    bool     `json:"enabled"`
+	DramaSteps []string `json:"drama_steps"`
 }
 
 // SkillDeleteCheck 是删除前的预检。

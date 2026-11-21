@@ -50,6 +50,7 @@ import {
 } from "@/constants/canvas";
 import { CanvasHistoryProvider, useCanvasHistory } from "@/hooks/use-canvas-history";
 import { useCanvasMenu } from "@/hooks/use-canvas-menu";
+import { FillUploadProvider, useFillUpload } from "@/hooks/use-fill-upload";
 import { useContentNodes } from "@/hooks/use-content-nodes";
 import { useRemoteModels } from "@/hooks/use-models";
 import { useTaskBackfill } from "@/hooks/use-task-backfill";
@@ -63,11 +64,20 @@ import { StoryboardSplitSync } from "@/components/storyboard/split-sync";
 import { openDirector } from "@/components/director/open-director";
 import { useCharacterDetail } from "@/store/character-detail";
 import { useStoryboardEditor } from "@/store/storyboard-editor";
-import type { CanvasEdge, CanvasNode, FlowNode, NodeKind, UploadNotice } from "@/types";
+import type {
+  CanvasEdge,
+  CanvasNode,
+  CanvasNodeData,
+  FlowNode,
+  MediaType,
+  NodeKind,
+  UploadNotice,
+} from "@/types";
 import { getModelOptions, pruneRemoteDefaults } from "@/utils/canvas/canvas";
 import { createCanvas } from "@/api/canvas";
 import type { CanvasDetailDto } from "@/api/canvas/type";
 import { canLinkFrom, canLinkNodes } from "@/utils/canvas/link-rule";
+import { planFileDrop } from "@/utils/canvas/fill-upload";
 import { TEXT_BODY_MAX, clipFileName, clipText, type ClipboardContent } from "@/utils/canvas/paste";
 import { DEFAULT_NODE_SIZE } from "@/utils/canvas/placement";
 import {
@@ -88,6 +98,8 @@ import { CanvasIdContext } from "@/utils/canvas/canvas-id";
 import { cn } from "@/lib/utils";
 import { draftStore } from "@/utils/canvas/draft-idb";
 import type { Recovery } from "@/utils/canvas/draft-reconcile";
+import { CanvasReadOnlyProvider } from "@/utils/canvas/read-only";
+import type { TakeoverState } from "@/hooks/use-canvas-lock";
 import { releaseObjectUrl } from "@/utils/canvas/media";
 import { trimRunner } from "@/utils/canvas/trim-runner";
 import { uploadRunner } from "@/utils/canvas/upload-runner";
@@ -112,6 +124,7 @@ import {
 import { applyNodeDefaults, NodeExtensionsProvider, type NodeExtensions } from "./extensions";
 import { OverlayGateProvider, useOverlayGate } from "./overlay-gate";
 import { NodePreviewProvider } from "./preview-context";
+import { ReadOnlyBanner } from "./readonly-banner";
 import { MultiSelectProvider, SelectionToolbar } from "./selection-toolbar";
 import { useCanvasShortcuts } from "./use-canvas-shortcuts";
 
@@ -120,6 +133,10 @@ const MIN_ZOOM = 0.14;
 
 /** 新节点的估算尺寸：从视口中心落节点时，让节点正中对准视口中心 */
 const NEW_NODE_SIZE = DEFAULT_NODE_SIZE;
+
+/** 拖进画布的是文件，并且真落在画布元素里（不是节点弹框这类 portal 出去、经 React 冒泡上来的） */
+const isCanvasFileDrag = (event: React.DragEvent) =>
+  event.dataTransfer.types.includes("Files") && event.currentTarget.contains(event.target as Node);
 
 /** 上传完那句话按语气挑 toast */
 function showUploadNotice(notice: UploadNotice | null) {
@@ -183,6 +200,18 @@ export type CanvasEditorProps = {
   aside?: ReactNode;
   /** 对外命令（定位节点 / 选中节点 / 读取节点列表）；编辑器之外的代码经它操作画布 */
   commandsRef?: Ref<CanvasEditorCommands>;
+  /** 立即保存的出口：页面在「被要求让位」时要先存盘，再交锁 */
+  saveRef?: Ref<() => Promise<boolean>>;
+  /**
+   * 只读预览：同一张画布已在另一个标签页打开时，这里只能看。
+   * 不看按钮、看入口——保存与草稿整条链路不启动，节点/连线变更、快捷键、拖放、删除全部掐掉，
+   * 只留平移缩放和预览。对方关闭后页面会切回可编辑并重挂编辑器，不需要刷新。
+   */
+  readOnly?: boolean;
+  /** 只读时提示条上的「接管编辑」进度（见 useCanvasLock） */
+  takeoverState?: TakeoverState;
+  /** 请求接管编辑权 */
+  onTakeover?: () => void;
 };
 
 /**
@@ -209,6 +238,10 @@ export const CanvasEditor = memo(function CanvasEditor({
   overlay,
   aside,
   commandsRef,
+  saveRef,
+  readOnly = false,
+  takeoverState = "idle",
+  onTakeover,
 }: CanvasEditorProps) {
   const initial = useMemo(() => deserializeGraph(canvas.graph), [canvas.graph]);
   const [nodes, setNodes, applyNodesChange] = useNodesState<FlowNode>(initial.nodes);
@@ -279,6 +312,8 @@ export const CanvasEditor = memo(function CanvasEditor({
     initialVersion: canvas.version,
     getGraph,
     onConflict,
+    // 只读预览：保存与草稿整条链路不启动
+    readOnly,
     // 同步要等撤销栈建好才能创建，这里先经 ref 转一道
     autoMerge: () => agentSyncRef.current?.autoMerge() ?? Promise.resolve(null),
     onSaved: (graph, version) => agentSyncRef.current?.saved(graph, version),
@@ -292,8 +327,14 @@ export const CanvasEditor = memo(function CanvasEditor({
   const { pruneOnChange, onNodeClick: onGateNodeClick } = overlayGate;
   const onNodesChange = useCallback(
     (incoming: NodeChange<FlowNode>[]) => {
+      // 只读预览：节点变更里只放行选中与测量尺寸，拖动、删除、就地改数据（updateNodeData 发的是 replace）全丢掉。
+      // 这是只读的兜底——节点里的按钮就算漏了一个，也改不动画布
+      const allowed = readOnly
+        ? incoming.filter((change) => change.type === "select" || change.type === "dimensions")
+        : incoming;
+      if (allowed.length === 0) return;
       // 拖动单个节点时先做对齐吸附，改写完的变更再往下走（保存判定、applyNodesChange）
-      const changes = adjustChanges(incoming);
+      const changes = adjustChanges(allowed);
       pruneOnChange(changes);
       for (const change of changes) {
         if (change.type === "remove") {
@@ -313,24 +354,37 @@ export const CanvasEditor = memo(function CanvasEditor({
         }
       }
       // 测量产生的尺寸变化不算内容改动；缩放组框（NodeResizer）发出的带 setAttributes，要存
-      const persistent = changes.filter(
-        (change) =>
-          change.type !== "select" && (change.type !== "dimensions" || change.setAttributes),
-      );
+      const persistent = readOnly
+        ? []
+        : changes.filter(
+            (change) =>
+              change.type !== "select" && (change.type !== "dimensions" || change.setAttributes),
+          );
       // 只有选中、测量尺寸，或者还在拖动的过程中，都不算内容改动
       changeSaveRef.current =
         persistent.length > 0 &&
         !persistent.every((change) => change.type === "position" && change.dragging);
       applyNodesChange(changes);
     },
-    [adjustChanges, applyNodesChange, pruneOnChange],
+    [adjustChanges, applyNodesChange, pruneOnChange, readOnly],
   );
   useEffect(() => {
     nodesRef.current = nodes;
     edgesRef.current = edges;
   }, [nodes, edges]);
+  /**
+   * 只读时不写节点内容：节点里的就地编辑（标题、放素材、任务回填、Agent 补丁）最后都落到这里，
+   * 挡在这里，漏掉某个按钮也不会真的改到画布。
+   */
+  const writeContentNodes = useCallback<React.Dispatch<React.SetStateAction<CanvasNode[]>>>(
+    (action) => {
+      if (readOnly) return;
+      setContentNodes(action);
+    },
+    [readOnly, setContentNodes],
+  );
   // 任务结果回填节点；打开画布时对账还在 running 的节点
-  useTaskBackfill(contentNodes, setContentNodes, canvas.id);
+  useTaskBackfill(contentNodes, writeContentNodes, canvas.id);
   // 保存撞上冲突要弹「画布已在别处修改」：先关掉导演台，弹窗显示在画布上（设计稿 3D导演台 §7）。
   // 场景早已写进节点，跟着弹窗里「另存为新画布 / 加载最新」走，和画布上其他本地改动一样
   useEffect(() => {
@@ -371,10 +425,13 @@ export const CanvasEditor = memo(function CanvasEditor({
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange<CanvasEdge>[]) => {
-      changeSaveRef.current = changes.some((change) => change.type !== "select");
-      applyEdgesChange(changes);
+      // 只读预览：连线只能有选中态，增删都丢掉
+      const allowed = readOnly ? changes.filter((change) => change.type === "select") : changes;
+      if (allowed.length === 0) return;
+      changeSaveRef.current = allowed.some((change) => change.type !== "select");
+      applyEdgesChange(allowed);
     },
-    [applyEdgesChange],
+    [applyEdgesChange, readOnly],
   );
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -407,6 +464,7 @@ export const CanvasEditor = memo(function CanvasEditor({
       for (const id of ids) knownTaskIdsRef.current.add(id);
     },
     resetHistory: history.reset,
+    readOnly,
   });
   useEffect(() => {
     agentSyncRef.current = agentSync;
@@ -480,6 +538,8 @@ export const CanvasEditor = memo(function CanvasEditor({
   }, [confirmDeleteNodes]);
   const onBeforeDelete = useCallback<OnBeforeDelete<FlowNode, CanvasEdge>>(
     async ({ nodes: doomed, edges: doomedEdges }) => {
+      // 只读预览：Delete / Backspace 也不能删
+      if (readOnly) return false;
       if (confirmedDelete.current) return { nodes: doomed, edges: doomedEdges };
       const groups = doomed.filter(isGroupNode);
       if (groups.length > 0) {
@@ -492,7 +552,7 @@ export const CanvasEditor = memo(function CanvasEditor({
       if (confirmDeleteRef.current && !(await confirmDeleteRef.current(doomed))) return false;
       return { nodes: doomed, edges: doomedEdges };
     },
-    [askDeleteGroup],
+    [askDeleteGroup, readOnly],
   );
   const deleteTarget = useMemo(() => {
     if (!pendingDelete) return null;
@@ -521,6 +581,8 @@ export const CanvasEditor = memo(function CanvasEditor({
   const [minimap, setMinimap] = useState(false);
   const openShortcuts = useCallback(() => onOpenShortcuts?.(), [onOpenShortcuts]);
   const saveNow = useCallback(() => void flush(), [flush]);
+  // 页面的出口：被要求让位时要先存盘再交锁（见 useCanvasLock 的 onYield）
+  useImperativeHandle(saveRef, () => () => flush(), [flush]);
   // 画布把设置里的几项都用上了，整份订阅，省去逐个 selector
   const settings = useSettingsStore();
   const video = useRemoteModels(REMOTE_KIND_OF_NODE.video);
@@ -599,25 +661,28 @@ export const CanvasEditor = memo(function CanvasEditor({
       if (isGroupNode(node)) return;
       // 视频控制条、按钮、输入框上的双击是它们自己的事
       if ((event.target as Element).closest("button, input, textarea, a, .nodrag")) return;
-      // 导演台双击打开编辑器，不进灯箱
-      if (node.data.kind === "director") {
-        openDirector(node.id, node.data);
-        return;
-      }
-      // 角色卡双击打开详情（角色名、形象名、补充图、音色），不进灯箱
-      if (node.data.kind === "character") {
-        useCharacterDetail.getState().open(node.id);
-        return;
-      }
-      // 分镜表双击打开表格编辑弹窗
-      if (node.data.kind === "storyboard") {
-        useStoryboardEditor.getState().open(node.id);
-        return;
+      // 只读预览：只放大看，导演台 / 角色详情 / 分镜表这些能改数据的弹窗不打开
+      if (!readOnly) {
+        // 导演台双击打开编辑器，不进灯箱
+        if (node.data.kind === "director") {
+          openDirector(node.id, node.data);
+          return;
+        }
+        // 角色卡双击打开详情（角色名、形象名、补充图、音色），不进灯箱
+        if (node.data.kind === "character") {
+          useCharacterDetail.getState().open(node.id);
+          return;
+        }
+        // 分镜表双击打开表格编辑弹窗
+        if (node.data.kind === "storyboard") {
+          useStoryboardEditor.getState().open(node.id);
+          return;
+        }
       }
       if (collectPreviewItems([node]).length === 0) return;
       startPreview(node.id, event.currentTarget.getBoundingClientRect());
     },
-    [startPreview],
+    [readOnly, startPreview],
   );
   /** 功能区的「放大」：和双击一样的效果，弹层从节点中心长出来 */
   const previewNode = useCallback(
@@ -636,11 +701,11 @@ export const CanvasEditor = memo(function CanvasEditor({
   }, [onNodeCreate]);
   const setMenuNodes = useCallback<React.Dispatch<React.SetStateAction<CanvasNode[]>>>(
     (action) =>
-      setContentNodes((previous) => {
+      writeContentNodes((previous) => {
         const next = typeof action === "function" ? action(previous) : action;
         return applyNodeDefaults(previous, next, onNodeCreateRef.current);
       }),
-    [setContentNodes],
+    [writeContentNodes],
   );
   const {
     menu,
@@ -689,6 +754,98 @@ export const CanvasEditor = memo(function CanvasEditor({
     beginUploadAt(viewportCenter());
     uploadInputRef.current?.click();
   }, [beginUploadAt, viewportCenter]);
+
+  /** 往空节点里放素材：节点空状态、短剧资产列表、拖放共用 */
+  const patchNode = useCallback(
+    (id: string, patch: Partial<CanvasNodeData>) =>
+      writeContentNodes((list) =>
+        list.map((node) => (node.id === id ? { ...node, data: { ...node.data, ...patch } } : node)),
+      ),
+    [writeContentNodes],
+  );
+  /**
+   * 给空节点选素材的素材库弹框：记下放进哪个节点、锁定什么种类；关掉时保留种类，关闭动画里不闪成全部种类。
+   * 放进角色卡时多一个「真人库」来源（短剧资产列表的空角色卡也走这里）。
+   */
+  const [fillPicker, setFillPicker] = useState<{
+    open: boolean;
+    id: string;
+    kind: MediaType;
+    character: boolean;
+  }>({ open: false, id: "", kind: "image", character: false });
+  const openFillPicker = useCallback(
+    (id: string, kind: MediaType) =>
+      setFillPicker({
+        open: true,
+        id,
+        kind,
+        character: (getNode(id)?.data as CanvasNodeData | undefined)?.kind === "character",
+      }),
+    [getNode],
+  );
+  const fill = useFillUpload({
+    getNode,
+    patchNode,
+    setEdges,
+    addNodeAt,
+    origin: viewportCenter,
+    openAssetPicker: openFillPicker,
+  });
+  /**
+   * 文件拖进画布：拖进的是文件才接，内部拖拽（素材拖进提示词等）不管；
+   * 节点弹出的弹框 portal 在画布外，事件却会经 React 冒泡上来，落在弹框上的也不管
+   */
+  const [fileOver, setFileOver] = useState(false);
+  const onFileDragOver = useCallback(
+    (event: React.DragEvent) => {
+      if (!isCanvasFileDrag(event)) return;
+      // 只读预览：别摆出「可以放进来」的样子
+      if (readOnly) {
+        event.dataTransfer.dropEffect = "none";
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setFileOver(true);
+    },
+    [readOnly],
+  );
+  const onFileDragLeave = useCallback((event: React.DragEvent) => {
+    // 只在真正离开画布时收起提示，经过子元素时的 dragleave 不算
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFileOver(false);
+  }, []);
+  /** 一个文件松在空节点上就放进去，其余在松手处按文件新建节点 */
+  const onFileDrop = useCallback(
+    (event: React.DragEvent) => {
+      setFileOver(false);
+      if (readOnly) {
+        // 只读预览：拖进来的文件不落成节点，给一句说明，免得看着像卡了
+        if (isCanvasFileDrag(event)) {
+          event.preventDefault();
+          canvasNotice("info", "这张画布正在另一个标签页编辑，这里只能看", { id: "readonly-drop" });
+        }
+        return;
+      }
+      const files = Array.from(event.dataTransfer.files);
+      if (files.length === 0 || !isCanvasFileDrag(event)) return;
+      event.preventDefault();
+      const element = (event.target as Element).closest?.(".react-flow__node");
+      const id = element?.getAttribute("data-id");
+      const node = id ? getNode(id) : undefined;
+      const plan = planFileDrop(
+        files,
+        node && !isGroupNode(node) ? { id: node.id, data: node.data } : null,
+      );
+      if (plan.mode === "fill") {
+        fill.fillFile(plan.id, files[0]);
+        return;
+      }
+      const at = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      beginUploadAt({ x: at.x - NEW_NODE_SIZE.width / 2, y: at.y - NEW_NODE_SIZE.height / 2 });
+      void addUploadedNodes(files).then(showUploadNotice);
+    },
+    [addUploadedNodes, beginUploadAt, fill, getNode, readOnly, screenToFlowPosition],
+  );
   /**
    * 粘贴来的外部内容落到画布：文件走和「上传素材」一样的流程（本地预览、上传、换正式地址），
    * 文字直接落成文本节点，正文就是粘贴的内容。落点是指针处，指针不在画布上就落在视口中心。
@@ -720,6 +877,7 @@ export const CanvasEditor = memo(function CanvasEditor({
     save: saveNow,
     group: groupShortcuts,
     paste: pasteContent,
+    readOnly,
   });
 
   // 设置里要列的模型清单：每种节点一行，内置清单后面接上自定义模型
@@ -777,8 +935,8 @@ export const CanvasEditor = memo(function CanvasEditor({
   );
 
   const extensions = useMemo<NodeExtensions>(
-    () => ({ toolbarExtra, toolbarVisible }),
-    [toolbarExtra, toolbarVisible],
+    () => ({ toolbarExtra, toolbarVisible, readOnly }),
+    [toolbarExtra, toolbarVisible, readOnly],
   );
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const openAssetPicker = openAssetPickerAtCenter;
@@ -792,6 +950,7 @@ export const CanvasEditor = memo(function CanvasEditor({
     ...commands,
     canvasId: canvas.id,
     title,
+    readOnly,
     rename: onRename,
     saveStatus,
     saveNow: flush,
@@ -805,261 +964,311 @@ export const CanvasEditor = memo(function CanvasEditor({
     uploadAtCenter,
     openAssetPicker,
     openSettings,
+    fill,
   };
 
   return (
     // data-tool 驱动 index.css 里的光标与命中规则
-    <CanvasIdContext.Provider value={canvas.id}>
-      <CanvasEditorApiProvider value={api}>
-        <NodeExtensionsProvider value={extensions}>
-          <CanvasHistoryProvider value={history}>
-            <MultiSelectProvider value={multiSelected}>
-              <OverlayGateProvider value={overlayGate.dragSelected}>
-                <GroupUiProvider value={groupUi}>
-                  <GroupFanOutProvider value={openGroupMenu}>
-                    <NodePreviewProvider value={previewNode}>
-                      <TooltipProvider delay={400}>
-                        {/* 画布和页面停靠的侧栏（aside 插槽）并排；侧栏浮窗时盖在画布上 */}
-                        <div
-                          className={cn(
-                            "relative flex overflow-hidden",
-                            containerClassName ?? "h-svh w-svw",
-                          )}
-                        >
-                          <div
-                            className="bg-canvas relative h-full min-w-0 flex-1 overflow-hidden"
-                            data-tool={activeTool}
-                            data-canvas-root
-                            onPointerDownCapture={overlayGate.onPointerDownCapture}
-                          >
-                            <ReactFlow
-                              // 不显示右下角的「React Flow」署名（MIT 协议允许隐藏）
-                              proOptions={{ hideAttribution: true }}
-                              nodeTypes={nodeTypes}
-                              edgeTypes={edgeTypes}
-                              defaultEdgeOptions={ANIMATED_EDGE_OPTIONS}
-                              nodes={nodes}
-                              edges={edges}
-                              onNodesChange={onNodesChange}
-                              onEdgesChange={onEdgesChange}
-                              onInit={() => {
-                                // 本机视口优先于云端视口：刷新后停在移动之后的位置
-                                const local = userId ? loadViewport(userId, canvas.id) : null;
-                                appliedViewportRef.current = local ?? initial.viewport;
-                                void setViewport(appliedViewportRef.current);
-                                hydratedRef.current = true;
-                                if (recovery?.kind === "restored") {
-                                  // 内容来自本地草稿，云端还没有：标脏让它排上传
-                                  changed();
-                                  canvasNotice("info", "已恢复上次未同步的改动", {
-                                    id: "draft-restored",
-                                  });
-                                }
-                              }}
-                              onMoveEnd={(_event, viewport) => {
-                                // 恢复视口那一下不算用户移动，别把云端视口写成本机视口
-                                if (
-                                  !hydratedRef.current ||
-                                  sameViewport(appliedViewportRef.current, viewport)
-                                )
-                                  return;
-                                appliedViewportRef.current = viewport;
-                                viewportWriter.schedule(viewport);
-                              }}
-                              onNodeDragStart={(event, node, dragged) => {
-                                overlayGate.onNodeDragStart(event, node, dragged);
-                                groupDrag.onNodeDragStart(event, node, dragged);
-                                alignDragStart(event, node, dragged);
-                              }}
-                              onNodeDrag={groupDrag.onNodeDrag}
-                              onNodeDragStop={onNodeDragStop}
-                              onNodeClick={onNodeClick}
-                              onBeforeDelete={onBeforeDelete}
-                              onConnect={onConnect}
-                              isValidConnection={isValidConnection}
-                              onConnectEnd={onConnectEnd}
-                              // 抓手模式下双击也只是拖画布的一部分，别在松手后冒出添加菜单
-                              onMouseDown={isPanning ? undefined : onPaneMouseDown}
-                              onDoubleClick={isPanning ? undefined : onDoubleClick}
-                              onNodeDoubleClick={isPanning ? undefined : onNodeDoubleClick}
-                              zoomOnDoubleClick={false}
-                              // 大画布要能一眼看全，最小缩到 14%
-                              minZoom={MIN_ZOOM}
-                              // 默认滚轮只平移（shift+滚轮由 xyflow 内部转成左右平移），缩放交给 Ctrl/Cmd+滚轮；
-                              // 设置里切成缩放后，滚轮直接缩放，不再需要按键
-                              panOnScroll={!isWheelZoom}
-                              zoomOnScroll={isWheelZoom}
-                              zoomActivationKeyCode={isWheelZoom ? null : ["Control", "Meta"]}
-                              // 箭头：左键框选，画布只让中键拖；抓手：左键即拖画布，节点不可拖
-                              panOnDrag={isPanning ? true : [1]}
-                              selectionOnDrag={!isPanning}
-                              // 框选相交即选中，不要求完整包住
-                              selectionMode={SelectionMode.Partial}
-                              // 抓手是纯粹的画布模式：节点不能拖、不能选，也拉不出连线
-                              nodesDraggable={!isPanning}
-                              nodesConnectable={!isPanning}
-                              elementsSelectable={!isPanning}
-                            >
-                              <CanvasBackgroundLayer background={settings.background} />
-                              <AlignGuidesLayer />
-                              <SelectionToolbar onFanOut={openGroupMenu} onGroup={groupSelected} />
-                              {minimap && (
-                                <MiniMap
-                                  position="bottom-left"
-                                  pannable
-                                  zoomable
-                                  className="canvas-overlay-interactive !bottom-16 !left-[76px] overflow-hidden rounded-xl shadow-lg ring-1 ring-chrome-border"
-                                  nodeColor="var(--muted-foreground)"
-                                  nodeBorderRadius={12}
-                                />
+    <CanvasReadOnlyProvider value={readOnly}>
+      <CanvasIdContext.Provider value={canvas.id}>
+        <CanvasEditorApiProvider value={api}>
+          <NodeExtensionsProvider value={extensions}>
+            <CanvasHistoryProvider value={history}>
+              <FillUploadProvider value={fill}>
+                <MultiSelectProvider value={multiSelected}>
+                  <OverlayGateProvider value={overlayGate.dragSelected}>
+                    <GroupUiProvider value={groupUi}>
+                      <GroupFanOutProvider value={openGroupMenu}>
+                        <NodePreviewProvider value={previewNode}>
+                          <TooltipProvider delay={400}>
+                            {/* 画布和页面停靠的侧栏（aside 插槽）并排；侧栏浮窗时盖在画布上 */}
+                            <div
+                              className={cn(
+                                "relative flex overflow-hidden",
+                                containerClassName ?? "h-svh w-svw",
                               )}
-                            </ReactFlow>
+                            >
+                              <div
+                                className="bg-canvas relative h-full min-w-0 flex-1 overflow-hidden"
+                                data-tool={activeTool}
+                                data-canvas-root
+                                onDragOver={onFileDragOver}
+                                onDragLeave={onFileDragLeave}
+                                onDrop={onFileDrop}
+                                onPointerDownCapture={overlayGate.onPointerDownCapture}
+                              >
+                                <ReactFlow
+                                  // 不显示右下角的「React Flow」署名（MIT 协议允许隐藏）
+                                  proOptions={{ hideAttribution: true }}
+                                  nodeTypes={nodeTypes}
+                                  edgeTypes={edgeTypes}
+                                  defaultEdgeOptions={ANIMATED_EDGE_OPTIONS}
+                                  nodes={nodes}
+                                  edges={edges}
+                                  onNodesChange={onNodesChange}
+                                  onEdgesChange={onEdgesChange}
+                                  onInit={() => {
+                                    // 本机视口优先于云端视口：刷新后停在移动之后的位置
+                                    const local = userId ? loadViewport(userId, canvas.id) : null;
+                                    appliedViewportRef.current = local ?? initial.viewport;
+                                    void setViewport(appliedViewportRef.current);
+                                    hydratedRef.current = true;
+                                    if (recovery?.kind === "restored") {
+                                      // 内容来自本地草稿，云端还没有：标脏让它排上传
+                                      changed();
+                                      canvasNotice("info", "已恢复上次未同步的改动", {
+                                        id: "draft-restored",
+                                      });
+                                    }
+                                  }}
+                                  onMoveEnd={(_event, viewport) => {
+                                    // 恢复视口那一下不算用户移动，别把云端视口写成本机视口
+                                    if (
+                                      !hydratedRef.current ||
+                                      sameViewport(appliedViewportRef.current, viewport)
+                                    )
+                                      return;
+                                    appliedViewportRef.current = viewport;
+                                    // 只读预览不写本机视口：视口按 user + canvas 存一份，
+                                    // 在这里挪两下就把正在编辑那个标签页的位置改掉了
+                                    if (!readOnly) viewportWriter.schedule(viewport);
+                                  }}
+                                  onNodeDragStart={
+                                    readOnly
+                                      ? undefined
+                                      : (event, node, dragged) => {
+                                          overlayGate.onNodeDragStart(event, node, dragged);
+                                          groupDrag.onNodeDragStart(event, node, dragged);
+                                          alignDragStart(event, node, dragged);
+                                        }
+                                  }
+                                  onNodeDrag={readOnly ? undefined : groupDrag.onNodeDrag}
+                                  onNodeDragStop={readOnly ? undefined : onNodeDragStop}
+                                  onNodeClick={onNodeClick}
+                                  onBeforeDelete={onBeforeDelete}
+                                  onConnect={readOnly ? undefined : onConnect}
+                                  isValidConnection={isValidConnection}
+                                  onConnectEnd={readOnly ? undefined : onConnectEnd}
+                                  // 抓手模式下双击也只是拖画布的一部分，别在松手后冒出添加菜单
+                                  onMouseDown={isPanning || readOnly ? undefined : onPaneMouseDown}
+                                  onDoubleClick={isPanning || readOnly ? undefined : onDoubleClick}
+                                  onNodeDoubleClick={isPanning ? undefined : onNodeDoubleClick}
+                                  zoomOnDoubleClick={false}
+                                  // 只读预览里没有能删的东西，Delete / Backspace 直接不接管
+                                  deleteKeyCode={readOnly ? null : undefined}
+                                  // 大画布要能一眼看全，最小缩到 14%
+                                  minZoom={MIN_ZOOM}
+                                  // 默认滚轮只平移（shift+滚轮由 xyflow 内部转成左右平移），缩放交给 Ctrl/Cmd+滚轮；
+                                  // 设置里切成缩放后，滚轮直接缩放，不再需要按键
+                                  panOnScroll={!isWheelZoom}
+                                  zoomOnScroll={isWheelZoom}
+                                  zoomActivationKeyCode={isWheelZoom ? null : ["Control", "Meta"]}
+                                  // 箭头：左键框选，画布只让中键拖；抓手：左键即拖画布，节点不可拖。
+                                  // 只读预览没有框选，左键直接拖画布，看长图更顺手
+                                  panOnDrag={readOnly || isPanning ? true : [1]}
+                                  selectionOnDrag={!isPanning && !readOnly}
+                                  // 框选相交即选中，不要求完整包住
+                                  selectionMode={SelectionMode.Partial}
+                                  // 抓手是纯粹的画布模式：节点不能拖、不能选，也拉不出连线；只读同理
+                                  nodesDraggable={!isPanning && !readOnly}
+                                  nodesConnectable={!isPanning && !readOnly}
+                                  elementsSelectable={!isPanning && !readOnly}
+                                >
+                                  <CanvasBackgroundLayer background={settings.background} />
+                                  <AlignGuidesLayer />
+                                  {/* 多选工具条上的打组 / 引用生成都要写画布 */}
+                                  {!readOnly && (
+                                    <SelectionToolbar
+                                      onFanOut={openGroupMenu}
+                                      onGroup={groupSelected}
+                                    />
+                                  )}
+                                  {minimap && (
+                                    <MiniMap
+                                      position="bottom-left"
+                                      pannable
+                                      zoomable
+                                      className="canvas-overlay-interactive !bottom-16 !left-[76px] overflow-hidden rounded-xl shadow-lg ring-1 ring-chrome-border"
+                                      nodeColor="var(--muted-foreground)"
+                                      nodeBorderRadius={12}
+                                    />
+                                  )}
+                                </ReactFlow>
 
-                            {!isPanning && pending && menu && (
-                              <PendingConnectionLine
-                                from={pending.fromScreen}
-                                fromPosition={pending.fromPosition}
-                                to={menu.screen}
-                              />
-                            )}
-                            {!isPanning && pendingGroup && menu && (
-                              <PendingFanLines froms={pendingGroup.froms} to={menu.screen} />
-                            )}
+                                {!isPanning && pending && menu && (
+                                  <PendingConnectionLine
+                                    from={pending.fromScreen}
+                                    fromPosition={pending.fromPosition}
+                                    to={menu.screen}
+                                  />
+                                )}
+                                {!isPanning && pendingGroup && menu && (
+                                  <PendingFanLines froms={pendingGroup.froms} to={menu.screen} />
+                                )}
 
-                            <input
-                              ref={uploadInputRef}
-                              type="file"
-                              accept={UPLOAD_ACCEPT}
-                              multiple
-                              className="sr-only"
-                              aria-hidden
-                              tabIndex={-1}
-                              onChange={(event) => {
-                                const files = Array.from(event.target.files ?? []);
-                                // 同一批文件连着选两次也得有反应，所以选完就把值清掉
-                                event.target.value = "";
-                                if (files.length)
-                                  void addUploadedNodes(files).then(showUploadNotice);
-                              }}
-                            />
+                                <input
+                                  ref={uploadInputRef}
+                                  type="file"
+                                  accept={UPLOAD_ACCEPT}
+                                  multiple
+                                  className="sr-only"
+                                  aria-hidden
+                                  tabIndex={-1}
+                                  onChange={(event) => {
+                                    const files = Array.from(event.target.files ?? []);
+                                    // 同一批文件连着选两次也得有反应，所以选完就把值清掉
+                                    event.target.value = "";
+                                    if (files.length)
+                                      void addUploadedNodes(files).then(showUploadNotice);
+                                  }}
+                                />
 
-                            {overlay}
-                            <SettingsDialog
-                              open={settingsOpen}
-                              onOpenChange={setSettingsOpen}
-                              modelGroups={modelGroups}
-                            />
-                            <NodeHistoryDialog />
-                            <DirectorHost />
-                            <StoryboardSplitSync />
-                            <MediaLightbox
-                              items={liveItems ?? lastItems}
-                              target={preview}
-                              onActiveChange={changePreview}
-                              onLocate={locatePreview}
-                              onClose={closePreview}
-                            />
-                            <GroupDeleteDialog
-                              target={deleteTarget}
-                              onConfirm={confirmDeleteGroup}
-                              onCancel={() => setPendingDelete(null)}
-                            />
-                            <ConflictDialog
-                              open={conflict !== null || draftConflict !== null}
-                              onLoadLatest={() => {
-                                if (draftConflict) {
-                                  // 打开时的冲突：当前编辑器本来就是云端最新，丢掉草稿即可
-                                  discardDraft();
-                                  setDraftConflict(null);
-                                  return;
-                                }
-                                if (!conflict) return;
-                                dismissConflict();
-                                onConflict(conflict);
-                              }}
-                              onSaveAsCopy={async () => {
-                                if (!conflict && !draftConflict) return;
-                                const graph = draftConflict ?? getGraph();
-                                if (!graph) return;
-                                try {
-                                  const copy = await createCanvas({
-                                    title: `${title} 副本`,
-                                    graph,
-                                  });
-                                  const openPath = copyOpenPath
-                                    ? copyOpenPath(copy.id)
-                                    : `/canvas/${copy.id}`;
-                                  canvasNotice("success", `已另存为「${copy.title}」`, {
-                                    id: "save-as-copy",
-                                    action: openPath
-                                      ? { label: "打开", onClick: () => navigate(openPath) }
-                                      : undefined,
-                                  });
-                                } catch {
-                                  canvasNotice("error", "另存失败，请稍后重试", {
-                                    id: "save-as-failed",
-                                  });
-                                  return;
-                                }
-                                if (draftConflict) {
-                                  discardDraft();
-                                  setDraftConflict(null);
-                                  return;
-                                }
-                                if (!conflict) return;
-                                dismissConflict();
-                                onConflict(conflict);
-                              }}
-                            />
+                                {fileOver && (
+                                  <div
+                                    aria-hidden
+                                    className="ring-primary/70 bg-primary/5 pointer-events-none absolute inset-2 z-40 rounded-3xl ring-2 ring-inset"
+                                  />
+                                )}
+                                {overlay}
+                                {readOnly && (
+                                  <ReadOnlyBanner
+                                    takeoverState={takeoverState}
+                                    onTakeover={onTakeover}
+                                  />
+                                )}
+                                <SettingsDialog
+                                  open={settingsOpen}
+                                  onOpenChange={setSettingsOpen}
+                                  modelGroups={modelGroups}
+                                />
+                                <NodeHistoryDialog />
+                                <DirectorHost />
+                                <StoryboardSplitSync />
+                                <MediaLightbox
+                                  items={liveItems ?? lastItems}
+                                  target={preview}
+                                  onActiveChange={changePreview}
+                                  onLocate={locatePreview}
+                                  onClose={closePreview}
+                                />
+                                <GroupDeleteDialog
+                                  target={deleteTarget}
+                                  onConfirm={confirmDeleteGroup}
+                                  onCancel={() => setPendingDelete(null)}
+                                />
+                                <ConflictDialog
+                                  open={conflict !== null || draftConflict !== null}
+                                  onLoadLatest={() => {
+                                    if (draftConflict) {
+                                      // 打开时的冲突：当前编辑器本来就是云端最新，丢掉草稿即可
+                                      discardDraft();
+                                      setDraftConflict(null);
+                                      return;
+                                    }
+                                    if (!conflict) return;
+                                    dismissConflict();
+                                    onConflict(conflict);
+                                  }}
+                                  onSaveAsCopy={async () => {
+                                    if (!conflict && !draftConflict) return;
+                                    const graph = draftConflict ?? getGraph();
+                                    if (!graph) return;
+                                    try {
+                                      const copy = await createCanvas({
+                                        title: `${title} 副本`,
+                                        graph,
+                                      });
+                                      const openPath = copyOpenPath
+                                        ? copyOpenPath(copy.id)
+                                        : `/canvas/${copy.id}`;
+                                      canvasNotice("success", `已另存为「${copy.title}」`, {
+                                        id: "save-as-copy",
+                                        action: openPath
+                                          ? { label: "打开", onClick: () => navigate(openPath) }
+                                          : undefined,
+                                      });
+                                    } catch {
+                                      canvasNotice("error", "另存失败，请稍后重试", {
+                                        id: "save-as-failed",
+                                      });
+                                      return;
+                                    }
+                                    if (draftConflict) {
+                                      discardDraft();
+                                      setDraftConflict(null);
+                                      return;
+                                    }
+                                    if (!conflict) return;
+                                    dismissConflict();
+                                    onConflict(conflict);
+                                  }}
+                                />
 
-                            <AddNodeMenu
-                              position={isPanning ? null : (menu?.screen ?? null)}
-                              label={
-                                pendingGroup
-                                  ? `引用选中的 ${pendingGroup.nodeIds.length} 个节点生成`
-                                  : pending
-                                    ? "引用该节点生成"
-                                    : "添加节点"
-                              }
-                              items={menuItems}
-                              onClose={closeMenu}
-                              onSelect={(value) => {
-                                // 上传得先知道文件是什么才知道建哪种节点，落点先记下，节点等选完再建
-                                if (value === UPLOAD_ACTION) {
-                                  beginUpload();
-                                  uploadInputRef.current?.click();
-                                  return;
-                                }
+                                <AddNodeMenu
+                                  position={isPanning ? null : (menu?.screen ?? null)}
+                                  label={
+                                    pendingGroup
+                                      ? `引用选中的 ${pendingGroup.nodeIds.length} 个节点生成`
+                                      : pending
+                                        ? "引用该节点生成"
+                                        : "添加节点"
+                                  }
+                                  items={menuItems}
+                                  onClose={closeMenu}
+                                  onSelect={(value) => {
+                                    // 上传得先知道文件是什么才知道建哪种节点，落点先记下，节点等选完再建
+                                    if (value === UPLOAD_ACTION) {
+                                      beginUpload();
+                                      uploadInputRef.current?.click();
+                                      return;
+                                    }
 
-                                // 从资产库添加：落点是菜单位置；不连线，只建节点
-                                if (value === ASSET_LIBRARY_ACTION) {
-                                  if (menu) setAssetPicker({ origin: menu.flow });
-                                  closeMenu();
-                                  return;
-                                }
+                                    // 从资产库添加：落点是菜单位置；不连线，只建节点
+                                    if (value === ASSET_LIBRARY_ACTION) {
+                                      if (menu) setAssetPicker({ origin: menu.flow });
+                                      closeMenu();
+                                      return;
+                                    }
 
-                                addNode(value as NodeKind);
-                              }}
-                            />
-                            <AssetPickerDialog
-                              open={assetPicker !== null}
-                              onOpenChange={(open) => !open && setAssetPicker(null)}
-                              onConfirm={(assets) => {
-                                if (assetPicker) addAssetNodes(assets, assetPicker.origin);
-                              }}
-                            />
-                          </div>
-                          {aside}
-                        </div>
-                      </TooltipProvider>
-                    </NodePreviewProvider>
-                  </GroupFanOutProvider>
-                </GroupUiProvider>
-              </OverlayGateProvider>
-            </MultiSelectProvider>
-          </CanvasHistoryProvider>
-        </NodeExtensionsProvider>
-      </CanvasEditorApiProvider>
-    </CanvasIdContext.Provider>
+                                    addNode(value as NodeKind);
+                                  }}
+                                />
+                                <AssetPickerDialog
+                                  open={assetPicker !== null}
+                                  onOpenChange={(open) => !open && setAssetPicker(null)}
+                                  withOfficialVoices
+                                  onConfirm={(assets) => {
+                                    if (assetPicker) addAssetNodes(assets, assetPicker.origin);
+                                  }}
+                                />
+                                <AssetPickerDialog
+                                  open={fillPicker.open}
+                                  onOpenChange={(open) =>
+                                    !open && setFillPicker((state) => ({ ...state, open: false }))
+                                  }
+                                  kind={fillPicker.kind}
+                                  limit={1}
+                                  withHumans={fillPicker.character && fillPicker.kind === "image"}
+                                  withOfficialVoices={fillPicker.kind === "audio"}
+                                  confirmLabel="放进节点"
+                                  onConfirm={(assets) => {
+                                    if (assets[0]) fill.fillAsset(fillPicker.id, assets[0]);
+                                  }}
+                                />
+                              </div>
+                              {aside}
+                            </div>
+                          </TooltipProvider>
+                        </NodePreviewProvider>
+                      </GroupFanOutProvider>
+                    </GroupUiProvider>
+                  </OverlayGateProvider>
+                </MultiSelectProvider>
+              </FillUploadProvider>
+            </CanvasHistoryProvider>
+          </NodeExtensionsProvider>
+        </CanvasEditorApiProvider>
+      </CanvasIdContext.Provider>
+    </CanvasReadOnlyProvider>
   );
 });

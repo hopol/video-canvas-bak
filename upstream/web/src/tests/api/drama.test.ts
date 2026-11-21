@@ -99,6 +99,10 @@ describe("api/drama：请求体", () => {
       text_model: "",
       outline_md: "x",
     });
+    // 图片模型三项都发，空串表示改回「跟随默认」
+    expect(
+      toUpdateDramaBody({ revision: 3, imageModels: { character: "m1", scene: "", prop: "" } }),
+    ).toEqual({ revision: 3, image_models: { character: "m1", scene: "", prop: "" } });
     expect(toUpdateEpisodeBody({ revision: 2, scriptMd: "正文" })).toEqual({
       revision: 2,
       script_md: "正文",

@@ -7,9 +7,14 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+
 	"video-canvas/internal/drama"
 	"video-canvas/internal/model"
 	"video-canvas/internal/pkg/errcode"
+	"video-canvas/internal/pkg/idcodec"
+	"video-canvas/internal/pkg/logger"
 	"video-canvas/internal/repository"
 )
 
@@ -131,9 +136,14 @@ func (s *DramaService) runStoryboard(ctx context.Context, run *dramaRun, vars ma
 		return nil, err
 	}
 	vars["script_md"], vars["episode_no"], vars["assets"], vars["max_seconds"] = ep.ScriptMD, ep.No, assets, input.MaxSeconds
-	// 分镜固定写 Seedance 原稿，平台适配在片场转写；变量保留给引用了它的自写提示词。
-	vars["prompt_format"] = drama.PromptFormatSeedance
-	output, cost, err := s.callDrama(ctx, run.job, &run.snapshot, "storyboard", "", vars, func(value any) error {
+	// 创作段：写法都在这一段（内置正文是即梦 / Seedance 分栏，用户可以整段换掉），输出纯文本分镜稿，不解析结构。
+	draft, draftCost, err := s.callDrama(ctx, run.job, &run.snapshot, "storyboard", "", vars, nil)
+	if err != nil {
+		return nil, err
+	}
+	// 格式段：系统固定，只拿创作稿与资产清单，负责切段、时长、资产引用和 JSON，不改写法。校验失败只重试这一段，不重跑创作段。
+	formatVars := map[string]any{"draft_md": draft, "episode_no": ep.No, "assets": assets, "max_seconds": input.MaxSeconds}
+	output, formatCost, err := s.callDrama(ctx, run.job, &run.snapshot, "storyboard_format", "", formatVars, func(value any) error {
 		return value.(drama.StoryboardOutput).ValidateMaxSeconds(input.MaxSeconds)
 	})
 	if err != nil {
@@ -145,7 +155,7 @@ func (s *DramaService) runStoryboard(ctx context.Context, run *dramaRun, vars ma
 		ids[asset.NodeID] = true
 	}
 	result.SanitizeReferences(ids)
-	return &dramaResult{output: result, cost: cost}, nil
+	return &dramaResult{output: result, cost: draftCost + formatCost}, nil
 }
 
 // storyboardAssets 过滤本集或全集节点，并截取提示词摘要以避免把完整画布送进文本模型。
@@ -246,4 +256,57 @@ func finishStoryboardStatus(ctx context.Context, tx repository.DramaTx, j *model
 		}
 	}
 	return nil
+}
+
+// syncBoardNodes 分镜成功落库后，在画布上把本集每个片段的故事板节点建好（空节点，进画布就能看到），
+// 重新生成分镜时片段换了新的，旧片段的节点清掉。画布和片段是两次写入，这一步失败只记日志，
+// 不影响分镜成功：之后点「生成」或进画布时会补建。
+func (s *DramaService) syncBoardNodes(ctx context.Context, job *model.DramaJob) {
+	if s.canvas == nil || len(job.Episodes) != 1 {
+		return
+	}
+	no := job.Episodes[0]
+	if err := s.syncEpisodeBoards(ctx, job.UserID, job.DramaID, no); err != nil {
+		logger.Ctx(ctx).Warn("同步故事板节点失败，之后生成时会补建", zap.Uint64("drama_id", job.DramaID), zap.Int("episode", no), zap.Error(err))
+	}
+}
+
+// syncEpisodeBoards 读本集的片段，交给画布服务对齐故事板节点。
+func (s *DramaService) syncEpisodeBoards(ctx context.Context, userID, dramaID uint64, no int) error {
+	p, err := s.repo.Project(ctx, userID, dramaID, false)
+	if err != nil {
+		return err
+	}
+	eps, err := s.repo.Episodes(ctx, userID, dramaID)
+	if err != nil {
+		return err
+	}
+	var ep *model.DramaEpisode
+	for i := range eps {
+		if eps[i].No == no {
+			ep = &eps[i]
+		}
+	}
+	if ep == nil {
+		return nil
+	}
+	// 片段只能在事务接口里读；这里只读，事务马上结束，不和后面的画布写入嵌套
+	var rows []model.DramaSegment
+	if err = s.repo.WithTx(ctx, func(tx repository.DramaTx) error {
+		var e error
+		rows, e = tx.Segments(ctx, userID, ep.ID)
+		return e
+	}); err != nil {
+		return err
+	}
+	segments := make([]DramaBoardSegment, 0, len(rows))
+	for _, row := range rows {
+		shots := drama.BoardShotCount(row.Prompt)
+		segments = append(segments, DramaBoardSegment{
+			ID: idcodec.Encode(row.ID), Seq: row.Seq, NewID: uuid.NewString(),
+			Label:      fmt.Sprintf("故事板 · 第 %d 集 · %02d", no, row.Seq+1),
+			SourceHash: drama.SourceHash(row.Prompt), Layout: drama.BoardLayout(shots), ShotCount: shots,
+		})
+	}
+	return s.canvas.SyncBoards(ctx, userID, p.CanvasID, no, segments)
 }

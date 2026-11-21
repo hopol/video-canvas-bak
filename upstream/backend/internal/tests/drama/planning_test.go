@@ -66,7 +66,7 @@ func TestScriptBatchesKeepOversizeEpisodeWhole(t *testing.T) {
 	}
 	units[1].Text = strings.Repeat("长", 40001)
 	units[1].Chars = 40001
-	batches := drama.ScriptBatches(units)
+	batches := drama.ScriptBatches(units, 30000)
 	if len(batches) < 4 || len(batches[1]) != 1 || batches[1][0].Chars != 40001 {
 		t.Fatalf("长集不得拆开: %v", len(batches))
 	}
@@ -79,5 +79,37 @@ func TestScriptBatchesKeepOversizeEpisodeWhole(t *testing.T) {
 	}
 	if count != 25 {
 		t.Fatal("丢集")
+	}
+}
+
+func TestScriptBatchesFollowBudget(t *testing.T) {
+	units := []drama.Unit{}
+	for i := 0; i < 10; i++ {
+		units = append(units, drama.Unit{No: i + 1, Chars: 2000})
+	}
+	units[4].Chars = 9000
+	batches := drama.ScriptBatches(units, 5000)
+	for _, batch := range batches {
+		total := 0
+		for _, u := range batch {
+			total += u.Chars
+		}
+		if total > 5000 && len(batch) > 1 {
+			t.Fatalf("多集的一批超过预算: %d", total)
+		}
+	}
+	if len(batches) != 6 {
+		t.Fatalf("预算 5000 时应分 6 批，实际 %d", len(batches))
+	}
+}
+
+func TestLongestUnitCountsTitle(t *testing.T) {
+	units := []drama.Unit{{No: 1, Title: "第1章", Chars: 100}, {No: 2, Title: "第2章 长", Chars: 5000}, {No: 3, Title: "第3章", Chars: 300}}
+	u, n := drama.LongestUnit(units)
+	if u.No != 2 || n != 5000+len([]rune("## [2] 第2章 长\n\n")) {
+		t.Fatalf("最长一章算错: %d %d", u.No, n)
+	}
+	if _, n = drama.LongestUnit(nil); n != 0 {
+		t.Fatal("空列表应为 0")
 	}
 }

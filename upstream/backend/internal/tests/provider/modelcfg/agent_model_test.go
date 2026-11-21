@@ -2,6 +2,7 @@ package modelcfg_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -238,6 +239,76 @@ func TestAgentModel_APIFormat(t *testing.T) {
 				}
 			} else if value != wantFormat {
 				t.Errorf("快照 api_format=%v，期望 %q", value, wantFormat)
+			}
+		})
+	}
+}
+
+// path_prefix 是 Agent 模型（OpenAI 兼容格式）请求路径里的版本段，不写等于 /v1。
+// 其他种类的模型走协议插件，在协议设置里填 pathPrefix；Gemini 格式的路径固定，都不能写这个字段。
+func TestAgentModel_PathPrefix(t *testing.T) {
+	cases := []struct {
+		name, kind, format, prefix string
+		wantErrPath                string
+	}{
+		{"不写", "agent", "", "", ""},
+		{"/v4", "agent", "openai", "/v4", ""},
+		{"多段前缀", "agent", "", "/compatible-mode/v1", ""},
+		{"斜杠表示不加前缀", "agent", "", "/", ""},
+		{"缺前导斜杠也接受", "agent", "", "api/v3", ""},
+		{"带点号和连字符", "agent", "", "/api.v3-beta", ""},
+		{"Gemini 不能写", "agent", "gemini", "/v4", "channels[0].path_prefix"},
+		{"非 agent 不能写", "text", "", "/v4", "channels[0].path_prefix"},
+		{"含空格", "agent", "", "/v 4", "channels[0].path_prefix"},
+		{"含问号", "agent", "", "/v4?x=1", "channels[0].path_prefix"},
+		{"含反斜杠", "agent", "", `\v4`, "channels[0].path_prefix"},
+		{"含 ..", "agent", "", "/../admin", "channels[0].path_prefix"},
+		{"含连续斜杠", "agent", "", "//evil.com", "channels[0].path_prefix"},
+		{"中文", "agent", "", "/版本", "channels[0].path_prefix"},
+		{"太长", "agent", "", "/" + strings.Repeat("a", 200), "channels[0].path_prefix"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mcLoadFixture(t, "model_video.json")
+			if tc.kind == "agent" {
+				mcAsAgent(m)
+			} else {
+				mcAsText(m)
+			}
+			if tc.format != "" {
+				mcChannel0(m)["api_format"] = tc.format
+			}
+			mcChannel0(m)["path_prefix"] = tc.prefix
+			got, issues := modelcfg.ParseModel(mcMarshal(t, m))
+			if tc.wantErrPath != "" {
+				for _, issue := range issues {
+					if issue.Path == tc.wantErrPath {
+						return
+					}
+				}
+				t.Fatalf("应拒绝 %s：%v", tc.wantErrPath, mcIssueList(issues))
+			}
+			if got == nil || len(issues) != 0 {
+				t.Fatalf("合法配置应通过：%v", mcIssueList(issues))
+			}
+			if got.Channels[0].PathPrefix != tc.prefix {
+				t.Errorf("PathPrefix=%q，期望 %q", got.Channels[0].PathPrefix, tc.prefix)
+			}
+			// 快照原样带上；没填就不写这个键，保持旧快照形状
+			snap := provider.NewSnapshot(got, &provider.ChannelRuntime{}, 1)
+			if snap.Model.PathPrefix != tc.prefix {
+				t.Errorf("快照 PathPrefix=%q，期望 %q", snap.Model.PathPrefix, tc.prefix)
+			}
+			body, err := json.Marshal(snap.Model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved map[string]any
+			if err := json.Unmarshal(body, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := saved["path_prefix"]; exists != (tc.prefix != "") {
+				t.Errorf("快照 path_prefix 存在=%v，期望 %v：%s", exists, tc.prefix != "", body)
 			}
 		})
 	}

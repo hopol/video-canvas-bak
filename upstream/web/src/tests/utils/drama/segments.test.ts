@@ -12,6 +12,7 @@ import {
   orderIds,
   playableTake,
   removeSegmentFrom,
+  runBatch,
   sameOrder,
   totalSeconds,
 } from "@/utils/drama/segments";
@@ -146,6 +147,30 @@ describe("批量生成：对没有采用视频的片段逐个提交", () => {
       seg("err", 4, { status: "error", takes: [take("2", "failed")] }),
     ];
     expect(batchTargets(list).map((s) => s.id)).toEqual(["idle", "err"]);
+  });
+});
+
+describe("批量生成：等同于对每个片段各点一次「立即生成」", () => {
+  const list = [seg("a", 0), seg("b", 1), seg("c", 2)];
+
+  test("各片段同时开始，不等前一个结束（并发由后台统一限制）", async () => {
+    const events: string[] = [];
+    await runBatch(list, async (item) => {
+      events.push(`start ${item.id}`);
+      await Promise.resolve();
+      events.push(`end ${item.id}`);
+    });
+    expect(events.slice(0, 3)).toEqual(["start a", "start b", "start c"]);
+  });
+
+  test("某个片段抛错，不影响其他片段，批量本身也不抛", async () => {
+    const done: string[] = [];
+    await runBatch(list, async (item) => {
+      if (item.id === "a") throw new Error("boom");
+      await Promise.resolve();
+      done.push(item.id);
+    });
+    expect(done).toEqual(["b", "c"]);
   });
 });
 

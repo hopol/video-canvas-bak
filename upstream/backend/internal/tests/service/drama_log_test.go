@@ -72,7 +72,7 @@ func TestDramaLog_InvalidOutputTwice(t *testing.T) {
 	read := serviceLog(t)
 	r := newDramaMemory()
 	dramaAddEpisode(r, 1, "")
-	s, _ := dramaTestService(r, &dramaTextStreamer{outputs: []string{`{bad`, `{"script_md":""}`}}, nil)
+	s, _ := dramaTestService(r, &dramaTextStreamer{outputs: []string{" ", " \n "}}, nil)
 	j, err := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "scripts", Episodes: []int{1}})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestDramaLog_Success(t *testing.T) {
 	read := serviceLog(t)
 	r := newDramaMemory()
 	dramaAddEpisode(r, 1, "")
-	s, _ := dramaTestService(r, &dramaTextStreamer{outputs: []string{`{"script_md":"剧本"}`}}, nil)
+	s, _ := dramaTestService(r, &dramaTextStreamer{outputs: []string{"剧本"}}, nil)
 	j, _ := s.CreateJob(context.Background(), 7, 1, &model.DramaJobReq{Step: "scripts", Episodes: []int{1}})
 	if err := s.HandleDrama(context.Background(), 7, 1, uint64(j.ID)); err != nil {
 		t.Fatal(err)

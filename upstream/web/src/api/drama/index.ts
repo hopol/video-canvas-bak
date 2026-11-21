@@ -9,6 +9,7 @@ import type {
   BackendEpisodeView,
   BackendJobView,
   BackendSegmentView,
+  BoardGenerateBody,
   AdaptFormat,
   AdaptSegmentInput,
   AddSegmentInput,
@@ -65,6 +66,7 @@ export const mapEpisodeSummary = (raw: BackendEpisodeSummary): EpisodeSummary =>
   segmentCount: raw.segment_count ?? 0,
   segmentSeconds: raw.segment_seconds ?? 0,
   doneSegmentCount: raw.done_segment_count ?? 0,
+  doneBoardCount: raw.done_board_count ?? 0,
   final: raw.final ? mapAsset(raw.final) : null,
   finalStale: raw.final_stale ?? false,
   hook: raw.hook ?? "",
@@ -88,6 +90,7 @@ export const mapJob = (raw: BackendJobView): DramaJob => ({
   errorCode: raw.error_code,
   errorMessage: raw.error_message ?? "",
   createdAt: raw.created_at,
+  startedAt: raw.started_at ?? null,
   finishedAt: raw.finished_at ?? null,
   result: raw.result
     ? { asset: mapAsset(raw.result.asset), skippedSeqs: raw.result.skipped_seqs ?? [] }
@@ -97,15 +100,17 @@ export const mapJob = (raw: BackendJobView): DramaJob => ({
   batchTo: raw.batch_to ? raw.batch_to : null,
 });
 
-/** 没有提示词设置（老项目）时四个环节都是内置 */
+/** 没有提示词设置（老项目）时各环节都是内置 */
 const BUILTIN_SETTING = { source: "builtin", label: "内置" } as const;
 
-/** 四个环节的提示词设置：缺的环节补成内置 */
+/** 六个环节的提示词设置：缺的环节补成内置 */
 export const mapPromptSettings = (raw: Partial<PromptSettings> | undefined): PromptSettings => ({
-  adapt: raw?.adapt ?? BUILTIN_SETTING,
+  plan: raw?.plan ?? BUILTIN_SETTING,
+  scripts: raw?.scripts ?? BUILTIN_SETTING,
   assets: raw?.assets ?? BUILTIN_SETTING,
   asset_prompts: raw?.asset_prompts ?? BUILTIN_SETTING,
   video: raw?.video ?? BUILTIN_SETTING,
+  board: raw?.board ?? BUILTIN_SETTING,
 });
 
 export const mapDrama = (raw: BackendDramaView): Drama => ({
@@ -126,6 +131,7 @@ export const mapDrama = (raw: BackendDramaView): Drama => ({
     character: raw.image_models?.character ?? "",
     scene: raw.image_models?.scene ?? "",
     prop: raw.image_models?.prop ?? "",
+    board: raw.image_models?.board ?? "",
   },
   outlineMd: raw.outline_md ?? "",
   charactersMd: raw.characters_md ?? "",
@@ -143,6 +149,13 @@ export const mapDrama = (raw: BackendDramaView): Drama => ({
   pauseReason: raw.pause_reason ?? "",
   pauseCode: raw.pause_code ?? "",
   promptSettings: mapPromptSettings(raw.prompt_settings),
+  eta: raw.eta
+    ? {
+        analyzeSeconds: raw.eta.analyze_seconds,
+        planSeconds: raw.eta.plan_seconds,
+        planBatchesLeft: raw.eta.plan_batches_left,
+      }
+    : null,
 });
 
 export const mapStyles = (raw: BackendDramaStyles): DramaStyles => ({
@@ -214,6 +227,7 @@ export const toCreateDramaBody = (input: CreateDramaInput) =>
     text_model: input.textModel ?? "",
     video_model: input.videoModel || undefined,
     image_models: imageModelsBody(input.imageModels),
+    image_params: input.imageParams,
     prompts: input.prompts,
   });
 
@@ -240,6 +254,7 @@ export const toUpdateDramaBody = (input: UpdateDramaInput) =>
     text_model: input.textModel,
     outline_md: input.outlineMd,
     characters_md: input.charactersMd,
+    image_models: input.imageModels,
     prompts: input.prompts,
   });
 
@@ -546,6 +561,24 @@ export const generateSegment = (
     headers: { "Idempotency-Key": idempotencyKey },
   });
 
+/** 片场生成故事板（202）；统一经 utils/tasks/gateway.ts 调用，那里管幂等键与重试 */
+export const generateBoard = (
+  sid: string,
+  body: BoardGenerateBody,
+  idempotencyKey: string,
+): Promise<SegmentGenerateResult> =>
+  service.post<SegmentGenerateResult>(`/drama-segments/${sid}/board`, body, {
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+
+/** 切换片段故事板的当前版本（204）：滑到哪版，生视频就带哪版 */
+export const selectBoardOutput = (sid: string, outputId: string): Promise<void> =>
+  service.put<void>(
+    `/drama-segments/${sid}/board/output`,
+    { output_id: outputId },
+    { silent: true },
+  );
+
 /** 后端的「我的提示词」项 */
 type BackendMyPrompt = Omit<MyPrompt, "updatedAt"> & { updated_at: string };
 
@@ -608,7 +641,7 @@ export const deleteMyPrompt = async (id: string): Promise<void> => {
 };
 
 /**
- * 某个环节可用的技能：后台已启用且标了该环节的
+ * 某个环节可用的技能：后台打开了该环节、且有生效版本的
  * @param step 环节
  */
 export const listDramaSkills = async (step: PromptStep): Promise<DramaSkill[]> => {

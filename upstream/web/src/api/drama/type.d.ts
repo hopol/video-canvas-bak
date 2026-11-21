@@ -34,8 +34,8 @@ export type PauseCode = "user" | "credits" | "failed" | "context" | "custom_prom
 /** 原文切出来的单元种类：集 / 场次 / 章 / 段 */
 export type UnitKind = "episode" | "scene" | "chapter" | "chunk";
 
-/** 提示词的四个环节：剧本改编 / 资产拆解 / 资产图提示词 / 视频提示词 */
-export type PromptStep = "adapt" | "assets" | "asset_prompts" | "video";
+/** 提示词的五个环节：分集规划 / 分集剧本 / 资产拆解 / 资产图提示词 / 视频提示词 */
+export type PromptStep = "plan" | "scripts" | "assets" | "asset_prompts" | "video" | "board";
 
 /** 任务状态 */
 export type DramaJobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
@@ -68,7 +68,7 @@ export interface PromptChoice {
   skill?: string;
 }
 
-/** 四个环节的提示词选择；省略的环节等于内置 */
+/** 各环节的提示词选择；省略的环节等于内置 */
 export type PromptChoices = Partial<Record<PromptStep, PromptChoice>>;
 
 /** 已建剧的一个环节提示词设置（快照来源与展示名） */
@@ -77,9 +77,11 @@ export interface PromptSetting extends PromptChoice {
   label: string;
   /** true 表示快照来源（我的提示词 / 技能）已被删或停用：快照照常可用，界面标红提示 */
   missing?: boolean;
+  /** 只有故事板环节带正文（{ board: 模板 }）：前端按它拼宫格图提示词；其他环节不返回 */
+  bodies?: Record<string, string>;
 }
 
-/** 已建剧的四个环节提示词设置 */
+/** 已建剧的各环节提示词设置 */
 export type PromptSettings = Record<PromptStep, PromptSetting>;
 
 export interface BackendDramaSummary {
@@ -107,6 +109,8 @@ export interface BackendEpisodeSummary {
   segment_count?: number;
   segment_seconds?: number;
   done_segment_count?: number;
+  /** 有采用且未过期故事板的片段数；老后端没有按 0 */
+  done_board_count?: number;
   /** 三期字段（契约 §14）：成片与是否过期；后端还没带时按「没有成片」处理 */
   final?: BackendAssetDto | null;
   final_stale?: boolean;
@@ -135,6 +139,8 @@ export interface BackendJobView {
   error_code: number;
   error_message: string;
   created_at: string;
+  /** 开始执行的时间；排队中为 null，老后端没有这个字段 */
+  started_at?: string | null;
   finished_at: string | null;
   /** compose 成功时 `{asset, skipped_seqs}`；其他步骤为 null（契约 §14） */
   result?: { asset: BackendAssetDto; skipped_seqs: number[] | null } | null;
@@ -146,11 +152,12 @@ export interface BackendJobView {
   batch_to?: number;
 }
 
-/** 三类资产各自的图片模型 key，空串 = 不指定 */
+/** 三类资产和故事板各自的图片模型 key，空串 = 不指定（故事板跟随场景图片模型） */
 export interface DramaImageModels {
   character: string;
   scene: string;
   prop: string;
+  board: string;
 }
 
 export interface BackendDramaView {
@@ -191,8 +198,14 @@ export interface BackendDramaView {
   pause_reason?: string;
   /** 暂停原因分类 */
   pause_code?: PauseCode | "";
-  /** 四个环节当前的提示词设置 */
+  /** 各环节当前的提示词设置 */
   prompt_settings?: PromptSettings;
+  /** 自动规划中的预计耗时原料；不在规划中为 null，老后端没有 */
+  eta?: {
+    analyze_seconds: number;
+    plan_seconds: number;
+    plan_batches_left: number;
+  } | null;
 }
 
 export interface BackendDramaStyles {
@@ -232,6 +245,8 @@ export interface EpisodeSummary {
   segmentSeconds: number;
   /** 有「采用」视频的片段数 */
   doneSegmentCount: number;
+  /** 有采用且未过期故事板的片段数 */
+  doneBoardCount: number;
   /** 合成好的成片；没有为 null */
   final: AssetDto | null;
   /** 成片之后有片段改了采用 / 顺序 / 增删：提示「成片已过期，可重新合成」 */
@@ -263,6 +278,8 @@ export interface DramaJob {
   errorCode: number;
   errorMessage: string;
   createdAt: string;
+  /** 开始执行的时间；排队中为 null */
+  startedAt: string | null;
   finishedAt: string | null;
   /** compose 成功的结果；其他步骤为 null */
   result: DramaJobResult | null;
@@ -323,8 +340,17 @@ export interface Drama {
   pauseReason: string;
   /** 暂停原因分类，没有为空串 */
   pauseCode: PauseCode | "";
-  /** 四个环节当前的提示词设置；老数据全是内置 */
+  /** 各环节当前的提示词设置；老数据全是内置 */
   promptSettings: PromptSettings;
+  /** 自动规划中的预计耗时原料；不在规划中为 null */
+  eta: DramaEta | null;
+}
+
+/** 预计耗时原料：同模型粗读 / 每批规划的历史中位耗时（秒，历史不足为 0）和剩余规划批次数 */
+export interface DramaEta {
+  analyzeSeconds: number;
+  planSeconds: number;
+  planBatchesLeft: number;
 }
 
 export interface DramaStyles {
@@ -366,7 +392,13 @@ export interface CreateDramaInput {
   videoModel?: string;
   /** 人物 / 场景 / 物品资产用的图片模型 key；省略的项 = 不指定 */
   imageModels?: { character?: string; scene?: string; prop?: string };
-  /** 四个环节的提示词选择；省略的环节 = 内置 */
+  /** 人物 / 场景 / 物品资产新建节点默认的生成参数（参数名 → 取值，如 aspect_ratio: 16:9）；省略的项 = 用模型默认 */
+  imageParams?: {
+    character?: Record<string, string>;
+    scene?: Record<string, string>;
+    prop?: Record<string, string>;
+  };
+  /** 各环节的提示词选择；省略的环节 = 内置 */
   prompts?: PromptChoices;
 }
 
@@ -381,6 +413,8 @@ export interface UpdateDramaInput {
   textModel?: string;
   outlineMd?: string;
   charactersMd?: string;
+  /** 人物 / 场景 / 物品资产的图片模型；空串 = 跟随默认 */
+  imageModels?: DramaImageModels;
   /** 重新选择各环节的提示词：保存时重新快照正文，只影响之后提交的任务 */
   prompts?: PromptChoices;
 }
@@ -446,6 +480,9 @@ export interface BackendSegmentView {
   /** 按格式存的转写稿；老后端可能没有 */
   adaptations?: Partial<Record<AdaptFormat, BackendSegmentAdaptation>> | null;
 }
+
+/** 故事板宫格布局（列 x 行） */
+export type BoardLayout = "2x2" | "2x3" | "3x2" | "3x3";
 
 /** 需要转写的提示词格式（Seedance 是原稿本身，不存转写稿） */
 export type AdaptFormat = "h3" | "generic";
@@ -526,6 +563,25 @@ export interface SegmentGenerateBody {
 }
 
 export type SegmentGenerateResult = { task: TaskView };
+
+/** POST /drama-segments/:sid/board 请求体：片场生成故事板，后端写画布上的故事板节点并建图片任务 */
+export interface BoardGenerateBody {
+  model_id: string;
+  /** 按图片模型能力组装好的任务输入 */
+  input: Record<string, unknown>;
+  /** 节点上的提示词（@ 引用原样保留） */
+  prompt: string;
+  /** 节点参数（含 prompt、比例） */
+  params: Record<string, unknown>;
+  /** 新建节点的标题 */
+  label: string;
+  /** 出图时原稿的 SHA-256 */
+  source_hash: string;
+  layout: BoardLayout;
+  shot_count: number;
+  /** 要连进故事板节点的资产节点 id */
+  refs: string[];
+}
 
 /** WebSocket drama.segment 事件载荷（原样 snake_case） */
 export interface DramaSegmentEvent {
@@ -618,9 +674,9 @@ export interface SourceEstimateInput {
   textModel: string;
 }
 
-/** 内置提示词的一页（剧本改编有「分集规划 / 分集剧本」两页，其他环节一页） */
+/** 内置提示词的一页（现在每个环节一页） */
 export interface PromptPage {
-  /** 页 key：plan / scripts / breakdown / asset_prompts / storyboard */
+  /** 页 key：plan / scripts / breakdown / asset_prompts / storyboard / board */
   key: string;
   /** 页签名 */
   label: string;
@@ -664,7 +720,7 @@ export interface MyPromptInput {
   revision?: number;
 }
 
-/** 后台已启用且标了该环节的技能 */
+/** 后台打开了该环节、且有生效版本的技能 */
 export interface DramaSkill {
   /** 技能 name */
   name: string;

@@ -60,6 +60,7 @@ export function AgentModelPicker({
       }
       label={label}
       width="w-72"
+      contentClassName="max-h-80 overflow-y-auto"
     >
       {(close) => (
         <>

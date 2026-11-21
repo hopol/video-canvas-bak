@@ -74,6 +74,37 @@ func NextBatch(units []Unit, cursor, end, budget int) ([]Unit, error) {
 	return out, nil
 }
 
+// CountBatches 只凭单元标题和字数估算剩余批次数，口径与 NextBatch 一致，不需要读正文；
+// 单个单元超出预算时按独占一批计。
+func CountBatches(units []Unit, cursor, end, budget int) int {
+	batches, size, used := 0, 0, 0
+	for _, u := range units {
+		if u.No <= cursor || u.No > end {
+			continue
+		}
+		n := utf8.RuneCountInString(fmt.Sprintf("## [%d] %s\n\n", u.No, u.Title)) + u.Chars
+		if size == 0 || size == 12 || used+n > min(30000, budget) {
+			batches++
+			size, used = 0, 0
+		}
+		size++
+		used += n
+	}
+	return batches
+}
+
+// LongestUnit 找出单独成批时最长的单元，长度口径与 NextBatch 一致（标题计入）；空列表返回零值。
+func LongestUnit(units []Unit) (Unit, int) {
+	var longest Unit
+	most := 0
+	for _, u := range units {
+		if n := utf8.RuneCountInString(fmt.Sprintf("## [%d] %s\n\n", u.No, u.Title)) + u.Chars; n > most {
+			longest, most = u, n
+		}
+	}
+	return longest, most
+}
+
 // PlanEpisode 是规划结果，原文区间必须连续覆盖任务批次。
 type PlanEpisode struct {
 	Title       string `json:"title"`
@@ -158,13 +189,13 @@ func ScriptEpisodes(units []Unit, seconds int) []PlanEpisode {
 	return out
 }
 
-// ScriptBatches 按十二集或三万字拆解，超长单集独占一批，正文保持完整。
-func ScriptBatches(units []Unit) [][]Unit {
+// ScriptBatches 按十二集或预算字数（最多三万字）拆解，超长单集独占一批，正文保持完整。
+func ScriptBatches(units []Unit, budget int) [][]Unit {
 	out := [][]Unit{}
 	batch := []Unit{}
 	chars := 0
 	for _, u := range units {
-		if len(batch) > 0 && (len(batch) == 12 || chars+u.Chars > 30000) {
+		if len(batch) > 0 && (len(batch) == 12 || chars+u.Chars > min(30000, budget)) {
 			out = append(out, batch)
 			batch = nil
 			chars = 0

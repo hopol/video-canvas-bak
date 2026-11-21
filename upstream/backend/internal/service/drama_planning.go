@@ -118,7 +118,7 @@ func (s *DramaService) Planning(ctx context.Context, userID, id uint64, action s
 	}
 	var snap *provider.Snapshot
 	if action != "pause" {
-		snap, err = s.resolvePlanningModel(ctx, p.TextModel)
+		snap, err = s.resolveModel(ctx, p.TextModel)
 		if err != nil {
 			return nil, err
 		}
@@ -226,17 +226,17 @@ func expandPlanningRange(ctx context.Context, tx repository.DramaTx, p *model.Dr
 	return nil
 }
 
-// restorePlanningPrompt 仅在自定义改编正文失败后切换内置，不改动已入队任务。
+// restorePlanningPrompt 仅在自定义分集规划正文失败后把分集规划切回内置，分集剧本等其他环节不动，也不改动已入队任务。
 func (s *DramaService) restorePlanningPrompt(ctx context.Context, tx repository.DramaTx, p *model.DramaProject, step string) error {
-	if step != "adapt" || p.PauseCode != "custom_prompt" {
+	if step != "plan" || p.PauseCode != "custom_prompt" {
 		return errcode.ErrDramaPhase
 	}
 	settings := promptSettings(p)
-	builtin, err := s.snapshotPrompt(ctx, p.UserID, "adapt", model.DramaPromptChoice{Source: "builtin"})
+	builtin, err := s.snapshotPrompt(ctx, p.UserID, "plan", model.DramaPromptChoice{Source: "builtin"})
 	if err != nil {
 		return err
 	}
-	settings["adapt"] = *builtin
+	settings["plan"] = *builtin
 	raw, _ := json.Marshal(settings)
 	if err := tx.UpdateProject(ctx, p.UserID, p.ID, p.Revision, map[string]any{"prompt_settings": raw}); err != nil {
 		return err

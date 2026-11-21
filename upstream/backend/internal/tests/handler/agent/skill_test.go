@@ -30,6 +30,7 @@ type fakeSkillAPI struct {
 	gotOn     bool
 	gotActor  uint64
 	gotList   model.ListSkillReq
+	gotScope  agentsvc.SkillScope
 }
 
 func (f *fakeSkillAPI) rec(n string) error { f.calls = append(f.calls, n); return f.err }
@@ -61,7 +62,8 @@ func (f *fakeSkillAPI) ImportFile(context.Context, uint64, string, string) (*age
 	return &agentsvc.SkillFileContent{}, f.rec("importfile")
 }
 func (f *fakeSkillAPI) DiscardImport(context.Context, uint64, string) error { return f.rec("discard") }
-func (f *fakeSkillAPI) ConfirmImport(context.Context, uint64, string) (*agentsvc.SkillItem, error) {
+func (f *fakeSkillAPI) ConfirmImport(_ context.Context, _ uint64, _ string, scope agentsvc.SkillScope) (*agentsvc.SkillItem, error) {
+	f.gotScope = scope
 	return &agentsvc.SkillItem{}, f.rec("confirm")
 }
 func (f *fakeSkillAPI) SetEnabled(_ context.Context, a uint64, n string, on bool) (*agentsvc.SkillItem, error) {
@@ -153,8 +155,13 @@ func TestSkillHandler_Endpoints(t *testing.T) {
 		{"预览暂存文件", "GET", base + "/imports/x/files?path=a.md", "", 200, "importfile"},
 		{"放弃暂存", "DELETE", base + "/imports/x", "", 200, "discard"},
 		{"确认导入", "POST", base + "/imports/x/confirm", "", 200, "confirm"},
+		{"确认导入带场景", "POST", base + "/imports/x/confirm", `{"enabled":true,"drama_steps":["video"]}`, 200, "confirm"},
+		{"按短剧筛选", "GET", base + "?status=drama", "", 200, "list"},
+		{"按未使用筛选", "GET", base + "?status=unused", "", 200, "list"},
+		{"只看画布 Agent", "GET", base + "?status=agent", "", 200, "list"},
 		{"启停", "PUT", base + "/demo/enabled", `{"enabled":false}`, 200, "enabled"},
 		{"短剧适用环节", "PUT", base + "/demo/drama-steps", `{"steps":["assets","video"]}`, 200, "drama_steps"},
+		{"五个短剧环节全开", "PUT", base + "/demo/drama-steps", `{"steps":["plan","scripts","assets","asset_prompts","video"]}`, 200, "drama_steps"},
 		{"清空短剧环节", "PUT", base + "/demo/drama-steps", `{"steps":[]}`, 200, "drama_steps"},
 		{"设为生效", "PUT", base + "/demo/active-version", `{"version":2}`, 200, "active"},
 		{"改名", "PUT", base + "/demo", `{"title":"演示"}`, 200, "rename"},
@@ -194,6 +201,19 @@ func TestSkillHandler_Endpoints(t *testing.T) {
 			if status != 400 || codeOf(resp) != 10001 {
 				t.Errorf("%s %s: status=%d resp=%v", p.method, p.path, status, resp)
 			}
+		}
+	})
+
+	t.Run("确认导入把场景原样传给 service；不带请求体时为空", func(t *testing.T) {
+		api := &fakeSkillAPI{}
+		agentCall(t, newSkillRouter(api), "POST", base+"/imports/x/confirm", `{"enabled":true,"drama_steps":["assets","video"]}`)
+		if !api.gotScope.Enabled || len(api.gotScope.DramaSteps) != 2 {
+			t.Fatalf("%+v", api.gotScope)
+		}
+		api = &fakeSkillAPI{}
+		agentCall(t, newSkillRouter(api), "POST", base+"/imports/x/confirm", "")
+		if api.gotScope.Enabled || len(api.gotScope.DramaSteps) != 0 {
+			t.Fatalf("%+v", api.gotScope)
 		}
 	})
 

@@ -62,10 +62,11 @@ const (
 // ChannelRef 是模型绑定的一个渠道：渠道 key、上游模型名，以及插件协议或 Agent 接口格式。
 // 首期 channels 只允许一个元素，数据结构预留多渠道（多渠道时每条路由可以有自己的协议与接口格式）。
 type ChannelRef struct {
-	Channel       string    `json:"channel"`              // 渠道 key（ai_channels.key）
-	UpstreamModel string    `json:"upstream_model"`       // 上游模型名 / 工作流 id，由插件解释
-	Protocol      *Protocol `json:"protocol,omitempty"`   // 调用协议；非 Agent 模型必填，Agent 模型不能有（Agent 由宿主 LLM 网关直接请求渠道）
-	APIFormat     string    `json:"api_format,omitempty"` // 仅 Agent：接口格式，不填等于 openai
+	Channel       string    `json:"channel"`               // 渠道 key（ai_channels.key）
+	UpstreamModel string    `json:"upstream_model"`        // 上游模型名 / 工作流 id，由插件解释
+	Protocol      *Protocol `json:"protocol,omitempty"`    // 调用协议；非 Agent 模型必填，Agent 模型不能有（Agent 由宿主 LLM 网关直接请求渠道）
+	APIFormat     string    `json:"api_format,omitempty"`  // 仅 Agent：接口格式，不填等于 openai
+	PathPrefix    string    `json:"path_prefix,omitempty"` // 仅 Agent 的 OpenAI 兼容格式：请求路径里的版本段，如 /v4；不填等于 /v1，"/" 表示不加前缀
 }
 
 // Format 返回接口格式；旧配置没有该字段，继续使用 OpenAI 兼容接口。

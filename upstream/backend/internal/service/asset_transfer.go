@@ -143,6 +143,9 @@ func (s *AssetService) DiscardCopies(ctx context.Context, assets []*model.Asset)
 
 // openAssetObject 按素材自己记录的 storage_id 打开它的存储对象，调用方负责关闭。
 func (s *AssetService) openAssetObject(ctx context.Context, a *model.Asset) (io.ReadCloser, error) {
+	if a.PublicURL != "" {
+		return fetchPublicAsset(ctx, a)
+	}
 	h, err := s.stores.Get(ctx, a.StorageID)
 	if err != nil {
 		return nil, fmt.Errorf("获取素材所在存储失败: %w", err)

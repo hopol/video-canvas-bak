@@ -17,6 +17,11 @@ export type NodeToolbarExtraProps = {
 
 export type NodeExtensions = {
   /**
+   * 只读预览（另一标签页正拿着编辑锁）：功能区、生成面板、各种就地编辑一律不摆。
+   * 节点由 xyflow 的 nodeTypes 渲染，页面没法把 props 逐个递进去，所以经这里下发。
+   */
+  readOnly?: boolean;
+  /**
    * 追加到节点功能区最右侧的内容（接在查看类按钮之后，自动补分隔线）。
    * 返回 null 表示这个节点不追加。功能区本身不显示时（空节点、导演台）也不会显示追加内容。
    * 返回的内容在功能区胶囊里，用 ChromeButton / ChromeTooltip 保持视觉一致。
@@ -41,7 +46,9 @@ export function resolveToolbar(
   gate: ToolbarGate,
   data: CanvasNodeData,
   toolbarVisible: NodeExtensions["toolbarVisible"],
+  readOnly = false,
 ): ToolbarMode {
+  if (readOnly) return "hidden";
   if (gate.visible) return "full";
   return toolbarVisible?.(data) ? "extra-only" : "hidden";
 }

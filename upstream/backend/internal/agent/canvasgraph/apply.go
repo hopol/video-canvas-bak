@@ -22,6 +22,8 @@ type Options struct {
 	// DramaModels 是 MergeDrama 新建资产节点时写入 data.model 的默认模型 key，键为资产类型（character / scene / prop）；
 	// 缺项不写，已有节点不受影响
 	DramaModels map[string]string
+	// DramaParams 是 MergeDrama 新建资产节点时写入 data.params 的默认生成参数（比例、分辨率等），键同 DramaModels。
+	DramaParams map[string]map[string]string
 }
 
 // AssetRef 是已经解析好的一份图片素材：建已完成的图片节点要的信息。

@@ -36,6 +36,7 @@ CI 经常因为格式 / lint 挂掉返工，下面几条是硬约束：
 - 写 Go 就按 golangci 限额写：函数 ≤ 80 行、≤ 50 条语句、认知复杂度 ≤ 20；超了就拆函数，不加 `//nolint` 糊过去。
 - 本机 `BUN_OPTIONS` 带 `--preload` 时 `bun run <脚本>` 会只打印帮助并返回 0（假通过），在 `web/` 下跑脚本前先 `unset BUN_OPTIONS`（PowerShell：`$env:BUN_OPTIONS=''`）。
 - 完整流程和常见报错修法见 `.claude/skills/ci-check/SKILL.md`（Codex 直接读该文件）。
+- **版本日志随改动写**：`feat` / `fix` / `perf` 和破坏性变更要在同一个提交里往 `CHANGELOG.md` 的 `## [Unreleased]` 对应小节（新增 / 改进 / 修复 / 废弃 / 破坏性变更 / 文档）加一条面向用户的中文描述；没有用户可感知变化就在提交正文写 `Changelog: skip`。pre-commit 的 `commit-msg` 钩子和 PR 的 `Changelog` 检查都会拦，规则见 `CONTRIBUTING.md`「版本日志」。
 
 ## 线上 Agent 观测
 

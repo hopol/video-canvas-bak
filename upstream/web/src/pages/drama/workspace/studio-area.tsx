@@ -1,15 +1,16 @@
-import { Clapperboard, Lock, ScrollText } from "lucide-react";
+import { Clapperboard, Lock, ScrollText, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useDramaVideoModel } from "@/hooks/use-drama-video-model";
 import { episodeCardView } from "@/utils/drama/episode-cards";
 import type { DramaJob } from "@/api/drama/type";
-import { activeStoryboardJob, jobConflictReason } from "@/utils/drama/jobs";
+import { activeStoryboardJob, isActiveJob, jobConflictReason } from "@/utils/drama/jobs";
 import type { WorkspaceStage } from "@/utils/drama/stages";
 
 import { StudioView } from "../studio/view";
 import { useWorkspace } from "./context";
 import { JobProgressBar, useCancelJob } from "./job-bar";
+import { StoryboardBatchButton } from "./storyboard-batch-dialog";
 import { StoryboardButton, useStoryboardStart } from "./storyboard-start";
 
 /** 前置工序没做完时的引导：一个图标、一句话、一个按钮 */
@@ -38,10 +39,10 @@ function Gate({
 }
 
 /**
- * 分镜生成中的就地进度：进度条、百分比（排队时写「排队中」）和取消。顶部进度条这时不再重复显示这条任务。
+ * 分镜生成中的就地进度：进度条、百分比（排队时写「排队中」）和取消，和任务面板里的单条任务同一个样子。
  * 任务列表还没拉到（刚刷新）时只占位，不显示假进度。
  */
-function StoryboardProgress({ job }: { job: DramaJob | undefined }) {
+function InlineProgress({ job }: { job: DramaJob | undefined }) {
   const { busy, cancel } = useCancelJob(job);
   if (!job) return null;
   return (
@@ -61,9 +62,32 @@ function StoryboardProgress({ job }: { job: DramaJob | undefined }) {
 
 /**
  * 片场：当前集的片段制作。
- * 还没拆解资产 → 引导去拆解（直接打开拆解弹窗，剧本没写好才去剧本页）；还没有分镜脚本 → 引导生成（带积分估价）；分镜生成中 → 等待；
+ * 还没拆解资产 → 引导去拆解（直接打开拆解弹窗，剧本没写好才去剧本页）；还没有分镜脚本 → 引导生成（带积分估价），也可选多集批量生成；分镜生成中 → 等待；
  * 分镜就绪 → 进入片场（资产库 / 播放器 / 检查器 / 时间线）。
  */
+/**
+ * 片场空状态（还没拆解 / 分镜生成中 / 还没有分镜）的外框：顶上一条和片场顶栏同高的工具条，
+ * 右上角放「批量生成脚本」，和已有分镜时片场顶栏里的位置一致。
+ */
+function GateFrame({
+  current,
+  maxSeconds,
+  children,
+}: {
+  current: number;
+  maxSeconds: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-border flex h-12 shrink-0 items-center justify-end gap-2 border-b px-4">
+        <StoryboardBatchButton current={current} maxSeconds={maxSeconds} />
+      </div>
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
 export function StudioArea({
   ep,
   onGo,
@@ -105,9 +129,35 @@ export function StudioArea({
     );
   }
 
+  /** 空状态都套上带「批量生成脚本」的工具条 */
+  const frame = (node: React.ReactNode) => (
+    <GateFrame current={episode.no} maxSeconds={video.maxSeconds}>
+      {node}
+    </GateFrame>
+  );
+
   if (action.kind === "breakdown") {
+    // 这一集已经在拆解：片场仍锁着，不给「去拆解」（免得重复提交），也不在这里放进度（拆解是资产管理的事），
+    // 只引导去资产管理看进度
+    const breaking = jobs.some(
+      (job) => job.step === "breakdown" && isActiveJob(job) && job.episodes.includes(episode.no),
+    );
+    if (breaking) {
+      return frame(
+        <Gate
+          icon={<Lock />}
+          title={`第 ${episode.no} 集的资产还在拆解`}
+          text="拆解完成后才能生成分镜。"
+        >
+          <Button variant="outline" onClick={() => onGo("assets", episode.no)}>
+            <Users />
+            去资产管理
+          </Button>
+        </Gate>,
+      );
+    }
     const hasScript = episode.scriptStatus === "ready";
-    return (
+    return frame(
       <Gate
         icon={<Lock />}
         title={`先拆解第 ${episode.no} 集的资产`}
@@ -117,22 +167,22 @@ export function StudioArea({
           <ScrollText />
           {hasScript ? "去拆解" : "去写剧本"}
         </Button>
-      </Gate>
+      </Gate>,
     );
   }
 
   if (action.kind === "generating") {
-    return (
+    return frame(
       <Gate
         icon={<Clapperboard className="animate-pulse motion-reduce:animate-none" />}
         title={`正在生成第 ${episode.no} 集的分镜脚本…`}
       >
-        <StoryboardProgress job={activeStoryboardJob(jobs, episode.no)} />
-      </Gate>
+        <InlineProgress job={activeStoryboardJob(jobs, episode.no)} />
+      </Gate>,
     );
   }
 
-  return (
+  return frame(
     <Gate icon={<Clapperboard />} title={`第 ${episode.no} 集还没有分镜`}>
       <StoryboardButton
         episode={episode}
@@ -142,6 +192,6 @@ export function StudioArea({
         busy={starter.pending === episode.no}
         onStart={() => void starter.start(episode)}
       />
-    </Gate>
+    </Gate>,
   );
 }

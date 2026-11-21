@@ -147,6 +147,43 @@ describe("研读视图：粗读全书 / 分集规划 两步，第一集出现后
     expect(probe({ phase: "done", status: "ready" }).showAnalyzing).toBe(false);
   });
 
+  test("有历史耗时：正在做的一步写还需多久，后面的一步写预计约多久；历史不足的不写", () => {
+    const jobs = [
+      {
+        step: "analyze",
+        lane: "pipeline",
+        status: "running",
+        startedAt: new Date(Date.now() - 10_000).toISOString(),
+      },
+    ];
+    const render = (eta: unknown) =>
+      renderToStaticMarkup(
+        <DramaWorkspaceContext.Provider
+          value={
+            {
+              drama: {
+                phase: "running",
+                status: "analyzing",
+                episodes: [],
+                outlineMd: "",
+                planCursor: 0,
+                eta,
+              },
+              jobs,
+            } as never
+          }
+        >
+          <AnalyzingView />
+        </DramaWorkspaceContext.Provider>,
+      );
+    const out = render({ analyzeSeconds: 40, planSeconds: 120, planBatchesLeft: 3 });
+    expect(out).toContain("还需不到 1 分钟");
+    expect(out).toContain("预计约 6 分钟");
+    const unknown = render({ analyzeSeconds: 0, planSeconds: 0, planBatchesLeft: 3 });
+    expect(unknown).not.toContain("还需");
+    expect(unknown).not.toContain("预计");
+  });
+
   test("粗读完成（已有大纲）后高亮第二步", () => {
     const out = wrap({ outlineMd: "大纲" }, <AnalyzingView />);
     // 第一步打勾，第二步在转

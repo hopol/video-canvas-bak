@@ -21,6 +21,7 @@ import { CUSTOM_STYLE_KEY } from "@/utils/drama/options";
 import type { StageHints, WorkspaceStage } from "@/utils/drama/stages";
 
 import { useWorkspace } from "./context";
+import { TaskPill } from "./job-bar";
 import { StageTabs } from "./stage-tabs";
 import type { SaveSummary } from "./use-workspace";
 
@@ -88,10 +89,10 @@ function TitleInput() {
 }
 
 /**
- * 这部短剧的画风 / 比例 / Agent 模型：在首页新建时选定，进了工作台只显示、不能改
- * （改画风、比例会让前后生成的资产不一致）；点画风那一格打开「提示词设置」。
+ * 这部短剧的画风 / 比例 / Agent 模型：画风、比例在首页新建时选定，进了工作台只显示、不能改
+ * （改了会让前后生成的资产不一致）；整个胶囊点开「项目设置」（Agent 模型、资产图片模型、提示词）。
  */
-function ProjectSettings({ onPrompts }: { onPrompts: () => void }) {
+function ProjectSettings({ onSettings }: { onSettings: () => void }) {
   const { drama } = useWorkspace();
   const { styles } = useDramaStyles();
   const agent = useAgentModel(drama.textModel);
@@ -101,44 +102,41 @@ function ProjectSettings({ onPrompts }: { onPrompts: () => void }) {
       : (styles.find((item) => item.key === drama.styleKey)?.name ?? "画风");
   const item = "flex h-8 items-center gap-1.5 px-3 text-[13px] whitespace-nowrap";
   return (
-    <ChromePill className="mr-1 max-xl:hidden" aria-label="创作设置">
+    <ChromePill className="mr-1 max-xl:hidden">
       <button
         type="button"
-        aria-label="提示词设置"
+        aria-label="项目设置"
         title={
-          drama.styleKey === CUSTOM_STYLE_KEY
-            ? `${drama.styleCustom}（点开提示词设置）`
-            : "提示词设置"
+          drama.styleKey === CUSTOM_STYLE_KEY ? `${drama.styleCustom}（点开项目设置）` : "项目设置"
         }
-        onClick={onPrompts}
-        className={cn(
-          item,
-          "hover:bg-chrome-hover focus-visible:ring-ring/50 rounded-full transition-colors outline-none focus-visible:ring-2",
-        )}
+        onClick={onSettings}
+        className="hover:bg-chrome-hover focus-visible:ring-ring/50 flex items-center rounded-full transition-colors outline-none focus-visible:ring-2"
       >
-        <SlidersHorizontal className="size-3.5" />
-        {style}
+        <span className={item}>
+          <SlidersHorizontal className="size-3.5" />
+          {style}
+        </span>
+        <ChromeSeparator />
+        <span className={cn(item, "tabular-nums")}>{drama.ratio || "比例未定"}</span>
+        <ChromeSeparator />
+        <span className={item}>
+          {agent.model && !agent.stale && (
+            <ModelLogo
+              vendor={agent.model.vendor}
+              name={agent.label}
+              className="size-4 rounded-[5px]"
+            />
+          )}
+          <span className="max-w-40 truncate">{agent.label}</span>
+        </span>
       </button>
-      <ChromeSeparator />
-      <span className={cn(item, "tabular-nums")}>{drama.ratio || "比例未定"}</span>
-      <ChromeSeparator />
-      <span className={item}>
-        {agent.model && !agent.stale && (
-          <ModelLogo
-            vendor={agent.model.vendor}
-            name={agent.label}
-            className="size-4 rounded-[5px]"
-          />
-        )}
-        <span className="max-w-40 truncate">{agent.label}</span>
-      </span>
     </ChromePill>
   );
 }
 
 /**
  * 工作台顶栏：左边返回列表 + 项目名（可改）+ 保存状态，中间是工序标签，
- * 右边是画风 / 比例 / Agent 模型（只读）、明暗、积分。
+ * 右边是画风 / 比例 / Agent 模型（点开项目设置）、明暗、积分。
  * 三列：右列至少是自己的内容宽度（minmax(max-content,1fr)），宽屏时和左列等宽、标签居中；
  * 窗口变窄时由左列（项目名）让位。左右强制等宽的话，右列装不下就会向左溢出、压在标签上。
  */
@@ -147,14 +145,17 @@ export function Topbar({
   hints,
   onStage,
   onPalette,
-  onPrompts,
+  onSettings,
+  onGo,
 }: {
   stage: WorkspaceStage;
   hints: StageHints;
   onStage: (stage: WorkspaceStage) => void;
   onPalette: () => void;
-  /** 打开「提示词设置」 */
-  onPrompts: () => void;
+  /** 打开「项目设置」 */
+  onSettings: () => void;
+  /** 任务面板里点集号：跳到这一步对应的工序页和集 */
+  onGo: (stage: WorkspaceStage, ep?: number) => void;
 }) {
   const { save } = useWorkspace();
   const status = SAVE_LABEL[save];
@@ -173,18 +174,19 @@ export function Topbar({
         <span
           role="status"
           className={cn(
-            "text-muted-foreground ml-1 inline-flex items-center gap-1 text-xs max-lg:hidden",
+            "text-muted-foreground ml-1 inline-flex shrink-0 items-center gap-1 text-xs whitespace-nowrap max-lg:hidden",
             status.tone,
           )}
         >
           {status.icon}
           {status.text}
         </span>
+        <TaskPill onGo={onGo} />
       </div>
       <StageTabs stage={stage} hints={hints} onChange={onStage} />
       <div className="flex items-center justify-end gap-0.5">
-        {/* 画风 / 比例 / 模型：首页新建时选定，这里只显示；画风那一格进提示词设置 */}
-        <ProjectSettings onPrompts={onPrompts} />
+        {/* 画风 / 比例 / 模型：这里只显示；点开进项目设置，模型在那里改 */}
+        <ProjectSettings onSettings={onSettings} />
         <Button
           variant="ghost"
           size="sm"

@@ -17,6 +17,7 @@ import { RatioIcon } from "@/components/ratio-icon";
 import { cn } from "@/lib/utils";
 import type { ParamAsset } from "@/types";
 import { MediaPreview, VideoPoster } from "./media-preview";
+import { OfficialVoicePicker } from "./official-voice-picker";
 import {
   effectiveValue,
   manualRefs,
@@ -244,7 +245,8 @@ function NumberControl({
   );
 }
 
-function ParamRow({
+/** 一个生成参数的标题和控件；开拍设置的资产图片参数也用它，和画布节点的参数面板长得一样 */
+export function ParamRow({
   field,
   params,
   error,
@@ -431,6 +433,18 @@ function RefCard({
           {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
           上传
         </Button>
+        {kind === "audio" && (
+          <OfficialVoicePicker
+            disabled={disabled || full}
+            onPick={(asset) =>
+              onAdd(refKey, asset.id, {
+                url: asset.url,
+                fileName: asset.fileName ?? "音色",
+                mediaType: asset.kind,
+              })
+            }
+          />
+        )}
         <DropdownMenu
           modal={false}
           onOpenChange={(open) => {

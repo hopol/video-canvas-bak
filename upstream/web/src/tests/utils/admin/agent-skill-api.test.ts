@@ -33,3 +33,20 @@ describe("接口路径", () => {
     expect(ep.importConfirm("id1")).toBe("/admin/agent/skills/imports/id1/confirm");
   });
 });
+
+describe("确认导入带使用场景", () => {
+  test("POST {enabled, drama_steps}；返回项缺 drama_steps 时补成空数组", async () => {
+    const { spyOn } = await import("bun:test");
+    const service = (await import("@/utils/requests/service")).default;
+    const { confirmImport } = await import("@/api/admin/agent-skill");
+    const post = spyOn(service, "post").mockResolvedValue({ name: "demo", drama_steps: null });
+    try {
+      const it = await confirmImport("id1", { enabled: true, drama_steps: ["video"] });
+      expect(post.mock.calls[0][0]).toBe("/admin/agent/skills/imports/id1/confirm");
+      expect(post.mock.calls[0][1]).toEqual({ enabled: true, drama_steps: ["video"] });
+      expect(it.drama_steps).toEqual([]);
+    } finally {
+      post.mockRestore();
+    }
+  });
+});

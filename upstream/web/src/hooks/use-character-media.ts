@@ -15,6 +15,15 @@ export type LibraryRequest = {
 } | null;
 
 /**
+ * 文件框只列对的种类：MIME 通配之外再列常见扩展名，
+ * 有的浏览器（Safari）只认通配时过滤不严，别的文件也能选。选错了 takeCharacterFile 仍会拦下。
+ */
+const ACCEPT: Record<CharacterMediaKind, string> = {
+  image: "image/*,.png,.jpg,.jpeg,.webp,.gif,.heic",
+  audio: "audio/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.flac,.opus",
+};
+
+/**
  * 角色卡节点和详情页共用的「补素材」能力：上传本地文件、打开素材库选择框。
  * 上传先过 takeCharacterFile（只收对的种类、卡大小），传完把素材交给 onAsset；
  * 上传失败的全局提示由请求层统一弹，这里只记失败和结束，不重复弹。
@@ -59,7 +68,7 @@ export function useCharacterMedia(
     (kind: CharacterMediaKind, purpose: "main" | "extra" | "voice") => {
       const input = document.createElement("input");
       input.type = "file";
-      input.accept = kind === "image" ? "image/*" : "audio/*";
+      input.accept = ACCEPT[kind];
       input.onchange = () => {
         const file = input.files?.[0];
         if (file) void upload(file, kind, purpose);

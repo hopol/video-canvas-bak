@@ -45,7 +45,7 @@ export function CanvasChrome() {
 
   return (
     <>
-      {editor.nodes.length === 0 && (
+      {editor.nodes.length === 0 && !editor.readOnly && (
         <EmptyState onAdd={editor.addAtCenter} onUpload={editor.uploadAtCenter} />
       )}
 
@@ -56,24 +56,28 @@ export function CanvasChrome() {
           onRename={editor.rename}
           saveStatus={editor.saveStatus}
           onSaveNow={editor.saveNow}
+          readOnly={editor.readOnly}
         />
       </ChromeZone>
       <ChromeZone position="top-right">
         <TopRightBar onOpenSettings={editor.openSettings} onOpenShortcuts={openShortcuts} />
       </ChromeZone>
-      <ChromeZone position="left-center">
-        <BottomToolbar
-          tool={editor.tool}
-          onToolChange={editor.setTool}
-          onAdd={editor.addAtCenter}
-          onUpload={editor.uploadAtCenter}
-          onOpenAssets={editor.openAssetPicker}
-          canUndo={editor.history.canUndo}
-          canRedo={editor.history.canRedo}
-          onUndo={editor.history.undo}
-          onRedo={editor.history.redo}
-        />
-      </ChromeZone>
+      {/* 底栏是新建、上传、素材库、撤销重做：只读预览里一条都用不了，整条收起来，只留视图控件 */}
+      {!editor.readOnly && (
+        <ChromeZone position="left-center">
+          <BottomToolbar
+            tool={editor.tool}
+            onToolChange={editor.setTool}
+            onAdd={editor.addAtCenter}
+            onUpload={editor.uploadAtCenter}
+            onOpenAssets={editor.openAssetPicker}
+            canUndo={editor.history.canUndo}
+            canRedo={editor.history.canRedo}
+            onUndo={editor.history.undo}
+            onRedo={editor.history.redo}
+          />
+        </ChromeZone>
+      )}
       <ChromeZone position="bottom-left" className="max-md:hidden">
         <ViewControls
           minimap={editor.minimap}

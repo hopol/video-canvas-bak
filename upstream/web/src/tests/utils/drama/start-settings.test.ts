@@ -3,18 +3,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SourcePreflight } from "@/api/drama/type";
 import { SOURCE_MAX_CHARS, checkSourceText } from "@/utils/drama/options";
 import {
-  MIN_MODEL_CONTEXT,
   START_RATIOS,
   buildCreateInput,
+  closestRatio,
   durationLabel,
   episodesLabel,
   loadStartPrefs,
-  modelDisabledReason,
   normalizeRangeEnd,
   promptsToChoices,
   reconcilePrompts,
   saveStartPrefs,
   secondsLock,
+  settleAssetParams,
   startBlockReason,
   unitWord,
   type StartForm,
@@ -51,11 +51,18 @@ const form = (patch: Partial<StartForm> = {}): StartForm => ({
   textModel: "",
   videoModel: "",
   imageModels: { character: "", scene: "", prop: "" },
+  imageParams: {
+    character: { ratio: "", resolution: "" },
+    scene: { ratio: "", resolution: "" },
+    prop: { ratio: "", resolution: "" },
+  },
   prompts: {
-    adapt: { source: "builtin" },
+    plan: { source: "builtin" },
+    scripts: { source: "builtin" },
     assets: { source: "builtin" },
     asset_prompts: { source: "builtin" },
     video: { source: "builtin" },
+    board: { source: "builtin" },
   },
   ...patch,
 });
@@ -113,16 +120,6 @@ describe("开拍设置：剧本型输入的规则", () => {
     );
   });
 
-  test("上下文低于 128k 的模型禁用并写原因；未知上下文不拦", () => {
-    expect(MIN_MODEL_CONTEXT).toBe(128_000);
-    expect(modelDisabledReason(64_000)).toBe("上下文低于 128k，装不下一批完整原文");
-    expect(modelDisabledReason(127_999)).not.toBeNull();
-    expect(modelDisabledReason(128_000)).toBeNull();
-    expect(modelDisabledReason(1_000_000)).toBeNull();
-    expect(modelDisabledReason(undefined)).toBeNull();
-    expect(modelDisabledReason(0)).toBeNull();
-  });
-
   test("识别不出且没选类型时开始禁用；选了就放行", () => {
     expect(startBlockReason({ kind: null, styleKey: "x", modelBlocked: false })).toBe(
       "先确认是剧本还是小说",
@@ -132,7 +129,7 @@ describe("开拍设置：剧本型输入的规则", () => {
       "先选一个画风",
     );
     expect(startBlockReason({ kind: "novel", styleKey: "x", modelBlocked: true })).toBe(
-      "所选模型上下文低于 128k，请换一个",
+      "所选模型装不下原文，请换一个",
     );
   });
 });
@@ -148,10 +145,12 @@ describe("开拍设置：建剧请求", () => {
         seconds: 90,
         textModel: "gpt",
         prompts: {
-          adapt: { source: "mine", id: "1f" },
+          plan: { source: "mine", id: "1f" },
+          scripts: { source: "builtin" },
           assets: { source: "skill", skill: "cross" },
           asset_prompts: { source: "builtin" },
           video: { source: "builtin" },
+          board: { source: "builtin" },
         },
       }),
     );
@@ -166,15 +165,17 @@ describe("开拍设置：建剧请求", () => {
       episodeSeconds: 90,
       textModel: "gpt",
       prompts: {
-        adapt: { source: "mine", id: "1f" },
+        plan: { source: "mine", id: "1f" },
+        scripts: { source: "builtin" },
         assets: { source: "skill", skill: "cross" },
         asset_prompts: { source: "builtin" },
         video: { source: "builtin" },
+        board: { source: "builtin" },
       },
     });
   });
 
-  test("剧本型：剧本改编强制内置，规划范围恒为全部；自定义画风带描述", () => {
+  test("剧本型：分集规划、分集剧本都强制内置，规划范围恒为全部；自定义画风带描述", () => {
     const body = buildCreateInput(
       preflight({ kindGuess: "script" }),
       form({
@@ -183,15 +184,18 @@ describe("开拍设置：建剧请求", () => {
         styleKey: "custom",
         styleCustom: " 黏土 ",
         prompts: {
-          adapt: { source: "mine", id: "1f" },
+          plan: { source: "mine", id: "1f" },
+          scripts: { source: "mine", id: "2f" },
           assets: { source: "builtin" },
           asset_prompts: { source: "builtin" },
           video: { source: "builtin" },
+          board: { source: "builtin" },
         },
       }),
     );
     expect(body.sourceKind).toBe("script");
-    expect(body.prompts?.adapt).toEqual({ source: "builtin" });
+    expect(body.prompts?.plan).toEqual({ source: "builtin" });
+    expect(body.prompts?.scripts).toEqual({ source: "builtin" });
     expect(body.rangeEnd).toBe(0);
     expect(body.styleCustom).toBe("黏土");
   });
@@ -199,10 +203,12 @@ describe("开拍设置：建剧请求", () => {
   test("提示词选择：选了内置的环节也显式带上 builtin", () => {
     expect(
       promptsToChoices({
-        adapt: { source: "builtin" },
+        plan: { source: "builtin" },
+        scripts: { source: "builtin" },
         assets: { source: "builtin" },
         asset_prompts: { source: "builtin" },
         video: { source: "builtin" },
+        board: { source: "builtin" },
       }).video,
     ).toEqual({ source: "builtin" });
   });
@@ -234,11 +240,33 @@ describe("开拍设置：记住上次选择", () => {
     expect(prefs && "rangeEnd" in prefs).toBe(false);
   });
 
+  test("自定义单集时长可存取，超出后端支持范围则回落默认", () => {
+    saveStartPrefs(form({ seconds: 75 }));
+    expect(loadStartPrefs()?.seconds).toBe(75);
+    store.set("drama-start-prefs", JSON.stringify({ seconds: 29 }));
+    expect(loadStartPrefs()?.seconds).toBe(60);
+  });
+
   test("损坏的存储当作没有；非法画幅回落 9:16", () => {
     store.set("drama-start-prefs", "{oops");
     expect(loadStartPrefs()).toBeNull();
     store.set("drama-start-prefs", JSON.stringify({ ratio: "21:9", seconds: 999 }));
     expect(loadStartPrefs()).toMatchObject({ ratio: "9:16", seconds: 60 });
+  });
+
+  test("老版本存的「剧本改编」选择同时带给分集规划和分集剧本", () => {
+    store.set(
+      "drama-start-prefs",
+      JSON.stringify({
+        prompts: { adapt: { source: "skill", skill: "s1" }, video: { source: "builtin" } },
+      }),
+    );
+    expect(loadStartPrefs()?.prompts).toMatchObject({
+      plan: { source: "skill", skill: "s1" },
+      scripts: { source: "skill", skill: "s1" },
+      video: { source: "builtin" },
+      board: { source: "builtin" },
+    });
   });
 
   test("localStorage 抛错时不影响弹窗", () => {
@@ -255,23 +283,28 @@ describe("开拍设置：记住上次选择", () => {
   test("被删的我的提示词 / 停用的技能回落为内置", () => {
     const next = reconcilePrompts(
       {
-        adapt: { source: "mine", id: "gone" },
+        plan: { source: "mine", id: "gone" },
+        scripts: { source: "builtin" },
         assets: { source: "skill", skill: "off" },
         asset_prompts: { source: "mine", id: "1f" },
         video: { source: "skill", skill: "on" },
+        board: { source: "mine", id: "gone" },
       },
       {
-        adapt: [],
+        plan: [],
+        scripts: [],
         assets: [],
         asset_prompts: [{ id: "1f" }],
         video: [],
+        board: [],
       },
-      { adapt: [], assets: [], asset_prompts: [], video: [{ name: "on" }] },
+      { plan: [], scripts: [], assets: [], asset_prompts: [], video: [{ name: "on" }], board: [] },
     );
-    expect(next.adapt).toEqual({ source: "builtin" });
+    expect(next.plan).toEqual({ source: "builtin" });
     expect(next.assets).toEqual({ source: "builtin" });
     expect(next.asset_prompts).toEqual({ source: "mine", id: "1f" });
     expect(next.video).toEqual({ source: "skill", skill: "on" });
+    expect(next.board).toEqual({ source: "builtin" });
   });
 });
 
@@ -333,5 +366,119 @@ describe("开拍设置：视频 / 图片模型", () => {
     const bare = buildCreateInput(preflight(), form());
     expect(bare.videoModel).toBeUndefined();
     expect(bare.imageModels).toBeUndefined();
+  });
+});
+
+describe("资产图片参数", () => {
+  const store = new Map<string, string>();
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  beforeEach(() => {
+    store.clear();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+      },
+    });
+  });
+  afterEach(() => {
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
+  });
+
+  const caps = (ratios: string[], resolutions?: string[], ratioName = "aspect_ratio") =>
+    ({
+      params: {
+        [ratioName]: {
+          type: "enum",
+          label: "比例",
+          open: true,
+          options: ratios,
+          default: ratios[0],
+        },
+        ...(resolutions
+          ? {
+              resolution: {
+                type: "enum",
+                label: "分辨率",
+                open: true,
+                options: resolutions,
+                default: resolutions[0],
+              },
+            }
+          : {}),
+        count: { type: "enum", label: "生成数量", open: true, options: [1, 2], default: 1 },
+      },
+    }) as never;
+
+  test("最接近的比例：有就用它，没有按宽高比取最近的，认不出返回 undefined", () => {
+    expect(closestRatio(["1:1", "16:9", "21:9"], "21:9")).toBe("21:9");
+    expect(closestRatio(["1:1", "16:9", "9:16"], "21:9")).toBe("16:9");
+    expect(closestRatio(["1:1", "3:2", "2:3"], "16:9")).toBe("3:2");
+    expect(closestRatio(["Auto"], "16:9")).toBeUndefined();
+  });
+
+  test("没手动选：比例按类型默认（人物 16:9、场景 21:9、物品 16:9）落到最近的，分辨率用模型默认", () => {
+    const wide = caps(["1:1", "16:9", "21:9"], ["1K", "2K"]);
+    const empty = { ratio: "", resolution: "" };
+    expect(settleAssetParams(wide, "character", empty)).toEqual({
+      aspect_ratio: "16:9",
+      resolution: "1K",
+    });
+    expect(settleAssetParams(wide, "scene", empty)).toEqual({
+      aspect_ratio: "21:9",
+      resolution: "1K",
+    });
+    expect(settleAssetParams(caps(["1:1", "16:9"]), "scene", empty)).toEqual({
+      aspect_ratio: "16:9",
+    });
+    expect(settleAssetParams(caps(["1:1", "3:2"], undefined, "ratio"), "prop", empty)).toEqual({
+      ratio: "3:2",
+    });
+  });
+
+  test("手动选过：模型有就用，没有比例取最近、分辨率回到模型默认；比例认不出用模型默认", () => {
+    const model = caps(["1:1", "16:9", "9:16"], ["2K", "4K"]);
+    expect(settleAssetParams(model, "character", { ratio: "9:16", resolution: "4K" })).toEqual({
+      aspect_ratio: "9:16",
+      resolution: "4K",
+    });
+    expect(settleAssetParams(model, "character", { ratio: "21:9", resolution: "1K" })).toEqual({
+      aspect_ratio: "16:9",
+      resolution: "2K",
+    });
+    expect(
+      settleAssetParams(caps(["Auto", "1:1"]), "scene", { ratio: "", resolution: "" }),
+    ).toEqual({
+      aspect_ratio: "1:1",
+    });
+    expect(settleAssetParams(undefined, "scene", { ratio: "21:9", resolution: "" })).toEqual({});
+  });
+
+  test("建剧请求带上算好的参数，空的类型不发；手动选择会被记住", () => {
+    const input = buildCreateInput(preflight(), form(), {
+      character: { aspect_ratio: "16:9", resolution: "2K" },
+      scene: {},
+      prop: { aspect_ratio: "16:9" },
+    });
+    expect(input.imageParams).toEqual({
+      character: { aspect_ratio: "16:9", resolution: "2K" },
+      prop: { aspect_ratio: "16:9" },
+    });
+    expect(buildCreateInput(preflight(), form()).imageParams).toBeUndefined();
+
+    const picks = {
+      character: { ratio: "9:16", resolution: "2K" },
+      scene: { ratio: "", resolution: "" },
+      prop: { ratio: "1:1", resolution: "" },
+    };
+    saveStartPrefs(form({ imageParams: picks }));
+    expect(loadStartPrefs()?.imageParams).toEqual(picks);
+    localStorage.setItem(
+      "drama-start-prefs",
+      JSON.stringify({ imageParams: { scene: { ratio: 3 } } }),
+    );
+    expect(loadStartPrefs()?.imageParams.scene).toEqual({ ratio: "", resolution: "" });
   });
 });

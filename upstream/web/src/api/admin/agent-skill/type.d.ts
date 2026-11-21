@@ -63,8 +63,8 @@ export type SkillFile = {
   text: boolean;
 };
 
-/** 技能可以适用的短剧环节：剧本改编 / 资产拆解 / 资产图提示词 / 视频提示词 */
-export type DramaStepKey = "adapt" | "assets" | "asset_prompts" | "video";
+/** 技能可以适用的短剧环节：分集规划 / 分集剧本 / 资产拆解 / 资产图提示词 / 视频提示词 */
+export type DramaStepKey = "plan" | "scripts" | "assets" | "asset_prompts" | "video";
 
 /** 管理页列表里的一行（含只读内置技能） */
 export type SkillItem = {
@@ -78,7 +78,7 @@ export type SkillItem = {
   source: SkillSource;
   /** 是否只读（内置为 true） */
   readonly: boolean;
-  /** 是否已启用 */
+  /** 画布 Agent 开关：进 Agent 的技能目录、搜索和 @ 弹层；与短剧环节互不影响 */
   enabled: boolean;
   /** 生效版本号；内置技能为 null */
   active_version: number | null;
@@ -96,8 +96,10 @@ export type SkillItem = {
   has_scripts: boolean;
   /** 本系统未支持的 frontmatter 字段 */
   unsupported_fields: string[];
-  /** 适用的短剧环节；没标为空数组，标了的环节才会出现在用户的提示词技能下拉里 */
+  /** 打开的短剧环节；有生效版本时，这些环节的用户技能下拉里会出现它（不要求画布 Agent 开着） */
   drama_steps: DramaStepKey[];
+  /** 画布 Agent 或任一短剧环节开着（后端派生） */
+  in_use: boolean;
   /** 最近更新时间（ISO 字符串） */
   updated_at: string;
 };
@@ -214,8 +216,16 @@ export type SkillDeleteCheck = {
   version_count: number;
 };
 
-/** 列表的状态筛选（后端按它过滤；builtin 只看内置技能） */
-export type SkillStatusFilter = "enabled" | "disabled" | "builtin";
+/** 列表按使用场景筛选：agent 开着画布 Agent，drama 开着任一短剧环节，unused 哪里都没用的导入技能，builtin 只看内置 */
+export type SkillStatusFilter = "agent" | "drama" | "unused" | "builtin";
+
+/** 导入新技能时一并打开的使用场景；导入已有技能的新版本时后端忽略 */
+export type SkillScopeInput = {
+  /** 画布 Agent */
+  enabled: boolean;
+  /** 短剧环节 */
+  drama_steps: DramaStepKey[];
+};
 
 /** 技能列表一页：当页的行、命中总数，以及整张列表里有没有导入过的技能（不受搜索和筛选影响） */
 export interface SkillPage {

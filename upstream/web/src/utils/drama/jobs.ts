@@ -1,7 +1,7 @@
 import type { Drama, DramaJob, DramaStep, EpisodeSummary } from "@/api/drama/type";
 
 import type { WorkspaceStage } from "./stages";
-import { unitWord } from "./start-settings";
+import { durationLabel, unitWord } from "./start-settings";
 
 /** 排队中或进行中 */
 export const isActiveJob = (job: Pick<DramaJob, "status">): boolean =>
@@ -200,37 +200,125 @@ export function activeStoryboardJob(jobs: readonly DramaJob[], no: number): Dram
   );
 }
 
-/** 页面此刻自己在显示哪些任务的进度 */
-export type InPlaceView = {
-  /** 剧本页正开着整页研读视图 */
-  analyzingView: boolean;
-  /** 正在看这一集的片场（分镜还没好时那里显示生成进度）；不在片场为 null */
-  storyboardEp: number | null;
+/** 失败的任务是否已被后来的同步骤、有重叠集号的任务取代（重试过） */
+const supersededBy = (failed: DramaJob, later: DramaJob): boolean =>
+  later.step === failed.step &&
+  later.createdAt > failed.createdAt &&
+  (failed.episodes.length === 0 ||
+    later.episodes.length === 0 ||
+    failed.episodes.some((no) => later.episodes.includes(no)));
+
+/**
+ * 任务面板里要列的失败任务（用户任务，新的在前）：每条失败都列，直到用户关掉；
+ * 同一步骤、同一集后来又提交过的（重试成功或正在跑）就不再显示旧的失败。
+ */
+export function failedJobs(jobs: readonly DramaJob[]): DramaJob[] {
+  const mine = userJobs(jobs);
+  return mine
+    .filter((job) => job.status === "failed")
+    .filter((job) => !mine.some((other) => other.id !== job.id && supersededBy(job, other)))
+    .sort(byCreatedDesc);
+}
+
+/** 任务面板里的一组：同一步骤的进行中任务 */
+export type TaskGroup = {
+  step: DramaStep;
+  /** 组内任务，按第一个集号从小到大 */
+  jobs: DramaJob[];
+  /** 组内全部集号，从小到大 */
+  episodes: number[];
+  /** 平均进度 0–100 */
+  progress: number;
+};
+
+const average = (values: readonly number[]) =>
+  values.length === 0 ? 0 : Math.round(values.reduce((sum, v) => sum + v, 0) / values.length);
+
+/**
+ * 进行中的用户任务按步骤分组（批量分镜一集一个任务，合成一组显示）。
+ * 组的顺序按在列表里第一次出现的位置（列表是新的在前）。
+ */
+export function taskGroups(jobs: readonly DramaJob[]): TaskGroup[] {
+  const groups = new Map<DramaStep, DramaJob[]>();
+  for (const job of userJobs(jobs).filter(isActiveJob)) {
+    groups.set(job.step, [...(groups.get(job.step) ?? []), job]);
+  }
+  return [...groups].map(([step, list]) => {
+    const sorted = [...list].sort((a, b) => (a.episodes[0] ?? 0) - (b.episodes[0] ?? 0));
+    return {
+      step,
+      jobs: sorted,
+      episodes: [...new Set(sorted.flatMap((job) => job.episodes))].sort((a, b) => a - b),
+      progress: average(sorted.map((job) => job.progress)),
+    };
+  });
+}
+
+/** 集号写成「第 3 集」「第 2–5 集」「第 1、3、7 集」，不连续超过 4 个写「第 1、3、5、7 等 9 集」 */
+export function episodesLabel(episodes: readonly number[]): string {
+  const sorted = [...episodes].sort((a, b) => a - b);
+  if (sorted.length === 1) return `第 ${sorted[0]} 集`;
+  const consecutive = sorted.every((no, i) => i === 0 || no === sorted[i - 1] + 1);
+  if (consecutive) return `第 ${sorted[0]}–${sorted.at(-1)} 集`;
+  if (sorted.length <= 4) return `第 ${sorted.join("、")} 集`;
+  return `第 ${sorted.slice(0, 4).join("、")} 等 ${sorted.length} 集`;
+}
+
+/** 顶栏任务胶囊的摘要 */
+export type TaskSummary = {
+  /** 主文案：一个任务写名称，多个写「N 个任务」；只剩失败时为 null */
+  label: string | null;
+  /** 进行中任务的平均进度；没有进行中的为 null */
+  progress: number | null;
+  /** 失败数（含规划因错误暂停） */
+  failed: number;
 };
 
 /**
- * 这条任务的进度页面里已经就地显示了，顶部进度条不再重复：
- * 只有研读视图里的研读 / 大纲。分镜任务即使在当前集的片场也进顶部（那里的进度和顶部并存），
- * 这样看自己那集和看别的集一样有取消入口和进度条。只管进行中的，失败照常进顶部（带原因和重试）。
+ * 顶栏任务胶囊：进行中的用户任务和自动规划合起来算；没有进行中、没有失败、规划也没暂停时返回 null（胶囊收起）。
+ * @param jobs 任务卡
+ * @param planning 自动规划那一行（planningRow 的结果）
  */
-export function coveredInPlace(job: DramaJob, view: InPlaceView): boolean {
-  if (!isActiveJob(job)) return false;
-  return view.analyzingView && (job.step === "analyze" || job.step === "outline");
+export function taskSummary(
+  jobs: readonly DramaJob[],
+  planning: PlanningRowView | null,
+): TaskSummary | null {
+  const running = userJobs(jobs).filter(isActiveJob);
+  const planRunning = planning?.kind === "running" ? planning : null;
+  const count = running.length + (planRunning ? 1 : 0);
+  const failed =
+    failedJobs(jobs).length + (planning?.kind === "paused" && planning.tone === "error" ? 1 : 0);
+  const userPaused = planning?.kind === "paused" && planning.tone === "muted" ? planning : null;
+  if (count === 0 && failed === 0 && !userPaused) return null;
+  const progress =
+    count === 0
+      ? null
+      : average([
+          ...running.map((job) => job.progress),
+          ...(planRunning ? [planRunning.progress] : []),
+        ]);
+  let label: string | null = null;
+  if (count > 1) label = `${count} 个任务`;
+  else if (running[0]) label = jobTitle(running[0]);
+  else if (planRunning) label = planRunning.title;
+  else if (userPaused && failed === 0) label = userPaused.title;
+  return { label, progress, failed };
 }
 
-/** 页内进度条要显示的任务：全部进行中的；没有进行中时，最新一条若失败也显示（带重试） */
-export function bannerJobs(jobs: readonly DramaJob[]): DramaJob[] {
-  const active = jobs.filter(isActiveJob);
-  if (active.length > 0) return active;
-  const newest = [...jobs].sort(byCreatedDesc)[0];
-  return newest?.status === "failed" ? [newest] : [];
+/** 每集正在跑的用户任务（排队或进行中），集号 → 任务；一集同时有几条时取先出现的（新的） */
+export function runningByEpisode(jobs: readonly DramaJob[]): Map<number, DramaJob> {
+  const map = new Map<number, DramaJob>();
+  for (const job of userJobs(jobs).filter(isActiveJob)) {
+    for (const no of job.episodes) if (!map.has(no)) map.set(no, job);
+  }
+  return map;
 }
 
 /** 规划行的数据来源：只用到的那几个字段，方便测试 */
 type PlanningDrama = Pick<
   Drama,
   "phase" | "planCursor" | "rangeEnd" | "pauseReason" | "pauseCode" | "unitKind"
-> & { episodes: readonly unknown[] };
+> & { episodes: readonly unknown[]; eta?: Drama["eta"] };
 
 /** 规划行上的操作：继续 / 重试 / 改用内置重试 */
 export type PlanningAction = "resume" | "retry" | "builtin";
@@ -260,21 +348,58 @@ export type PlanningRowView =
       actions: PlanningAction[];
     };
 
+/** 任务已经跑了多少秒；还在排队（没有开始时间）算 0 */
+const elapsedSeconds = (job: DramaJob, now: number) =>
+  job.startedAt ? Math.max(0, (now - new Date(job.startedAt).getTime()) / 1000) : 0;
+
+/** 自动规划里正在研读（粗读）的任务 */
+const analyzeJob = (jobs: readonly DramaJob[]) =>
+  jobs.find(
+    (job) =>
+      isPipelineJob(job) && isActiveJob(job) && (job.step === "analyze" || job.step === "outline"),
+  );
+
 /**
- * 规划还要多久（分钟）：按「已规划的单元数 ÷ 已用时间」估出速度，再乘剩余单元数。
- * 还没规划出任何单元（速度未知）或已规划完时返回 null；用时含暂停期间，所以只是粗估
- * @param drama 创建时间、已规划到第几个单元、范围终点
+ * 自动规划还要多久（秒）：粗读 = 同模型粗读中位耗时 − 已跑时间；规划 = 当前批剩余 + 后面批次 × 每批中位耗时。
+ * 中位耗时为 0（历史不足）的步骤不估；合计要求正在做和之后的步骤都能估。跑超了按 0 算，不出现负数
+ * @param drama 规划阶段与预计耗时原料
+ * @param jobs 任务卡
  * @param now 当前时间（毫秒）
  */
-export function planningEtaMinutes(
-  drama: { createdAt: string; planCursor: number; rangeEnd: number },
+export function pipelineEta(
+  drama: { phase: Drama["phase"]; eta?: Drama["eta"] },
+  jobs: readonly DramaJob[],
   now: number,
-): number | null {
-  const remaining = drama.rangeEnd - drama.planCursor;
-  if (drama.planCursor <= 0 || remaining <= 0) return null;
-  const elapsed = now - new Date(drama.createdAt).getTime();
-  if (!(elapsed > 0)) return null;
-  return Math.max(1, Math.round(((elapsed / drama.planCursor) * remaining) / 60_000));
+): { analyze: number | null; plan: number | null; total: number | null } {
+  const eta = drama.eta;
+  if (drama.phase !== "running" || !eta) return { analyze: null, plan: null, total: null };
+  const reading = analyzeJob(jobs);
+  const analyze =
+    reading && eta.analyzeSeconds > 0
+      ? Math.max(0, Math.round(eta.analyzeSeconds - elapsedSeconds(reading, now)))
+      : null;
+  let plan: number | null = null;
+  if (eta.planSeconds > 0) {
+    const batch = jobs.find((job) => isPipelineJob(job) && isActiveJob(job) && job.step === "plan");
+    const current =
+      eta.planBatchesLeft > 0 && batch
+        ? Math.max(0, eta.planSeconds - elapsedSeconds(batch, now))
+        : 0;
+    const rest = batch ? Math.max(0, eta.planBatchesLeft - 1) : eta.planBatchesLeft;
+    plan = Math.round(current + rest * eta.planSeconds);
+  }
+  const total = plan === null || (reading && analyze === null) ? null : (analyze ?? 0) + plan;
+  return { analyze, plan, total };
+}
+
+/**
+ * 还需多久的文案：跑超了写「即将完成」，不到一分钟写「还需不到 1 分钟」
+ * @param seconds 剩余秒数
+ */
+export function etaLabel(seconds: number): string {
+  if (seconds <= 0) return "即将完成";
+  if (seconds < 60) return "还需不到 1 分钟";
+  return `还需约 ${durationLabel(seconds / 60)}`;
 }
 
 const batchRange = (from: number, to: number, word: string) =>
@@ -286,10 +411,12 @@ const batchRange = (from: number, to: number, word: string) =>
  * 自定义提示词导致失败 → 重试 + 改用内置重试）。
  * @param drama 短剧的规划相关字段
  * @param jobs 任务卡
+ * @param now 当前时间（毫秒），用来推算粗读进度
  */
 export function planningRow(
   drama: PlanningDrama,
   jobs: readonly DramaJob[],
+  now = Date.now(),
 ): PlanningRowView | null {
   if (drama.phase === "done") return null;
   const word = unitWord(drama.unitKind);
@@ -298,11 +425,15 @@ export function planningRow(
     const analyze = active.find((job) => job.step === "analyze" || job.step === "outline");
     const plan = active.find((job) => job.step === "plan");
     if (analyze && !plan) {
+      // 粗读只有一次模型调用，中途没有进度：有历史耗时就按已用时间走，最多到 90%
+      const median = drama.eta?.analyzeSeconds ?? 0;
+      const guess =
+        median > 0 ? Math.min(90, Math.round((elapsedSeconds(analyze, now) / median) * 100)) : 0;
       return {
         kind: "running",
         title: "正在粗读全书",
         detail: "研读 · 抽样读开篇与后文，整理人物与梗概",
-        progress: analyze.progress,
+        progress: Math.max(analyze.progress, guess),
       };
     }
     const progress =

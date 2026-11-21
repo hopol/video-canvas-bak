@@ -33,9 +33,10 @@ import { MEDIA_LABEL } from "./step-tabs";
 import { StepSheet } from "./step-sheet";
 import { useSteps } from "./use-steps";
 
-/** 短剧工作室的四个环节：还没迁移到环节协议层，灰显，沿用开拍设置里的「内置 / 我的 / 技能」 */
+/** 短剧工作室的五个环节：还没迁移到环节协议层，灰显，沿用开拍设置里的「内置 / 我的 / 技能」 */
 const DRAMA_STEPS: Array<[string, string]> = [
-  ["drama.plan", "剧本改编"],
+  ["drama.plan", "分集规划"],
+  ["drama.scripts", "分集剧本"],
   ["drama.breakdown", "资产拆解"],
   ["drama.asset_prompts", "资产提示词"],
   ["drama.storyboard", "分镜脚本"],

@@ -38,3 +38,29 @@ func TestSkillService_DramaStepsAndAvailability(t *testing.T) {
 		t.Fatalf("无效环节: %v", err)
 	}
 }
+
+// 分集规划和分集剧本是两个独立环节：技能按环节打开，正文只写进该环节的那一页；adapt 不再合法。
+func TestSkillService_DramaStepsPlanAndScriptsSeparate(t *testing.T) {
+	e := newSkillEnv(t)
+	ctx := context.Background()
+	mustConfirm(t, e, 1, standardPkg(t, "demo", "方法正文"))
+	if _, err := e.svc.SetDramaSteps(ctx, 1, "demo", []string{"adapt"}); codeOf(err) != 10001 {
+		t.Fatalf("adapt 应不再合法: %v", err)
+	}
+	if _, err := e.svc.SetDramaSteps(ctx, 1, "demo", []string{"scripts"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.DramaSkill(ctx, "demo", "plan"); codeOf(err) != 67018 {
+		t.Fatalf("没开分集规划时不可用: %v", err)
+	}
+	setting, err := e.svc.DramaSkill(ctx, "demo", "scripts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(setting.Bodies) != 1 || !strings.Contains(setting.Bodies["scripts"], "方法正文") {
+		t.Fatalf("分集剧本只应有 scripts 一页: %+v", setting.Bodies)
+	}
+	if items, _ := e.svc.DramaSkills(ctx, "scripts"); len(items) != 1 {
+		t.Fatalf("%+v", items)
+	}
+}

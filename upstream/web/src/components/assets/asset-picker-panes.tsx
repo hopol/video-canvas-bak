@@ -1,27 +1,45 @@
-import { useEffect, type MutableRefObject } from "react";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { useEffect, useState, type MutableRefObject } from "react";
+import { motion } from "motion/react";
+import { Check, ChevronRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type { AssetDto } from "@/api/asset/type";
 import type { AssetKind, LibraryItemDto } from "@/api/asset-library/type";
+import { listAllOfficialVoices, peekOfficialVoices } from "@/api/official-voice";
 import { EmptyMark } from "@/components/home/empty-mark";
+import { TAP_CARD } from "@/lib/motion";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { FilingStatus } from "@/components/virtual-human/filing-status";
+import { FilterMenu } from "@/components/assets/filter-menu";
+import { VirtualGrid } from "@/components/assets/virtual-grid";
 import type { AssetFoldersState } from "@/hooks/use-asset-folders";
 import { useAssetLibrary } from "@/hooks/use-asset-library";
 import { useGeneratedAssets } from "@/hooks/use-generated-assets";
+import { useVirtualHumans } from "@/hooks/use-virtual-humans";
 import { hasActiveFilter, type GeneratedFilter } from "@/utils/assets/generated-filter";
 import type { PagedList } from "@/utils/assets/paged-list";
+import {
+  filterOfficialVoices,
+  VOICE_GROUP_OPTIONS,
+  VOICE_LANG_OPTIONS,
+  voiceDisplayName,
+  voiceGroupLabel,
+  type VoiceGroupFilter,
+  type VoiceLangFilter,
+} from "@/utils/assets/official-voices";
 import { canToggle } from "@/utils/assets/picker-selection";
 import type { PickerView } from "@/utils/assets/picker-state";
 import type { UploadTask } from "@/utils/assets/upload-queue";
+import { humanPickGroups } from "@/utils/virtual-human/virtual-human";
 
-import { HistoryAssetCard, LibraryAssetCard, type CardSelect } from "./asset-card";
+import { AssetCover, HistoryAssetCard, LibraryAssetCard, type CardSelect } from "./asset-card";
 import { AssetGrid, LoadMoreFooter } from "./asset-grid";
 import { FolderCard } from "./folder-card";
 import { UploadCard } from "./upload-card";
 
 /** 弹框里空状态的占位：高度比资产页矮，免得撑出滚动 */
-const EMPTY_CLASS = "min-h-56 flex-1";
+const EMPTY_CLASS = "min-h-56 flex-1 text-center";
 
 /** 弹框内容区的加载态：居中转圈，不用骨架屏 */
 function PaneLoading() {
@@ -320,5 +338,235 @@ export function LibraryPane({
         </>
       )}
     </>
+  );
+}
+
+/**
+ * 弹框里「真人库」来源的内容：按真人分组列出图片，备案可用的才能勾选，备案中、失败的置灰并标原因。
+ * 选中的就是个人资产库里的那张素材，生成时后端会把备案可用的图换成 asset:// 引用。
+ * @param q 搜索词（已防抖），按真人名称匹配
+ * @param selected 当前选择
+ * @param rules 选择规则（上限、调用方给的不可选原因）
+ * @param onToggle 勾选或取消一个素材
+ */
+export function HumansPane({
+  q,
+  selected,
+  rules,
+  onToggle,
+}: {
+  q: string;
+  selected: AssetDto[];
+  rules: PickRules;
+  onToggle: (asset: AssetDto) => void;
+}) {
+  const { humans, loading, error, reload } = useVirtualHumans(true);
+  if (loading) return <PaneLoading />;
+  if (error) {
+    return (
+      <EmptyMark
+        className={EMPTY_CLASS}
+        title="加载失败"
+        hint={
+          <Button variant="outline" size="sm" onClick={reload}>
+            重试
+          </Button>
+        }
+      />
+    );
+  }
+  const groups = humanPickGroups(humans ?? [], q);
+  if (groups.length === 0) {
+    return (
+      <EmptyMark
+        className={EMPTY_CLASS}
+        title={q.trim() ? `没有找到“${q.trim()}”` : "真人库是空的"}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-5">
+      {groups.map(({ human, items }) => (
+        <section key={human.id} aria-label={human.name} className="flex flex-col gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-medium">
+            <span className="truncate">{human.name}</span>
+            <FilingStatus status={human.status} />
+          </h3>
+          <AssetGrid>
+            {items.map((item) => {
+              // 备案还没可用的图优先标备案状态，其次才是调用方的原因（已是主图、已添加）
+              const itemRules: PickRules = {
+                ...rules,
+                reasonOf: (asset) => item.reason ?? rules.reasonOf?.(asset) ?? null,
+              };
+              return (
+                <LibraryAssetCard
+                  key={item.imageId}
+                  item={{
+                    id: item.imageId,
+                    asset: item.asset,
+                    folderId: null,
+                    createdAt: human.createdAt,
+                  }}
+                  select={selectOf(selected, item.asset, onToggle, itemRules)}
+                />
+              );
+            })}
+          </AssetGrid>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 弹框里「音色库」来源的内容：列出方舟官方参考音色，按名字本地过滤，卡片可勾选。
+ * 音色是系统公共素材（user_id=0），不进个人资产库；选中的是它的素材 ID，
+ * 生成时后端按这条素材的公网地址交给各模型。
+ * @param q 搜索词（已防抖），按音色名字匹配
+ * @param selected 当前选择
+ * @param rules 选择规则（上限、调用方给的不可选原因）
+ * @param onToggle 勾选或取消一个音色
+ */
+export function OfficialPane({
+  q,
+  selected,
+  rules,
+  onToggle,
+}: {
+  q: string;
+  selected: AssetDto[];
+  rules: PickRules;
+  onToggle: (asset: AssetDto) => void;
+}) {
+  // 有缓存就直接出音色，后台再刷新一次；首次打开才显示加载中
+  const [items, setItems] = useState<AssetDto[] | null>(() => peekOfficialVoices());
+  const [error, setError] = useState(false);
+  const [lang, setLang] = useState<VoiceLangFilter>("all");
+  const [group, setGroup] = useState<VoiceGroupFilter>("all");
+
+  useEffect(() => {
+    let alive = true;
+    listAllOfficialVoices()
+      .then((all) => {
+        if (alive) setItems(all);
+      })
+      .catch(() => {
+        if (alive) setError(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (items === null) return <PaneLoading />;
+  if (error) {
+    return <EmptyMark className={EMPTY_CLASS} title="加载失败" hint="音色库加载失败，请稍后重试" />;
+  }
+  const query = q.trim();
+  // 和资产页「音色库」共用一套过滤规则：大类别（语言）+ 子类别（人群）+ 关键词
+  const shown = filterOfficialVoices(items, { query, lang, group });
+  const filtering = query !== "" || lang !== "all" || group !== "all";
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="-mx-3 flex items-center gap-1">
+        <FilterMenu
+          label="语言"
+          value={lang}
+          defaultValue="all"
+          groups={[{ options: VOICE_LANG_OPTIONS }]}
+          onChange={(value) => setLang(value as VoiceLangFilter)}
+        />
+        <FilterMenu
+          label="人群"
+          value={group}
+          defaultValue="all"
+          groups={[{ options: VOICE_GROUP_OPTIONS }]}
+          onChange={(value) => setGroup(value as VoiceGroupFilter)}
+        />
+      </div>
+      {shown.length === 0 ? (
+        <EmptyMark
+          className={EMPTY_CLASS}
+          title={query ? `没有找到“${query}”` : "这个分类下还没有音色"}
+          hint={filtering ? "换个分类或清空搜索词再试" : undefined}
+        />
+      ) : (
+        <VirtualGrid
+          scroll="parent"
+          items={shown}
+          getKey={(asset) => asset.id}
+          columns={PICK_GRID_SPEC}
+          estimateRowHeight={estimatePickRow}
+          renderItem={(asset) => (
+            <OfficialVoicePickCard
+              asset={asset}
+              select={selectOf(selected, asset, onToggle, rules)}
+            />
+          )}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 弹框里的音色网格：每列最小 104px、间距 8px，窄屏至少 4 列 */
+const PICK_GRID_SPEC = { minCell: 104, gap: 8, minColumns: 4 };
+
+/** 一行的估高：卡片 = 边框 2 + 内边距 12 + 方形头像（比单元格窄 14）+ 头像到名字 4 + 名字一行 14，再加行距。挂载后以量到的为准。 */
+const estimatePickRow = (cellWidth: number) => cellWidth + 18 + PICK_GRID_SPEC.gap;
+
+/** 紧凑的音色选择卡：整张卡都是点击区，点头像或名字都能勾选；方形缩略图 + 名字常显在下方，选中描边并标勾选序号。 */
+export function OfficialVoicePickCard({ asset, select }: { asset: AssetDto; select: CardSelect }) {
+  return (
+    <motion.button
+      type="button"
+      data-slot="official-voice-pick"
+      data-selected={select.selected || undefined}
+      data-disabled={select.disabled || undefined}
+      aria-label={voiceDisplayName(asset)}
+      aria-pressed={select.selected}
+      disabled={select.disabled}
+      onClick={select.onToggle}
+      whileTap={select.disabled ? undefined : TAP_CARD}
+      className={cn(
+        "bg-card group/card relative flex w-full min-w-0 flex-col gap-1 rounded-lg border p-1.5 text-center transition-opacity",
+        "focus-visible:ring-ring/60 focus-visible:ring-2",
+        select.selected && "outline-foreground outline-2 outline-offset-2",
+        select.disabled && "cursor-not-allowed opacity-45",
+      )}
+    >
+      <span className="bg-muted relative block aspect-square w-full overflow-hidden rounded-md">
+        <AssetCover asset={asset} />
+        <span
+          aria-hidden
+          className={cn(
+            "absolute top-1 left-1 z-10 grid size-4.5 place-items-center rounded-full text-[10px] font-semibold tabular-nums",
+            select.selected
+              ? "bg-foreground text-background"
+              : "bg-cover-scrim ring-cover-foreground/70 ring-1",
+          )}
+        >
+          {select.selected && select.order !== undefined ? (
+            select.order
+          ) : (
+            <Check className="size-3 opacity-0" />
+          )}
+        </span>
+      </span>
+      <span className="block w-full truncate px-0.5 text-[11px] leading-tight">
+        {voiceDisplayName(asset)}
+      </span>
+      {voiceGroupLabel(asset) && (
+        <span className="bg-cover-scrim text-cover-foreground pointer-events-none absolute top-1 right-1 z-10 rounded-full px-1 text-[9px] leading-4">
+          {voiceGroupLabel(asset)}
+        </span>
+      )}
+      {select.reason && (
+        <span className="bg-cover-scrim text-cover-foreground pointer-events-none absolute right-1 bottom-6 z-10 rounded-full px-1.5 py-0.5 text-[10px]">
+          {select.reason}
+        </span>
+      )}
+    </motion.button>
   );
 }

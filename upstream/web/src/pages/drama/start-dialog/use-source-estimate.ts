@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { estimateSource } from "@/api/drama";
+import { ApiError } from "@/utils/requests/request";
 import { dramaErrorMessage } from "@/api/drama/errors";
 import type { SourceEstimate, SourceEstimateInput } from "@/api/drama/type";
 
@@ -8,7 +9,13 @@ import type { SourceEstimate, SourceEstimateInput } from "@/api/drama/type";
 export type SourceEstimateState =
   | { status: "ready"; estimate: SourceEstimate }
   | { status: "loading"; estimate: SourceEstimate | null }
-  | { status: "error"; message: string; estimate: SourceEstimate | null };
+  | {
+      status: "error";
+      message: string;
+      /** 业务错误码，不是接口错误时为 0 */
+      code: number;
+      estimate: SourceEstimate | null;
+    };
 
 /** 防抖毫秒数：范围 / 时长 / 模型连续改动时只在停下后请求一次 */
 export const ESTIMATE_DEBOUNCE_MS = 300;
@@ -31,7 +38,7 @@ export function useSourceEstimate(
 ): SourceEstimateState {
   const [done, setDone] = useState<{
     key: string;
-    result: SourceEstimate | { error: string };
+    result: SourceEstimate | { error: string; code: number };
   } | null>(null);
   const [last, setLast] = useState<SourceEstimate | null>(initial.estimate);
   const key = input ? keyOf(input) : "";
@@ -48,7 +55,9 @@ export function useSourceEstimate(
           setDone({ key, result: estimate });
         })
         .catch((error: unknown) => {
-          if (active) setDone({ key, result: { error: dramaErrorMessage(error, "估算失败") } });
+          if (!active) return;
+          const code = error instanceof ApiError && typeof error.code === "number" ? error.code : 0;
+          setDone({ key, result: { error: dramaErrorMessage(error, "估算失败"), code } });
         });
     }, ESTIMATE_DEBOUNCE_MS);
     return () => {
@@ -63,7 +72,7 @@ export function useSourceEstimate(
   if (key === initialKey) return { status: "ready", estimate: initial.estimate };
   if (done?.key === key) {
     return "error" in done.result
-      ? { status: "error", message: done.result.error, estimate: last }
+      ? { status: "error", message: done.result.error, code: done.result.code, estimate: last }
       : { status: "ready", estimate: done.result };
   }
   return { status: "loading", estimate: last };

@@ -36,7 +36,8 @@ function VoiceHistoryItem({
   return (
     <li
       className={cn(
-        "flex min-h-11 items-center gap-2 rounded-2xl px-1.5 py-1 ring-1",
+        // 和外框同一个弧度：16px + 连续曲率
+        "flex min-h-11 items-center gap-2 rounded-2xl px-1.5 py-1 ring-1 [corner-shape:squircle]",
         row.current ? "bg-chrome-hover ring-chrome-border" : "ring-transparent",
       )}
     >
@@ -97,8 +98,9 @@ function VoiceHistoryItem({
 }
 
 /**
- * 详情页「AI 生成声音」下面的生成记录：这个角色卡节点在这张画布上最近的声音任务，新的在前。
+ * 角色声音的历史版本（生成记录）：这个角色卡节点在这张画布上最近的声音任务，新的在前。
  * 成功的可以试听、设为音色，当前声音那条标出来；失败的显示原因。没有记录时什么都不渲染。
+ * 只有列表本身，外框和展开收起由调用方（详情页的当前声音卡片）负责。
  */
 export function VoiceHistoryList({
   rows,
@@ -111,13 +113,13 @@ export function VoiceHistoryList({
 }) {
   if (rows.length === 0) return null;
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-[13px] font-medium">生成记录</span>
-      <ul className="bg-chrome ring-chrome-border flex max-h-64 flex-col gap-0.5 overflow-y-auto rounded-3xl p-1.5 ring-1 backdrop-blur-xl backdrop-saturate-150">
-        {rows.map((item) => (
-          <VoiceHistoryItem key={item.taskId} row={item} onUse={onUse} />
-        ))}
-      </ul>
-    </div>
+    <ul
+      aria-label="历史版本"
+      className="flex max-h-56 flex-col gap-0.5 overflow-y-auto p-1.5 [scrollbar-width:thin]"
+    >
+      {rows.map((item) => (
+        <VoiceHistoryItem key={item.taskId} row={item} onUse={onUse} />
+      ))}
+    </ul>
   );
 }

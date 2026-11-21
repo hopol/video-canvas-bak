@@ -15,10 +15,12 @@ import (
 )
 
 // dramaJobConfig 保持原模型快照顶层兼容，同时冻结本任务正文和实时名单。
+// Prompt 是任务主环节的设置；Extra 冻结任务顺带调用的其他环节（拆解顺带写资产图提示词）。
 type dramaJobConfig struct {
 	provider.Snapshot
-	Prompt    model.DramaPromptSetting `json:"prompt"`
-	KnownCast []drama.CastEntry        `json:"known_cast"`
+	Prompt    model.DramaPromptSetting            `json:"prompt"`
+	Extra     map[string]model.DramaPromptSetting `json:"extra_prompts,omitempty"`
+	KnownCast []drama.CastEntry                   `json:"known_cast"`
 }
 
 // jobConfig 解码任务快照，缺少新字段的旧任务使用内置正文。
@@ -28,6 +30,27 @@ func jobConfig(j *model.DramaJob) dramaJobConfig {
 	return cfg
 }
 
+// promptFor 返回一次调用所属环节的设置：任务主环节用 Prompt，顺带调用的环节用 Extra，
+// 修复前入队的拆解任务没有 Extra，顺带环节退回内置。
+func (c dramaJobConfig) promptFor(jobStep, step string) model.DramaPromptSetting {
+	group := dramaStepGroup(step)
+	if group == dramaStepGroup(jobStep) {
+		return c.Prompt
+	}
+	if setting, ok := c.Extra[group]; ok {
+		return setting
+	}
+	return model.DramaPromptSetting{Source: "builtin", Label: "内置"}
+}
+
+// dramaExtraGroups 列出任务除主环节外还会调用的提示词环节。
+func dramaExtraGroups(step string) []string {
+	if step == "breakdown" {
+		return []string{"asset_prompts"}
+	}
+	return nil
+}
+
 // snapshotDramaJob 在项目锁内取画布名单，固定正文与批次完整原文。
 func (s *DramaService) snapshotDramaJob(ctx context.Context, tx repository.DramaTx, p *model.DramaProject, j *model.DramaJob, snap *provider.Snapshot) error {
 	setting, ok := promptSettings(p)[dramaStepGroup(j.Step)]
@@ -35,6 +58,14 @@ func (s *DramaService) snapshotDramaJob(ctx context.Context, tx repository.Drama
 		setting = model.DramaPromptSetting{Source: "builtin", Label: "内置", Bodies: map[string]string{j.Step: drama.PromptBody(j.Step)}}
 	}
 	cfg := dramaJobConfig{Snapshot: *snap, Prompt: setting, KnownCast: []drama.CastEntry{}}
+	for _, group := range dramaExtraGroups(j.Step) {
+		if extra, ok := promptSettings(p)[group]; ok {
+			if cfg.Extra == nil {
+				cfg.Extra = map[string]model.DramaPromptSetting{}
+			}
+			cfg.Extra[group] = extra
+		}
+	}
 	if j.Step != "analyze" && p.UnitsTotal > 0 {
 		cast, err := snapshotKnownCast(ctx, tx, p)
 		if err != nil {
@@ -152,7 +183,8 @@ func (s *DramaService) planBatchVariables(ctx context.Context, tx repository.Dra
 		vars["previous_cliffhanger"] = ep.Cliffhanger
 	}
 	vars["known_cast"], vars["source"] = cfg.KnownCast, ""
-	prompt, err := drama.PromptWithBody("plan", vars, cfg.Prompt.Bodies["plan"])
+	template, body := dramaTemplate("plan", cfg.Prompt)
+	prompt, err := drama.PromptWithBody(template, vars, body)
 	if err != nil {
 		return err
 	}

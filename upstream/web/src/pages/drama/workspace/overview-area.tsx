@@ -36,6 +36,7 @@ const COLUMNS = [
   { key: "script", label: "剧本" },
   { key: "breakdown", label: "拆解" },
   { key: "storyboard", label: "分镜" },
+  { key: "board", label: "故事板" },
   { key: "segments", label: "片段" },
   { key: "final", label: "成片" },
 ] as const;
@@ -53,6 +54,7 @@ const CELL_TEXT: Record<ColumnKey, Partial<Record<MatrixCell["state"], string>>>
   script: { todo: "—" },
   breakdown: { todo: "待拆解" },
   storyboard: { todo: "待生成" },
+  board: {},
   segments: {},
   final: { todo: "未合成" },
 };
@@ -95,7 +97,9 @@ function Cell({
       className={cn(base, tone, "hover:brightness-125 active:scale-95")}
     >
       {cell.state === "run" && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
-      {cell.state === "done" && column !== "segments" && <Check className="size-3.5" aria-hidden />}
+      {cell.state === "done" && cell.total === undefined && (
+        <Check className="size-3.5" aria-hidden />
+      )}
       {cell.total !== undefined && `${cell.done}/${cell.total}`}
       {cell.total === undefined && cell.state !== "done" && cell.state !== "run"
         ? (CELL_TEXT[column][cell.state] ?? (cell.state === "part" ? "已过期" : ""))
@@ -111,7 +115,7 @@ function Cell({
   );
 }
 
-/** 一行：一集在五道工序上的状态 */
+/** 一行：一集在各道工序上的状态 */
 function MatrixRow({
   episode,
   index,
@@ -131,7 +135,7 @@ function MatrixRow({
         ease: EASE_OUT,
         delay: Math.min(index, STAGGER_MAX) * STAGGER,
       }}
-      className="grid grid-cols-[minmax(150px,1.6fr)_repeat(5,minmax(60px,1fr))] items-center gap-1 max-sm:grid-cols-[110px_repeat(5,minmax(40px,1fr))]"
+      className="grid grid-cols-[minmax(150px,1.6fr)_repeat(6,minmax(56px,1fr))] items-center gap-1 max-sm:grid-cols-[110px_repeat(6,minmax(36px,1fr))]"
     >
       <button
         type="button"
@@ -430,7 +434,7 @@ export function OverviewArea({
             </span>
           </div>
           <div className="px-2.5" role="table" aria-label="分集与工序进度">
-            <div className="text-muted-foreground mb-1 grid grid-cols-[minmax(150px,1.6fr)_repeat(5,minmax(60px,1fr))] gap-1 px-2 py-1.5 font-mono text-[11px] tracking-wider max-sm:grid-cols-[110px_repeat(5,minmax(40px,1fr))]">
+            <div className="text-muted-foreground mb-1 grid grid-cols-[minmax(150px,1.6fr)_repeat(6,minmax(56px,1fr))] gap-1 px-2 py-1.5 font-mono text-[11px] tracking-wider max-sm:grid-cols-[110px_repeat(6,minmax(36px,1fr))]">
               <div>分集</div>
               {COLUMNS.map(({ key, label }) => (
                 <div key={key} className="text-center">
@@ -459,7 +463,8 @@ export function OverviewArea({
           )}
         </section>
 
-        <div className="grid gap-5">
+        {/* 列宽要卡住：集号提示是一整行不换行的长文本，不加 min-w-0 / minmax(0,1fr) 会把这一列撑出屏幕 */}
+        <div className="grid min-w-0 grid-cols-1 gap-5">
           <section className="bg-card border-border rounded-2xl border">
             <h2 className="px-[18px] pt-4 pb-2.5 text-[15px] font-semibold">整体完成度</h2>
             <div className="flex items-center gap-[18px] px-[18px] pb-[18px]">
@@ -483,7 +488,7 @@ export function OverviewArea({
 
           <section className="bg-card border-border rounded-2xl border pb-2">
             <h2 className="px-[18px] pt-4 pb-2 text-[15px] font-semibold">下一步</h2>
-            <div className="grid px-2">
+            <div className="grid grid-cols-1 px-2">
               {next.kind === "scripts" && (
                 <NextItem
                   icon={<ScrollText className="size-4" />}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,7 +22,7 @@ const pullModelsTimeout = 30 * time.Second
 // pullErrSnippetLen 是错误信息里引用的上游响应片段的最大字符数。
 const pullErrSnippetLen = 200
 
-// ListUpstreamModels 实现 provider.ModelLister：GET {base_url}/v1/models，渠道 API Key 作 Bearer，读 OpenAI 形状的 data[].id。
+// ListUpstreamModels 实现 provider.ModelLister：GET {base_url}/v1/models（base_url 末段已是版本号则只补 /models），渠道 API Key 作 Bearer，读 OpenAI 形状的 data[].id。
 // 与其他出站请求一样走 SSRF 防护的客户端和渠道限流；渠道自定义请求头照常带上（目标就是 base_url 本身）。
 // 失败都返回 *provider.PullError，信息里不含 Key 明文。
 func (e *Executor) ListUpstreamModels(ctx context.Context, ch provider.ChannelSnapshot, apiKey string) ([]string, error) {
@@ -166,14 +167,17 @@ func firstPositive(vs ...int) int {
 	return 0
 }
 
-// pullModelsURL 由 base_url 拼出模型清单地址：路径已以 /v1 结尾就只补 /models，否则补 /v1/models。
+// versionSegmentRe 匹配路径末段的版本号：/v1、/v4、/v1beta 这类（v 加数字，可跟字母后缀）。
+var versionSegmentRe = regexp.MustCompile(`/v[0-9]+[a-z]*$`)
+
+// pullModelsURL 由 base_url 拼出模型清单地址：路径末段已是版本号（/v1、/v4、/v1beta…）就只补 /models，否则补 /v1/models。
 func pullModelsURL(base string) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" {
 		return "", errors.New("base_url 不合法")
 	}
 	p := strings.TrimRight(u.Path, "/")
-	if strings.HasSuffix(p, "/v1") {
+	if versionSegmentRe.MatchString(p) {
 		u.Path = p + "/models"
 	} else {
 		u.Path = p + "/v1/models"

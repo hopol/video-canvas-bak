@@ -34,6 +34,7 @@ import type {
   PendingGroup,
   UploadNotice,
 } from "@/types";
+import { isBlankCanvas } from "@/utils/canvas/blank-canvas";
 import { isGroupNode } from "@/utils/canvas/group";
 import { canLinkFrom, opForLink, partitionLinkable } from "@/utils/canvas/link-rule";
 import { takeUploadFile } from "@/utils/canvas/media";
@@ -47,18 +48,6 @@ type UseCanvasMenuOptions = {
   /** 各种类新建时预选的模型 id，缺省由节点自己回落到清单第一条 */
   defaultModels?: Record<string, string>;
 };
-
-/**
- * 点的是不是画布空白处（不在节点、连线、面板上）。
- * node-toolbar 得单列：它的 class 是 react-flow__node-toolbar，
- * 和 react-flow__node 是两个不同的 class，closest 认不出亲戚关系，
- * 漏了它双击输入框就会当成双击空白、平白弹出建节点菜单
- */
-function isBlankCanvas(target: Element) {
-  return !target.closest(
-    ".react-flow__node, .react-flow__node-toolbar, .react-flow__edge, .react-flow__panel",
-  );
-}
 
 /**
  * 「添加节点」菜单的状态机：双击空白或拉线落空时记录锚点，
@@ -147,14 +136,14 @@ export function useCanvasMenu({ setNodes, setEdges, defaultModels }: UseCanvasMe
    * 在空白处按下时拦掉默认行为就不会选；节点里的输入框不在拦截范围内，照常能双击选词。
    */
   const onPaneMouseDown = useCallback((event: React.MouseEvent) => {
-    if (event.detail < 2 || !isBlankCanvas(event.target as Element)) return;
+    if (event.detail < 2 || !isBlankCanvas(event.target as Element, event.currentTarget)) return;
     event.preventDefault();
   }, []);
 
   // 只有双击空白画布才弹菜单
   const onDoubleClick = useCallback(
     (event: React.MouseEvent) => {
-      if (!isBlankCanvas(event.target as Element)) return;
+      if (!isBlankCanvas(event.target as Element, event.currentTarget as Element)) return;
 
       const screen = { x: event.clientX, y: event.clientY };
       setMenu({

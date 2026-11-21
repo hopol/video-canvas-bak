@@ -10,6 +10,7 @@ import PluginsPage from "@/pages/admin/ai/plugins";
 import ImageProcessorPage from "@/pages/admin/image-processor";
 import AgentRunsPage from "@/pages/admin/agent-runs";
 import AgentSkillsPage from "@/pages/admin/agent-skills";
+import SkillDetailRedirect from "@/pages/admin/agent-skills/skill-detail";
 import AgentStepsPage from "@/pages/admin/agent-steps";
 import AgentTokensPage from "@/pages/admin/agent-tokens";
 import StoragePage from "@/pages/admin/storage";
@@ -163,6 +164,8 @@ export const router = createBrowserRouter([
               { path: "ai/plugins", element: <PluginsPage /> },
               { path: "agent", element: <Navigate to="skills" replace /> },
               { path: "agent/skills", element: <AgentSkillsPage /> },
+              // 旧的详情页链接：跳到列表页并打开详情弹窗
+              { path: "agent/skills/:name", element: <SkillDetailRedirect /> },
               { path: "agent/steps", element: <AgentStepsPage /> },
               { path: "agent/runs", element: <AgentRunsPage /> },
               { path: "agent/tokens", element: <AgentTokensPage /> },

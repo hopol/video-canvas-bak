@@ -1,6 +1,6 @@
 import type { DramaJob, DramaPhase, DramaStatus, EpisodeSummary, UnitKind } from "@/api/drama/type";
 
-import { busyReason } from "./jobs";
+import { busyReason, isActiveJob, jobConflictReason } from "./jobs";
 import { unitWord } from "./start-settings";
 
 /** 一集的剧本能不能手改：锁定集（已拆解资产）只读；生成中也先别改，免得和模型输出互相覆盖 */
@@ -81,26 +81,48 @@ export const plannedEpisodes = <T extends Pick<EpisodeSummary, "title">>(
   episodes: readonly T[],
 ): T[] => episodes.filter(isPlanned);
 
+/** 某一步正在处理（排队或进行中）的集号 */
+const runningEpisodes = (jobs: readonly DramaJob[], step: DramaJob["step"]): Set<number> =>
+  new Set(
+    jobs.filter((job) => job.step === step && isActiveJob(job)).flatMap((job) => job.episodes),
+  );
+
 /** 资产拆解对话框里一集的选项 */
 export type BreakdownOption = {
   no: number;
   title: string;
   disabled: boolean;
   /** 禁用原因，可选时为 null */
-  reason: "已拆解" | "还没有剧本" | null;
+  reason: "已拆解" | "拆解中" | "还没有剧本" | null;
 };
 
-/** 已锁定的、没有剧本的（含剧本还在生成）都禁用 */
-export function breakdownOptions(episodes: readonly EpisodeSummary[]): BreakdownOption[] {
+/**
+ * 已锁定的、正在拆解的、没有剧本的（含剧本还在生成）都禁用
+ * @param jobs 任务卡：正在拆解的集不能再选，免得重复提交
+ */
+export function breakdownOptions(
+  episodes: readonly EpisodeSummary[],
+  jobs: readonly DramaJob[] = [],
+): BreakdownOption[] {
+  const breaking = runningEpisodes(jobs, "breakdown");
   return plannedEpisodes(episodes).map((ep) => {
-    const reason = ep.locked ? "已拆解" : ep.scriptStatus !== "ready" ? "还没有剧本" : null;
+    const reason = ep.locked
+      ? "已拆解"
+      : breaking.has(ep.no)
+        ? "拆解中"
+        : ep.scriptStatus !== "ready"
+          ? "还没有剧本"
+          : null;
     return { no: ep.no, title: ep.title, disabled: reason !== null, reason };
   });
 }
 
 /** 对话框打开时的默认选择：第一个可用的集 */
-export function defaultBreakdownSelection(episodes: readonly EpisodeSummary[]): number[] {
-  const first = breakdownOptions(episodes).find((option) => !option.disabled);
+export function defaultBreakdownSelection(
+  episodes: readonly EpisodeSummary[],
+  jobs: readonly DramaJob[] = [],
+): number[] {
+  const first = breakdownOptions(episodes, jobs).find((option) => !option.disabled);
   return first ? [first.no] : [];
 }
 
@@ -119,15 +141,29 @@ export type ScriptOption = {
   title: string;
   disabled: boolean;
   /** 不能选的原因，可选时为 null */
-  reason: "已拆解" | "生成中" | null;
+  reason: "已拆解" | "拆解中" | "生成中" | null;
   /** 已有剧本：可以重新生成，但会覆盖 */
   hasScript: boolean;
 };
 
-/** 已拆解（剧本锁定）的、正在生成的不能选；已有剧本的可以选来重新生成 */
-export function scriptOptions(episodes: readonly EpisodeSummary[]): ScriptOption[] {
+/**
+ * 已拆解（剧本锁定）的、正在拆解的、正在生成剧本的不能选；已有剧本的可以选来重新生成
+ * @param jobs 任务卡：正在拆解 / 写剧本的集不能再选，免得重复提交
+ */
+export function scriptOptions(
+  episodes: readonly EpisodeSummary[],
+  jobs: readonly DramaJob[] = [],
+): ScriptOption[] {
+  const breaking = runningEpisodes(jobs, "breakdown");
+  const writing = runningEpisodes(jobs, "scripts");
   return plannedEpisodes(episodes).map((ep) => {
-    const reason = ep.locked ? "已拆解" : ep.scriptStatus === "generating" ? "生成中" : null;
+    const reason = ep.locked
+      ? "已拆解"
+      : breaking.has(ep.no)
+        ? "拆解中"
+        : ep.scriptStatus === "generating" || writing.has(ep.no)
+          ? "生成中"
+          : null;
     return {
       no: ep.no,
       title: ep.title,
@@ -139,8 +175,11 @@ export function scriptOptions(episodes: readonly EpisodeSummary[]): ScriptOption
 }
 
 /** 对话框打开时的默认选择：还没有剧本（没有或失败）的集，和原来一键生成的范围一致 */
-export function defaultScriptSelection(episodes: readonly EpisodeSummary[]): number[] {
-  return scriptOptions(episodes)
+export function defaultScriptSelection(
+  episodes: readonly EpisodeSummary[],
+  jobs: readonly DramaJob[] = [],
+): number[] {
+  return scriptOptions(episodes, jobs)
     .filter((option) => !option.disabled && !option.hasScript)
     .map((option) => option.no)
     .slice(0, MAX_JOB_EPISODES);
@@ -163,6 +202,42 @@ export function scriptSubmit(
     return { ok: false, label: `一次最多 ${MAX_JOB_EPISODES} 集`, overwrite };
   }
   return { ok: true, label: `生成 ${selected.length} 集剧本`, overwrite };
+}
+
+/** 批量生成分镜脚本一次最多选多少集：分镜接口每集一个任务，集数就是同时发出的请求数 */
+export const MAX_STORYBOARD_BATCH = 50;
+
+/**
+ * 批量生成分镜脚本弹窗里的选项：只有已拆解、还没有分镜（或上次失败）的能选。
+ * 已有分镜的重新生成会清空片段，要逐集确认，不放进批量；同一集有进行中的分镜 / 合成任务也不能选，其他集不受影响。
+ * @param episodes 全部集（只列已规划的）
+ * @param jobs 任务卡
+ */
+export function storyboardOptions(
+  episodes: readonly EpisodeSummary[],
+  jobs: readonly DramaJob[],
+): { no: number; title: string; disabled: boolean; reason: string | null }[] {
+  return plannedEpisodes(episodes).map((ep) => {
+    const reason = !ep.locked
+      ? "还没拆解"
+      : ep.storyboardStatus === "generating"
+        ? "生成中"
+        : ep.storyboardStatus === "ready"
+          ? "已有分镜"
+          : ep.doneSegmentCount > 0
+            ? "已有视频"
+            : jobConflictReason(jobs, "storyboard", [ep.no]);
+    return { no: ep.no, title: ep.title, disabled: reason !== null, reason };
+  });
+}
+
+/** 批量生成分镜脚本的提交按钮：至少一集，写明集数，不超过上限 */
+export function storyboardBatchSubmit(selected: readonly number[]): { ok: boolean; label: string } {
+  if (selected.length === 0) return { ok: false, label: "至少选一集" };
+  if (selected.length > MAX_STORYBOARD_BATCH) {
+    return { ok: false, label: `一次最多 ${MAX_STORYBOARD_BATCH} 集` };
+  }
+  return { ok: true, label: `生成 ${selected.length} 集脚本` };
 }
 
 /**

@@ -19,8 +19,9 @@ func TestDramaLedgerConservation(t *testing.T) {
 		status  string
 		settled int
 	}{
-		{"成功只结算实际费用", []string{`{"script_md":"剧本"}`}, "succeeded", 5},
-		{"校验两次失败整笔退回", []string{`{bad`, `{bad`}, "failed", 0},
+		// 每次成功调用计费 5；剧本只有创作段一次调用
+		{"成功只结算实际费用", []string{"剧本创作稿"}, "succeeded", 5},
+		{"校验两次失败整笔退回", []string{" ", " \n "}, "failed", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newDramaMemory()
@@ -62,7 +63,8 @@ func TestDramaAssetPromptsRetryKeepsNewAssetList(t *testing.T) {
 	asset := drama.Asset{Type: "character", Name: "林川", Aliases: []string{}, Episodes: []int{1}, Description: "人物"}
 	raw, _ := json.Marshal(drama.BreakdownOutput{Assets: []drama.Asset{asset}})
 	good, _ := json.Marshal(drama.AssetPromptsOutput{Prompts: []drama.AssetPrompt{{NodeID: "new", Prompt: "角色正向描述"}}})
-	e := &dramaTextStreamer{outputs: []string{string(raw), `{bad`, `{bad`, string(good)}}
+	// 拆解：创作段、格式段；提示词：创作段、格式段两次非法；接续任务：创作段、格式段
+	e := &dramaTextStreamer{outputs: []string{"拆解稿", string(raw), "提示词稿", `{bad`, `{bad`, "提示词稿二", string(good)}}
 	c := &dramaPipelineCanvas{created: []service.DramaCanvasAsset{{NodeID: "new", Asset: asset}}}
 	c.mem = r
 	s, _ := dramaTestService(r, e, c)
@@ -76,7 +78,8 @@ func TestDramaAssetPromptsRetryKeepsNewAssetList(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 拆解里的提示词两次输出非法：拆解照样成功、只扣拆解那次，接一个提示词任务。
-	if r.jobs[0].Status != "succeeded" || r.jobs[0].Credits != 5 || c.applied != 1 || len(r.jobs) != 2 || r.jobs[1].Step != "asset_prompts" {
+	// 拆解两次调用各 5；提示词的两段有一段失败，这次的提示词不扣费
+	if r.jobs[0].Status != "succeeded" || r.jobs[0].Credits != 10 || c.applied != 1 || len(r.jobs) != 2 || r.jobs[1].Step != "asset_prompts" {
 		t.Fatalf("jobs=%+v applied=%d", r.jobs, c.applied)
 	}
 	if err = s.HandleDrama(ctx, 7, 1, r.jobs[1].ID); err != nil {
@@ -87,7 +90,7 @@ func TestDramaAssetPromptsRetryKeepsNewAssetList(t *testing.T) {
 		t.Fatalf("job=%+v prompts=%v prompt=%s", r.jobs[1], c.prompts, last)
 	}
 	// 失败的提示词不扣费，成功的拆解与接续任务各扣一次。
-	if r.credit.Balance != 1000-2*5 || r.credit.Frozen != 0 {
+	if r.credit.Balance != 1000-4*5 || r.credit.Frozen != 0 {
 		t.Fatalf("credit=%+v", r.credit)
 	}
 }

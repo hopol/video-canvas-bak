@@ -10,15 +10,18 @@ import { useStudio } from "./use-studio";
 
 /** 为什么现在不能生成；能生成为 null（写进按钮的悬停提示） */
 function useBlockedReason(): string | null {
-  const { selected, plan, video, submitting, format, adaptStateOf } = useStudio();
+  const { selected, plan, video, submitting, format, promptView, adaptStateOf } = useStudio();
   if (!selected || !plan) return "还没有片段";
   if (selected.status === "running") return "这个片段正在生成";
   if (submitting.has(selected.id)) return "正在提交";
   if (video.status === "idle" || video.status === "loading") return "正在加载模型清单";
   if (!video.model) return "没有可用的视频模型（需要支持参考图）";
-  const adapt = adaptStateOf(selected);
-  if (adapt === "busy") return "正在转写";
-  if (adapt === "none" && format !== "seedance") return `先把原稿转写为 ${formatLabel(format)}`;
+  // 选的是「原稿」就不要求转写：原稿直接生成；选的是「转写」才看转写稿好了没有
+  if (promptView === "adapted") {
+    const adapt = adaptStateOf(selected);
+    if (adapt === "busy") return "正在转写";
+    if (adapt === "none" && format !== "seedance") return `先把原稿转写为 ${formatLabel(format)}`;
+  }
   return Object.values(plan.errors)[0] ?? null;
 }
 

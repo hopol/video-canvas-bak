@@ -41,7 +41,7 @@ type SkillAPI interface {
 	// DiscardImport 放弃暂存。
 	DiscardImport(ctx context.Context, actorID uint64, id string) error
 	// ConfirmImport 确认入库。
-	ConfirmImport(ctx context.Context, actorID uint64, id string) (*agentsvc.SkillItem, error)
+	ConfirmImport(ctx context.Context, actorID uint64, id string, scope agentsvc.SkillScope) (*agentsvc.SkillItem, error)
 	// SetEnabled 启用 / 停用。
 	SetEnabled(ctx context.Context, actorID uint64, name string, enabled bool) (*agentsvc.SkillItem, error)
 	// SetActiveVersion 设置生效版本。
@@ -298,9 +298,13 @@ func (h *SkillHandler) DiscardImport(c *gin.Context) {
 	response.OK(c, nil)
 }
 
-// ConfirmImport 确认入库，返回技能。
+// ConfirmImport 确认入库，返回技能。请求体可选 {enabled, drama_steps}：新技能一并打开的使用场景。
 func (h *SkillHandler) ConfirmImport(c *gin.Context) {
-	res, err := h.svc.ConfirmImport(c.Request.Context(), actorID(c), c.Param("id"))
+	var scope agentsvc.SkillScope
+	if c.Request.ContentLength != 0 && !handler.BindJSON(c, &scope) {
+		return
+	}
+	res, err := h.svc.ConfirmImport(c.Request.Context(), actorID(c), c.Param("id"), scope)
 	if err != nil {
 		response.Fail(c, err)
 		return

@@ -316,9 +316,14 @@ func (s *SkillService) DiscardImport(ctx context.Context, actorID uint64, id str
 
 // ConfirmImport 确认入库：以暂存的包为准重新预检（防止暂存期间别人导入了同名/同内容）→ 预留版本号（pending）→
 // 把包写到正式 key → 认领暂存行（只有一个并发确认能成功）→ 转为 ready → 写审计。
-// 新技能默认停用；已有技能的新版本不会自动成为生效版本（用户要求先停用再启用，新版本等价于重新安装）。
-func (s *SkillService) ConfirmImport(ctx context.Context, actorID uint64, id string) (*SkillItem, error) {
-	// 1. 暂存必须是本人的、未过期的
+// 新技能按 scope 打开使用场景（默认哪里都不用），与建技能同一事务；已有技能的新版本忽略 scope，
+// 也不会自动成为生效版本（用户要求先停用再启用，新版本等价于重新安装）。
+func (s *SkillService) ConfirmImport(ctx context.Context, actorID uint64, id string, scope SkillScope) (*SkillItem, error) {
+	// 1. 场景先校验，再要求暂存是本人的、未过期的
+	steps, err := validDramaSteps(scope.DramaSteps)
+	if err != nil {
+		return nil, err
+	}
 	imp, err := s.loadImport(ctx, actorID, id)
 	if err != nil {
 		return nil, err
@@ -352,7 +357,10 @@ func (s *SkillService) ConfirmImport(ctx context.Context, actorID uint64, id str
 	if err != nil {
 		return nil, err
 	}
-	_, ver, err := s.repo.ReserveVersion(ctx, repository.ReserveSkillInput{Name: res.Name, Title: clipRunes(res.Title, 128), CreatedBy: actorID, Version: *row})
+	_, ver, err := s.repo.ReserveVersion(ctx, repository.ReserveSkillInput{
+		Name: res.Name, Title: clipRunes(res.Title, 128), CreatedBy: actorID,
+		Enabled: scope.Enabled, DramaSteps: steps, Version: *row,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("预留版本号失败：%w", err)
 	}
@@ -378,7 +386,11 @@ func (s *SkillService) ConfirmImport(ctx context.Context, actorID uint64, id str
 	}
 	s.deleteObject(ctx, imp.StorageID, imp.PackageKey)
 	s.invalidateCatalog()
-	s.auditSkill(ctx, actorID, model.AdminAuditSkillImport, sk.ID, map[string]any{"name": sk.Name, "version": ver.Version, "sha256": res.SHA256})
+	detail := map[string]any{"name": sk.Name, "version": ver.Version, "sha256": res.SHA256}
+	if ver.Version == 1 {
+		detail["enabled"], detail["drama_steps"] = sk.Enabled, []string(sk.DramaSteps)
+	}
+	s.auditSkill(ctx, actorID, model.AdminAuditSkillImport, sk.ID, detail)
 	return s.itemFor(ctx, sk)
 }
 

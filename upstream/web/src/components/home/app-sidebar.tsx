@@ -134,8 +134,10 @@ export function AppSidebar() {
 
   return (
     <Sidebar variant="inset" collapsible="icon">
-      <SidebarHeader className="gap-3 px-2 pt-3 group-data-[collapsible=icon]:px-1">
-        <div className="flex h-9 items-center pl-1.5 group-data-[collapsible=icon]:h-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:pl-0">
+      {/* Logo 始终左对齐，收起时只把左边距收到让它落在 48px 图标栏正中（4px + 5px + 30px Logo），并随侧栏宽度一起过渡。
+          不用 justify-center：收起那一刻侧栏还是展开宽度，Logo 会先跳到正中再随宽度缩回左边；高度也保持 h-9，免得下面的菜单跳一下 */}
+      <SidebarHeader className="gap-3 px-2 pt-3 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:px-1 motion-reduce:transition-none">
+        <div className="flex h-9 items-center pl-1.5 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:pl-[5px] motion-reduce:transition-none">
           <SidebarBrand to="/" />
         </div>
       </SidebarHeader>

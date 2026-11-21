@@ -18,6 +18,9 @@ agent（oxfmt --check + oxlint + typecheck + test + build）、web（oxfmt --che
    把 `core.hooksPath` 置空。被拦就修问题，钩子本身坏了就停下来告诉用户。
 3. **pre-commit**：`.pre-commit-config.yaml` 在提交时查暂存文件的 oxfmt（web / agent）、整个 web 的 oxlint / tsc、
    整个 agent 的 oxlint、后端 gofmt 与 golangci-lint 增量。
+4. **CHANGELOG**：`feat` / `fix` / `perf` 和破坏性变更提交要在 `CHANGELOG.md` 的 `## [Unreleased]` 新增条目，
+   pre-commit 的 `commit-msg` 钩子（`scripts/changelog-check.mjs`）和 PR 上的 `Changelog` workflow 都会拦。被拦就补一条面向用户的中文日志；
+   确实没有用户可感知变化才在提交正文加 `Changelog: skip`。
 
 ## 交付前流程
 

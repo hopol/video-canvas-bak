@@ -1,7 +1,8 @@
-import { memo } from "react";
+import { memo, type Ref } from "react";
 
 import { CanvasEditor } from "@/components/canvas-editor/canvas-editor";
 import type { CanvasDetailDto } from "@/api/canvas/type";
+import type { TakeoverState } from "@/hooks/use-canvas-lock";
 import type { Recovery } from "@/utils/canvas/draft-reconcile";
 
 import { AgentDock, AgentHostProvider } from "./agent-host";
@@ -21,11 +22,22 @@ const aside = <AgentDock />;
 export const Flow = memo(function Flow({
   canvas,
   recovery,
+  readOnly,
+  takeoverState,
+  onTakeover,
+  saveRef,
   onConflict,
 }: {
   canvas: CanvasDetailDto;
   /** 打开时本地草稿的对账结果：restored 是已用草稿恢复，conflict 是草稿基于的版本已过期 */
   recovery: Recovery | null;
+  /** 同一张画布已在另一个标签页打开：这里只能看 */
+  readOnly?: boolean;
+  /** 「接管编辑」的进度 */
+  takeoverState?: TakeoverState;
+  onTakeover?: () => void;
+  /** 把编辑器的「立即保存」交出去：被要求让位前要先存盘 */
+  saveRef?: Ref<() => Promise<boolean>>;
   onConflict: (canvas: CanvasDetailDto) => void;
 }) {
   return (
@@ -34,10 +46,15 @@ export const Flow = memo(function Flow({
         canvas={canvas}
         recovery={recovery}
         onConflict={onConflict}
+        readOnly={readOnly}
+        takeoverState={takeoverState}
+        onTakeover={onTakeover}
+        saveRef={saveRef}
         menuItems={buildAddNodeItems}
         onOpenShortcuts={openShortcuts}
         overlay={overlay}
-        aside={aside}
+        // 只读预览不挂 Agent：它改的是这张画布，改完也存不出去
+        aside={readOnly ? undefined : aside}
       />
     </AgentHostProvider>
   );

@@ -22,7 +22,8 @@ type ListProcessorReq struct {
 // ListSkillReq 是 GET /admin/agent/skills 的查询参数；关键字匹配技能名 / 显示名 / 说明。
 type ListSkillReq struct {
 	AdminListReq
-	Status string `form:"status" binding:"omitempty,oneof=enabled disabled builtin" label:"状态"` // enabled / disabled / builtin
+	// agent / drama / unused / builtin；enabled、disabled 是旧取值（同 agent、unused），兼容一个版本
+	Status string `form:"status" binding:"omitempty,oneof=agent drama unused builtin enabled disabled" label:"状态"`
 }
 
 // ListChannelReq 是 GET /admin/ai/channels 的查询参数；关键字匹配名称 / key / 接口地址。渠道不绑协议，没有能力 / 插件筛选。

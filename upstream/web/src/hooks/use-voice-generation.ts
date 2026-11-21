@@ -103,6 +103,8 @@ export function useVoiceGeneration(id: string, data: CanvasNodeData) {
 
   return {
     models: remote.models,
+    /** 同一份清单转成下拉选项（带价格文案、厂商），给 ModelMenu 用 */
+    options: remote.options,
     modelsStatus: remote.status,
     model,
     selectModel,

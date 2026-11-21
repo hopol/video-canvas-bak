@@ -5,6 +5,7 @@ import {
   readModelString,
   withModelApiFormat,
   withModelField,
+  withModelPathPrefix,
 } from "./model-body";
 import { defaultCapabilities, defaultDeadline, defaultPricing } from "./model-template";
 import { compareSemver, findPluginVersion, latestVersion, metaSupportsKind } from "./plugin";
@@ -277,7 +278,11 @@ export function withModelKind(
   if (next && !readModelString(next, "deadline"))
     next = withModelField(next, "deadline", defaultDeadline(kind));
   next = next && withModelProtocol(next, protocol);
-  if (next && kind !== "agent") next = withModelApiFormat(next, "openai");
+  if (next && kind !== "agent") {
+    // 接口格式和路径前缀只属于 Agent 模型；其他种类的版本段在协议设置里填
+    next = withModelApiFormat(next, "openai");
+    next = withModelPathPrefix(next, "");
+  }
   return next ? { body: next, notice } : null;
 }
 

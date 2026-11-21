@@ -6,7 +6,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { Pause, Play } from "lucide-react";
+import { Loader2, Pause, Play } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 
 import { buttonVariants } from "@/components/ui/button";
@@ -32,6 +32,10 @@ type AudioPlayerProps = {
   src: string;
   /** 所在节点是否被选中；失去选中会暂停，默认不受约束 */
   active?: boolean;
+  /** 挂载后自动播放（弹窗里点开就听）；被浏览器拦下时不报错，停在暂停态 */
+  autoPlay?: boolean;
+  /** 播放 / 暂停时回调，外面可以据此做联动（如头像动起来） */
+  onPlayingChange?: (playing: boolean) => void;
 };
 
 /**
@@ -39,7 +43,7 @@ type AudioPlayerProps = {
  * 拖动时暂停、松手后若拖之前在播就接着播。填满父级盒子，画幅由父级（1:1）决定。
  * 播放由隐藏的 audio 管；播放头只改 transform，竖条只在播放头跨过它时才重渲染。
  */
-export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
+export function AudioPlayer({ src, active = true, autoPlay, onPlayingChange }: AudioPlayerProps) {
   const reduce = useReducedMotion();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const headRef = useRef<HTMLDivElement | null>(null);
@@ -48,12 +52,21 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
 
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState(false);
+  /**
+   * 正在等数据的那个地址：自动播放还没起播、或播放中途卡住（waiting）时有值，按钮转圈。
+   * 没人要求播放时不等数据（画布里 preload=metadata，浏览器不会提前缓冲，不能因此一直转圈）
+   */
+  const [pendingSrc, setPendingSrc] = useState<string | null>(autoPlay ? src : null);
   const [metaDuration, setMetaDuration] = useState(0);
   /** 当前时间的整秒数，时间文字一秒才变一次 */
   const [second, setSecond] = useState(0);
   /** 播放头已跨过几根竖条 */
   const [playedBars, setPlayedBars] = useState(0);
   const duration = metaDuration || decoded;
+  /** 波形还在解码：竖条依次变亮，一道光沿波形跑 */
+  const waveLoading = peaks === undefined && !failed;
+  /** 要播但数据还没到：播放按钮转圈 */
+  const buffering = pendingSrc === src && !failed;
 
   /** 按当前时间摆好播放头、更新已播竖条和时间；不触发布局 */
   const paint = useCallback(
@@ -83,6 +96,10 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
   useEffect(() => {
     paint(audioRef.current?.currentTime ?? 0);
   }, [paint]);
+
+  useEffect(() => {
+    onPlayingChange?.(playing);
+  }, [playing, onPlayingChange]);
 
   // 节点失去选中：暂停
   useEffect(() => {
@@ -124,11 +141,15 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
       <audio
         ref={audioRef}
         src={src}
+        autoPlay={autoPlay}
         preload="metadata"
         onLoadedMetadata={(event) => {
           const value = event.currentTarget.duration;
           setMetaDuration(Number.isFinite(value) ? value : 0);
         }}
+        onCanPlay={() => setPendingSrc(null)}
+        onWaiting={() => setPendingSrc(src)}
+        onPlaying={() => setPendingSrc(null)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => {
@@ -140,6 +161,7 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
       {/* nodrag nowheel nopan：拖播放头不能把节点或画布带走 */}
       <div
         data-slot="audio-wave"
+        data-loading={waveLoading}
         className="nodrag nowheel nopan @container relative min-h-0 flex-1 cursor-ew-resize touch-none"
         onPointerDown={(event) => {
           if (failed) return;
@@ -162,6 +184,7 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
       >
         <motion.div
           key={peaks ? "ready" : "empty"}
+          data-slot={waveLoading ? "audio-wave-loading" : "audio-wave-bars"}
           className="absolute inset-0 flex items-center justify-between"
           initial={{ opacity: peaks && !reduce ? 0 : 1 }}
           animate={{ opacity: 1 }}
@@ -176,9 +199,14 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
                 className={cn(
                   "w-0.5 rounded-full",
                   i < playedBars ? "bg-foreground" : "bg-muted-foreground/60",
-                  peaks === undefined && "motion-safe:animate-pulse",
+                  // 加载时竖条换亮色，各自错开一点时间脉动，连起来就是一道跑动的光
+                  waveLoading &&
+                    "bg-foreground motion-safe:animate-pulse [animation-duration:1.2s]",
                 )}
-                style={{ height: peak < SILENT_PEAK ? 2 : `${Math.max(peak, 0.08) * 100}%` }}
+                style={{
+                  height: peak < SILENT_PEAK ? 2 : `${Math.max(peak, 0.08) * 100}%`,
+                  animationDelay: waveLoading ? `${i * 25}ms` : undefined,
+                }}
               />
             );
           })}
@@ -212,7 +240,7 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
         </span>
         <motion.button
           type="button"
-          aria-label={playing ? "暂停" : "播放"}
+          aria-label={buffering ? "加载中" : playing ? "暂停" : "播放"}
           disabled={failed}
           whileTap={TAP}
           onClick={toggle}
@@ -221,7 +249,9 @@ export function AudioPlayer({ src, active = true }: AudioPlayerProps) {
             "nodrag rounded-full",
           )}
         >
-          {playing ? (
+          {buffering ? (
+            <Loader2 className="animate-spin" />
+          ) : playing ? (
             <Pause className="fill-current" />
           ) : (
             <Play className="translate-x-px fill-current" />

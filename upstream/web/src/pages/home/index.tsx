@@ -41,7 +41,7 @@ export default function Home() {
   }, [fill]);
 
   return (
-    <div className="mx-auto w-full max-w-260 overflow-x-clip px-4 pt-[clamp(1rem,16svh,9rem)] pb-24 md:px-6">
+    <div className="mx-auto w-full max-w-260 overflow-x-clip px-4 pt-[clamp(1rem,10svh,6rem)] pb-24 md:px-6">
       <div className="relative isolate flex flex-col items-center gap-6 pt-3 text-center">
         <motion.div
           aria-hidden

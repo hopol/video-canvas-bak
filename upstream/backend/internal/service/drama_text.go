@@ -40,7 +40,7 @@ func (s *DramaService) callDrama(ctx context.Context, j *model.DramaJob, snap *p
 		}
 		invalid = bad
 	}
-	if cfg := jobConfig(j); cfg.Prompt.Source != "" && cfg.Prompt.Source != "builtin" {
+	if setting := jobConfig(j).promptFor(j.Step, step); setting.Source != "" && setting.Source != "builtin" {
 		return nil, 0, errcode.ErrDramaCustomPrompt.WithMsg("自定义提示词或技能导致输出不合格（" + dramaStepGroup(step) + "）")
 	}
 	return nil, 0, errcode.ErrDramaOutputInvalid
@@ -56,7 +56,7 @@ func (s *DramaService) dramaAttempt(ctx context.Context, j *model.DramaJob, snap
 	} else {
 		vars["known_cast"] = cfg.KnownCast
 	}
-	template, body := dramaTemplate(step, cfg.Prompt)
+	template, body := dramaTemplate(step, cfg.promptFor(j.Step, step))
 	prompt, err := drama.PromptWithBody(template, vars, body)
 	if err != nil {
 		return nil, 0, nil, err
@@ -71,22 +71,19 @@ func (s *DramaService) dramaAttempt(ctx context.Context, j *model.DramaJob, snap
 	}
 	callCtx, callID := logger.WithCall(ctx, "drama."+step, callFields...)
 	logger.RunOf(ctx).NoteCall(callID)
-	if d := snap.Model.Deadline.D(); d > 0 {
-		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(callCtx, d)
-		defer cancel()
-	}
-	result, err := s.streamDramaText(callCtx, j, snap, prompt)
+	result, err := s.streamDramaRetrying(callCtx, j, snap, prompt)
 	if err != nil {
-		// 单次调用超时：任务本身没被打断，按业务失败收尾退款，不交给队列重试同样会超时的调用
-		if ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
-			return nil, 0, nil, withCause(errcode.ErrDramaModelCall.WithMsg("文本模型响应超时，请稍后重试"), err, "timeout")
-		}
 		var business *errcode.Error
 		if !errors.As(err, &business) {
 			err = &dramaCallFailure{err: err} // 上游、网络、超时：保留原始错误给日志，给用户的文案仍由 dramaFailure 决定
 		}
 		return nil, 0, nil, err
+	}
+	// 输出写到最大输出被截断：同样的输入重试还会被截，交给调用方拆小再跑；创作稿是纯文本，截断了也能通过校验，所以先于校验判断
+	if result.FinishReason == "length" {
+		logger.Ctx(ctx).Warn("短剧模型输出被截断", append([]zap.Field{logger.Event(logger.EventRunStep), zap.String("call_id", callID),
+			zap.String("error_type", "truncated"), zap.Int("output_chars", utf8.RuneCountInString(result.Text))}, callFields...)...)
+		return nil, 0, nil, errcode.ErrDramaOutputTruncated
 	}
 	decoded, invalid = drama.DecodeOutput(step, []byte(result.Text))
 	if invalid == nil && validate != nil {
@@ -107,6 +104,46 @@ func (s *DramaService) dramaAttempt(ctx context.Context, j *model.DramaJob, snap
 	}
 	quoted := modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: chars, Params: map[string]any{}})
 	return decoded, modelcfg.Settle(snap.Model.Pricing, quoted, usage), nil, nil
+}
+
+// dramaRetryDelays 是文本模型遇到限流（429）或上游故障（5xx）时每次重试前的等待，共重试 3 次。
+var dramaRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+
+// streamDramaRetrying 调一次文本模型；上游说「稍后重试可能成功」时按 retryDelays 退避重试，等待期间任务被取消就停。
+// 模型的 deadline 限每次尝试，不限包括等待在内的总时长。
+func (s *DramaService) streamDramaRetrying(ctx context.Context, j *model.DramaJob, snap *provider.Snapshot, prompt string) (*llmgateway.Result, error) {
+	for try := 0; ; try++ {
+		result, err := s.streamDramaOnce(ctx, j, snap, prompt)
+		var upstream *llmgateway.UpstreamError
+		if err == nil || !errors.As(err, &upstream) || !upstream.Retryable || try >= len(s.retryDelays) {
+			return result, err
+		}
+		logger.Ctx(ctx).Warn("短剧模型调用可重试失败，稍后重试", logger.Event(logger.EventRunStep),
+			zap.Int("status", upstream.Status), zap.Int("retry", try+1), zap.Duration("delay", s.retryDelays[try]))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(s.retryDelays[try]):
+		}
+		if e := s.ensureDramaActive(ctx, j); e != nil {
+			return nil, e
+		}
+	}
+}
+
+// streamDramaOnce 在模型的 deadline 内调一次文本模型；单次超时按业务失败收尾退款，不交给队列重试同样会超时的调用。
+func (s *DramaService) streamDramaOnce(ctx context.Context, j *model.DramaJob, snap *provider.Snapshot, prompt string) (*llmgateway.Result, error) {
+	callCtx := ctx
+	if d := snap.Model.Deadline.D(); d > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
+	result, err := s.streamDramaText(callCtx, j, snap, prompt)
+	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+		return nil, withCause(errcode.ErrDramaModelCall.WithMsg("文本模型响应超时，请稍后重试"), err, "timeout")
+	}
+	return result, err
 }
 
 // dramaTemplate 选择本次调用的模板与正文：用户自写或技能提示词是「替换正文、Schema 固定」，始终用用户正文；
@@ -137,7 +174,7 @@ func (s *DramaService) streamText(ctx context.Context, snap *provider.Snapshot, 
 		return nil, errcode.ErrDramaNoTextModel.WithMsg("模型渠道暂不可用")
 	}
 	tg := llmgateway.Target{ChannelKey: snap.Channel.Key, BaseURL: snap.Channel.BaseURL, APIKey: key, Headers: snap.Channel.Headers, UpstreamModel: snap.Model.UpstreamModel,
-		Format: snap.Model.APIFormat, RPS: snap.Channel.RateLimit.RPS, MaxConcurrency: snap.Channel.RateLimit.MaxConcurrency, IdleTimeout: snap.Model.IdleTimeout.D()}
+		Format: snap.Model.APIFormat, PathPrefix: snap.Model.PathPrefix, RPS: snap.Channel.RateLimit.RPS, MaxConcurrency: snap.Channel.RateLimit.MaxConcurrency, IdleTimeout: snap.Model.IdleTimeout.D()}
 	req := llmgateway.Request{Messages: []llmgateway.Message{{Role: "user", Text: prompt}}}
 	if c := snap.Model.Capabilities.Context; c != nil {
 		req.MaxTokens = c.Output
@@ -192,6 +229,12 @@ func (s *DramaService) ensureDramaActive(ctx context.Context, j *model.DramaJob)
 		return errcode.ErrTaskNotCancelable
 	}
 	return nil
+}
+
+// outputTruncated 判断错误是不是输出超过最大输出被截断。
+func outputTruncated(err error) bool {
+	var e *errcode.Error
+	return errors.As(err, &e) && e.Code == errcode.ErrDramaOutputTruncated.Code
 }
 
 // contentFiltered 判断错误是不是上游安全过滤截断了输出。

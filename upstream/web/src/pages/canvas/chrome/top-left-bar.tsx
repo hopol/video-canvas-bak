@@ -37,7 +37,16 @@ import { downloadJson } from "@/utils/canvas/transfer-file";
 const TITLE_MAX = 60;
 
 /** 画布名：点一下原地变输入框，Enter / 失焦提交，Esc 放弃 */
-function CanvasTitle({ title, onRename }: { title: string; onRename: (title: string) => void }) {
+function CanvasTitle({
+  title,
+  onRename,
+  readOnly,
+}: {
+  title: string;
+  onRename: (title: string) => void;
+  /** 只读预览：名字能看不能改 */
+  readOnly?: boolean;
+}) {
   // 没在编辑时显示外面给的名字；一聚焦就拿当前名字起草
   const [draft, setDraft] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -62,11 +71,17 @@ function CanvasTitle({ title, onRename }: { title: string; onRename: (title: str
         maxLength={TITLE_MAX}
         aria-label="画布名称"
         spellCheck={false}
+        readOnly={readOnly}
         className={cn(
           "col-start-1 row-start-1 h-8 w-full min-w-[4ch] truncate rounded-lg bg-transparent px-2 text-[13px] font-semibold outline-none",
           "hover:bg-chrome-hover focus:bg-chrome-hover transition-colors",
+          readOnly && "hover:bg-transparent focus:bg-transparent cursor-default",
         )}
         onFocus={(event) => {
+          if (readOnly) {
+            event.currentTarget.blur();
+            return;
+          }
           setDraft(title);
           event.currentTarget.select();
         }}
@@ -153,6 +168,7 @@ export function TopLeftBar({
   onRename,
   saveStatus,
   onSaveNow,
+  readOnly,
 }: {
   /** 当前画布 ID，导出用 */
   canvasId: string;
@@ -161,6 +177,8 @@ export function TopLeftBar({
   saveStatus: SaveStatus;
   /** 立即保存，返回保存后是否已经没有未保存的内容 */
   onSaveNow: () => Promise<boolean>;
+  /** 只读预览：名字不能改，也不摆保存状态（这里没有要保存的东西，「已保存」会让人误以为是这一份） */
+  readOnly?: boolean;
 }) {
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
@@ -259,8 +277,10 @@ export function TopLeftBar({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <CanvasTitle title={title} onRename={onRename} />
-      <SaveIndicator key={saveStatus} status={saveStatus} onSave={() => void onSaveNow()} />
+      <CanvasTitle title={title} onRename={onRename} readOnly={readOnly} />
+      {!readOnly && (
+        <SaveIndicator key={saveStatus} status={saveStatus} onSave={() => void onSaveNow()} />
+      )}
       {/* 导出期间把用户锁在进度弹窗里：导出的是已保存的内容，此时再改画布不会进这份文件 */}
       <TransferProgressDialog
         open={exporting}

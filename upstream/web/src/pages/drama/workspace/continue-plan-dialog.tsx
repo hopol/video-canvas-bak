@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { estimatePlanning, setPlanningRange } from "@/api/drama";
 import { dramaErrorMessage } from "@/api/drama/errors";
 import type { SourceEstimate } from "@/api/drama/type";
+import { DialogSession } from "@/components/dialog-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -191,7 +192,9 @@ export function ContinuePlanDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
-        {open && <ContinueBody onClose={() => onOpenChange(false)} />}
+        <DialogSession open={open}>
+          <ContinueBody onClose={() => onOpenChange(false)} />
+        </DialogSession>
       </DialogContent>
     </Dialog>
   );

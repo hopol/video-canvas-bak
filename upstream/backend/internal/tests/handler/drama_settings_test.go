@@ -176,6 +176,8 @@ func TestDramaHandler_PreflightEstimateAndUnits(t *testing.T) {
 		{"POST", "/drama-sources/expired/estimate", `{"source_kind":"novel"}`, 404, 67014},
 		{"POST", "/drama-sources/expired/estimate", `{"source_kind":"unknown"}`, 400, 10001},
 		{"GET", "/drama-skills?step=assets", "", 200, 0},
+		{"GET", "/drama-skills?step=scripts", "", 200, 0},
+		{"GET", "/drama-skills?step=adapt", "", 400, 10001},
 		{"GET", "/drama-skills?step=bad", "", 400, 10001},
 	} {
 		status, body := characterCall(t, r, tc.method, tc.path, tc.body)
@@ -233,13 +235,17 @@ func TestDramaHandler_PromptCRUD(t *testing.T) {
 		method, path, body string
 		status, code       int
 	}{
-		{"POST", "/drama-prompts", `{"step":"adapt","name":"我的","bodies":{"plan":"保留对白"}}`, 201, 0},
-		{"POST", "/drama-prompts", `{"step":"adapt","name":"空","bodies":{"plan":""}}`, 400, 67017},
+		{"POST", "/drama-prompts", `{"step":"plan","name":"我的","bodies":{"plan":"保留对白"}}`, 201, 0},
+		{"POST", "/drama-prompts", `{"step":"board","name":"水彩","bodies":{"board":"水彩风\n{{画面}}"}}`, 201, 0},
+		{"POST", "/drama-prompts", `{"step":"board","name":"缺画面","bodies":{"board":"水彩风"}}`, 400, 67017},
+		{"POST", "/drama-prompts", `{"step":"plan","name":"空","bodies":{"plan":""}}`, 400, 67017},
+		{"POST", "/drama-prompts", `{"step":"adapt","name":"旧环节","bodies":{"plan":"正文"}}`, 400, 10001},
 		{"POST", "/drama-prompts", `{"step":"bad","name":"坏","bodies":{}}`, 400, 10001},
-		{"POST", "/drama-prompts", `{"step":"adapt","name":"我的","bodies":{"plan":"重复"}}`, 400, 67017},
-		{"GET", "/drama-prompts?step=adapt", "", 200, 0},
-		{"PUT", "/drama-prompts/" + idcodec.Encode(1), `{"step":"adapt","revision":1,"name":"新","bodies":{"scripts":"台词"}}`, 200, 0},
-		{"PUT", "/drama-prompts/" + idcodec.Encode(1), `{"step":"adapt","revision":1,"name":"新","bodies":{"scripts":"台词"}}`, 409, 30002},
+		{"POST", "/drama-prompts", `{"step":"plan","name":"我的","bodies":{"plan":"重复"}}`, 400, 67017},
+		{"GET", "/drama-prompts?step=plan", "", 200, 0},
+		{"GET", "/drama-prompts?step=adapt", "", 400, 10001},
+		{"PUT", "/drama-prompts/" + idcodec.Encode(1), `{"step":"plan","revision":1,"name":"新","bodies":{"plan":"规划"}}`, 200, 0},
+		{"PUT", "/drama-prompts/" + idcodec.Encode(1), `{"step":"plan","revision":1,"name":"新","bodies":{"plan":"规划"}}`, 409, 30002},
 		{"DELETE", "/drama-prompts/" + idcodec.Encode(1), "", 204, 0},
 		{"DELETE", "/drama-prompts/" + idcodec.Encode(1), "", 404, 67016},
 	} {
@@ -250,14 +256,25 @@ func TestDramaHandler_PromptCRUD(t *testing.T) {
 	}
 	status, body := characterCall(t, r, "GET", "/drama-prompt-templates", "")
 	raw, _ := json.Marshal(body)
-	if status != 200 || len(responseData(t, body)["items"].([]any)) != 4 {
-		t.Fatalf("%s", raw)
+	items, _ := responseData(t, body)["items"].([]any)
+	if status != 200 || len(items) != 6 {
+		t.Fatalf("应有六个环节：%s", raw)
+	}
+	// 每个环节只有一页，分集规划、分集剧本分开
+	for i, want := range []string{"plan", "scripts", "assets", "asset_prompts", "video", "board"} {
+		item := items[i].(map[string]any)
+		if item["step"] != want || len(item["pages"].([]any)) != 1 {
+			t.Fatalf("第 %d 个环节应是 %s 且只有一页：%s", i, want, raw)
+		}
 	}
 }
 
 func (r *settingsHTTPRepo) CleanupDrafts(context.Context) error { return nil }
 func (r *settingsHTTPRepo) RecentDramaDurations(context.Context, uint64, string) ([]int, error) {
 	return nil, nil
+}
+func (r *settingsHTTPRepo) UnitSizes(ctx context.Context, user, id uint64, from, to int) ([]model.DramaUnit, error) {
+	return r.Units(ctx, user, id, from, to)
 }
 
 func (r *httpDramaRepo) Segments(context.Context, uint64, uint64) ([]model.DramaSegment, error) {

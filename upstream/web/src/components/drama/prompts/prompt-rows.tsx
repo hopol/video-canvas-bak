@@ -48,10 +48,10 @@ function Pick({
 }
 
 /**
- * 四行提示词设置（剧本改编 / 资产拆解 / 资产图提示词 / 视频提示词）：每行一个胶囊下拉，
+ * 五行提示词设置（分集规划 / 分集剧本 / 资产拆解 / 资产图提示词 / 视频提示词）：每行一个胶囊下拉，
  * 内容是「内置（推荐）」「我的提示词（含新建 / 编辑 / 删除）」「技能」。
  * 开拍设置弹窗与工作台「提示词设置」共用；新建 / 编辑交给调用方（弹窗内侧滑到编辑器）。
- * 剧本型输入的「剧本改编」置灰。
+ * 剧本型输入的「分集规划」「分集剧本」置灰。
  */
 export function PromptRows({
   kind,
@@ -61,7 +61,7 @@ export function PromptRows({
   onChange,
   onEdit,
 }: {
-  /** 确认的原文类型；script 时剧本改编置灰 */
+  /** 确认的原文类型；script 时分集规划、分集剧本置灰 */
   kind: "script" | "novel" | null;
   /** 各环节当前选择 */
   value: Record<PromptStep, PromptChoice>;

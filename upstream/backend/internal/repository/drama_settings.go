@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -103,6 +104,14 @@ func (r *DramaRepository) Units(ctx context.Context, userID, dramaID uint64, fro
 	return units, err
 }
 
+// UnitSizes 按用户、项目与闭区间只查序号、标题和字数，供估算批次，不读正文。
+func (r *DramaRepository) UnitSizes(ctx context.Context, userID, dramaID uint64, from, to int) ([]model.DramaUnit, error) {
+	var units []model.DramaUnit
+	err := r.db.WithContext(ctx).Select("no", "title", "chars").Where("user_id = ? AND drama_id = ? AND no >= ? AND no <= ?", userID, dramaID, max(1, from), to).
+		Order("no ASC").Find(&units).Error
+	return units, err
+}
+
 // Prompts 按用户和可选环节查询，更新时间倒序。
 func (r *DramaRepository) Prompts(ctx context.Context, userID uint64, step string) ([]model.DramaPrompt, error) {
 	q := r.db.WithContext(ctx).Where("user_id = ?", userID)
@@ -156,4 +165,33 @@ func (r *DramaRepository) DeletePrompt(ctx context.Context, userID, id uint64) e
 		return ErrNotFound
 	}
 	return nil
+}
+
+// AdaptPromptProjects 返回提示词快照里还带「剧本改编」(adapt) 的项目，只取 ID 与快照。
+func (r *DramaRepository) AdaptPromptProjects(ctx context.Context) ([]model.DramaProject, error) {
+	var rows []model.DramaProject
+	err := r.db.WithContext(ctx).Select("id", "prompt_settings").Where("jsonb_exists(prompt_settings, ?)", "adapt").Find(&rows).Error
+	return rows, err
+}
+
+// DramaPromptSplits 返回迁移 0041 拆分「剧本改编」提示词留下的旧 id → 新 id 对照，按旧 id 索引。
+func (r *DramaRepository) DramaPromptSplits(ctx context.Context) (map[uint64]model.DramaPromptSplit, error) {
+	var rows []model.DramaPromptSplit
+	if err := r.db.WithContext(ctx).
+		Select("old_id", "COALESCE(plan_id, 0) AS plan_id", "COALESCE(scripts_id, 0) AS scripts_id").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint64]model.DramaPromptSplit, len(rows))
+	for _, row := range rows {
+		out[row.OldID] = row
+	}
+	return out, nil
+}
+
+// SaveAdaptPromptSettings 写回修补后的提示词快照；只改仍带 adapt 的行，重复执行不会覆盖之后的修改。
+func (r *DramaRepository) SaveAdaptPromptSettings(ctx context.Context, id uint64, raw []byte) error {
+	return r.db.WithContext(ctx).Model(&model.DramaProject{}).
+		Where("id = ? AND jsonb_exists(prompt_settings, ?)", id, "adapt").
+		UpdateColumn("prompt_settings", datatypes.JSON(raw)).Error
 }

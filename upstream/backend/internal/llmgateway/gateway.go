@@ -192,7 +192,7 @@ func endpointOf(tg Target, base *url.URL) string {
 	if tg.Format == FormatGemini {
 		return geminiEndpoint(base, tg.UpstreamModel)
 	}
-	return strings.TrimRight(base.String(), "/") + chatEndpoint
+	return strings.TrimRight(base.String(), "/") + normalizePathPrefix(tg.PathPrefix) + chatEndpoint
 }
 
 // attempt 发一次请求：空闲看门狗每收到数据重置计时，超时就取消请求，并区分「空闲超时」与「调用方取消」。

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { FileText, Loader2 } from "lucide-react";
 
-import { dramaErrorMessage } from "@/api/drama/errors";
+import { DRAMA_ERR, dramaErrorMessage } from "@/api/drama/errors";
 import type {
   CreateDramaInput,
   MyPrompt,
@@ -10,7 +10,7 @@ import type {
   SourcePreflight,
   StartRatio,
 } from "@/api/drama/type";
-import { AgentModelPicker, useAgentModel } from "@/components/drama/agent-model-picker";
+import { AgentModelPicker } from "@/components/drama/agent-model-picker";
 import {
   ChipPopover,
   GenreList,
@@ -25,38 +25,48 @@ import {
   type PromptLibrary,
 } from "@/components/drama/prompts/use-prompt-library";
 import { ModelMenu, VideoModelMenu } from "@/components/drama/video-model-menu";
+import { ParamRow } from "@/components/canvas/video-param-panel";
+import { RatioIcon } from "@/components/ratio-icon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useDramaStyles } from "@/hooks/use-drama-styles";
 import { useRemoteModels } from "@/hooks/use-models";
+import { useRetained } from "@/hooks/use-retained";
 import { cn } from "@/lib/utils";
 import type { ModelInfo } from "@/api/model/type";
 import {
   CUSTOM_STYLE_KEY,
   DEFAULT_EPISODE_SECONDS,
   DEFAULT_STYLE_KEY,
+  MAX_EPISODE_SECONDS,
+  MIN_EPISODE_SECONDS,
 } from "@/utils/drama/options";
 import {
   DEFAULT_START_RATIO,
   START_RATIOS,
+  assetParamFields,
   buildCreateInput,
   builtinPrompts,
   charsLabel,
   durationLabel,
   emptyImageModels,
+  emptyImageParams,
   episodesLabel,
   loadStartPrefs,
-  modelDisabledReason,
   normalizeRangeEnd,
   reconcilePrompts,
   saveStartPrefs,
   secondsLock,
+  settleAssetParams,
   startBlockReason,
   unitWord,
+  type AssetParamPicks,
+  type AssetSlot,
   type StartForm,
   type StartKind,
 } from "@/utils/drama/start-settings";
+import { pickVideoModel } from "@/utils/drama/video-models";
 
 import { useSourceEstimate } from "./use-source-estimate";
 
@@ -78,11 +88,12 @@ function initialForm(pre: SourcePreflight): StartForm {
     textModel: prefs?.textModel ?? "",
     videoModel: prefs?.videoModel ?? "",
     imageModels: prefs?.imageModels ?? emptyImageModels(),
+    imageParams: prefs?.imageParams ?? emptyImageParams(),
     prompts: prefs?.prompts ?? builtinPrompts(),
   };
 }
 
-/** 资产图片模型三个胶囊：键对应请求里的 image_models，前缀是胶囊上的字样 */
+/** 资产图片的三行：键对应请求里的 image_models / image_params，前缀是模型胶囊上的字样 */
 const IMAGE_MODEL_SLOTS = [
   { key: "character", prefix: "人物" },
   { key: "scene", prefix: "场景" },
@@ -92,6 +103,54 @@ const IMAGE_MODEL_SLOTS = [
 /** 选的模型已被下线（清单加载完且里面没有）时回落为空串；只在读取时推导，不回写 */
 const liveModelKey = (key: string, remote: { status: string; models: ModelInfo[] }): string =>
   key && remote.status === "ready" && !remote.models.some((m) => m.key === key) ? "" : key;
+
+/**
+ * 一类资产的比例、分辨率：胶囊上显示落好的取值，点开是和画布节点一样的参数面板。
+ * 模型两个参数都没有时不显示。
+ */
+function AssetParamChip({
+  model,
+  settled,
+  onPick,
+}: {
+  model: ModelInfo | undefined;
+  /** settleAssetParams 落好的取值 */
+  settled: Record<string, string>;
+  onPick: (change: Partial<AssetParamPicks>) => void;
+}) {
+  const { ratio, resolution } = assetParamFields(model?.capabilities);
+  if (!ratio && !resolution) return null;
+  const ratioValue = ratio && settled[ratio.name];
+  const label = [ratioValue, resolution && settled[resolution.name]].filter(Boolean).join(" · ");
+  return (
+    <ChipPopover
+      variant="field"
+      ariaLabel="图片参数"
+      icon={ratioValue ? <RatioIcon ratio={ratioValue} /> : undefined}
+      label={label}
+      width="w-80"
+      contentClassName="gap-2.5 p-3"
+    >
+      {() =>
+        [ratio, resolution].map(
+          (field) =>
+            field && (
+              <ParamRow
+                key={field.name}
+                field={field}
+                params={settled}
+                onChange={(name, value) =>
+                  onPick(
+                    name === ratio?.name ? { ratio: String(value) } : { resolution: String(value) },
+                  )
+                }
+              />
+            ),
+        )
+      }
+    </ChipPopover>
+  );
+}
 
 /** 两行之间的分隔线 */
 const Divider = () => <div className="bg-chrome-border h-px" />;
@@ -224,6 +283,7 @@ export function StartBody({
 }) {
   const { genres, styles } = useDramaStyles();
   const [form, setForm] = useState<StartForm>(() => initialForm(pre));
+  const [secondsDraft, setSecondsDraft] = useState(() => form.seconds);
   const [editor, setEditor] = useState<{ step: PromptStep; item: MyPrompt | null } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -254,11 +314,6 @@ export function StartBody({
       : (styles.find((item) => item.key === styleKey)?.name ?? "画风");
   const genreName = genres.find((item) => item.key === form.genre)?.name ?? form.genre;
 
-  const agent = useAgentModel(form.textModel);
-  const modelBlocked =
-    modelDisabledReason(agent.model?.capabilities.context?.window) !== null && !!agent.model;
-  const block = startBlockReason({ kind: form.kind, styleKey, modelBlocked });
-
   const videoRemote = useRemoteModels("video");
   const imageRemote = useRemoteModels("image");
   const videoModel = liveModelKey(form.videoModel, videoRemote);
@@ -267,6 +322,17 @@ export function StartBody({
     scene: liveModelKey(form.imageModels.scene, imageRemote),
     prop: liveModelKey(form.imageModels.prop, imageRemote),
   };
+  /** 跟随默认的类型按默认图片模型（清单第一个）落参数，和画布节点没选模型时一致 */
+  const imageModelInfo = (slot: AssetSlot) =>
+    imageRemote.models.find((m) => m.key === imageModels[slot]) ?? imageRemote.models[0];
+  const imageParams = {} as Record<AssetSlot, Record<string, string>>;
+  for (const { key } of IMAGE_MODEL_SLOTS) {
+    imageParams[key] = settleAssetParams(
+      imageModelInfo(key)?.capabilities,
+      key,
+      form.imageParams[key],
+    );
+  }
   const modelsLoading = (remote: { status: string }) =>
     remote.status === "idle" || remote.status === "loading";
 
@@ -291,6 +357,9 @@ export function StartBody({
     },
   );
   const est = estimate.estimate ?? pre.estimate;
+  /** 所选模型装不下原文里最长的一章：后端估价按实际原文判断（67022），原因写在模型下面 */
+  const modelBlocked = estimate.status === "error" && estimate.code === DRAMA_ERR.contextTooSmall;
+  const block = startBlockReason({ kind: form.kind, styleKey, modelBlocked });
 
   const submit = async () => {
     if (block || submitting) return;
@@ -298,7 +367,7 @@ export function StartBody({
     setError(null);
     try {
       const next = { ...form, styleKey, prompts, videoModel, imageModels };
-      await onSubmit(buildCreateInput(pre, next));
+      await onSubmit(buildCreateInput(pre, next, imageParams));
       saveStartPrefs(next);
     } catch (e) {
       setError(dramaErrorMessage(e, "创建失败，请稍后重试"));
@@ -314,14 +383,18 @@ export function StartBody({
 
   return (
     <div className="overflow-hidden rounded-[inherit]">
+      {/* 两页并排侧滑；顶端对齐，且编辑器打开时收起开拍设置那页，弹窗高度跟着当前页走，不被长的那页撑高 */}
       <div
-        className="flex w-[200%] transition-transform duration-300 ease-out motion-reduce:transition-none"
+        className="flex w-[200%] items-start transition-transform duration-300 ease-out motion-reduce:transition-none"
         style={{ transform: `translateX(${editor ? "-50%" : "0"})` }}
       >
         <div
           aria-hidden={editor ? true : undefined}
           inert={editor ? true : undefined}
-          className="grid max-h-[86vh] w-1/2 shrink-0 content-start gap-4 overflow-y-auto p-5"
+          className={cn(
+            "grid w-1/2 shrink-0 content-start gap-4 overflow-y-auto px-5",
+            editor ? "max-h-0 py-0" : "max-h-[86vh] py-5",
+          )}
         >
           <h2 className="px-3 text-base font-semibold">开拍设置</h2>
 
@@ -474,17 +547,19 @@ export function StartBody({
                 disabled={lock.locked}
                 title={lock.locked ? "剧本按原分集" : undefined}
                 label={lock.label ?? `${form.seconds}s/集${script ? "（参考）" : ""}`}
-                width="w-44"
+                width="w-[220px]"
+                onOpen={() => setSecondsDraft(form.seconds)}
+                onClose={() => {
+                  if (
+                    Number.isInteger(secondsDraft) &&
+                    secondsDraft >= MIN_EPISODE_SECONDS &&
+                    secondsDraft <= MAX_EPISODE_SECONDS
+                  ) {
+                    patch({ seconds: secondsDraft });
+                  }
+                }}
               >
-                {(close) => (
-                  <SecondsList
-                    seconds={form.seconds}
-                    onSeconds={(seconds) => {
-                      patch({ seconds });
-                      close();
-                    }}
-                  />
-                )}
+                {() => <SecondsList seconds={secondsDraft} onSeconds={setSecondsDraft} />}
               </ChipPopover>
             </div>
           </Field>
@@ -496,14 +571,11 @@ export function StartBody({
                   variant="field"
                   value={form.textModel}
                   onChange={(textModel) => patch({ textModel })}
-                  disabledReason={(model) =>
-                    modelDisabledReason(model.capabilities.context?.window)
-                  }
                 />
               </div>
               {modelBlocked && (
                 <p role="alert" className="text-destructive text-[13px]">
-                  {modelDisabledReason(agent.model?.capabilities.context?.window)}
+                  {estimate.message}
                 </p>
               )}
             </div>
@@ -516,26 +588,41 @@ export function StartBody({
                 models={videoRemote.models}
                 loading={modelsLoading(videoRemote)}
                 model={videoRemote.models.find((m) => m.key === videoModel)}
+                fallback={pickVideoModel(videoRemote.models, "")}
                 onPick={(key) => patch({ videoModel: key })}
                 defaultLabel="跟随默认"
               />
             </div>
           </Field>
 
-          <Field label="资产图片模型">
-            <div className="flex flex-wrap gap-2">
+          <Field label="资产图片">
+            <div className="grid gap-2">
               {IMAGE_MODEL_SLOTS.map(({ key, prefix }) => (
-                <ModelMenu
-                  key={key}
-                  variant="field"
-                  prefix={prefix}
-                  kindName="图片"
-                  models={imageRemote.models}
-                  loading={modelsLoading(imageRemote)}
-                  model={imageRemote.models.find((m) => m.key === imageModels[key])}
-                  onPick={(picked) => patch({ imageModels: { ...imageModels, [key]: picked } })}
-                  defaultLabel="跟随默认"
-                />
+                <div key={key} className="flex flex-wrap gap-2">
+                  <ModelMenu
+                    variant="field"
+                    prefix={prefix}
+                    kindName="图片"
+                    models={imageRemote.models}
+                    loading={modelsLoading(imageRemote)}
+                    model={imageRemote.models.find((m) => m.key === imageModels[key])}
+                    fallback={imageModelInfo(key)}
+                    onPick={(picked) => patch({ imageModels: { ...imageModels, [key]: picked } })}
+                    defaultLabel="跟随默认"
+                  />
+                  <AssetParamChip
+                    model={imageModelInfo(key)}
+                    settled={imageParams[key]}
+                    onPick={(change) =>
+                      patch({
+                        imageParams: {
+                          ...form.imageParams,
+                          [key]: { ...form.imageParams[key], ...change },
+                        },
+                      })
+                    }
+                  />
+                </div>
               ))}
             </div>
           </Field>
@@ -610,6 +697,8 @@ export function StartBody({
 /** 预估一行：预计约 900–1,400 集 · 研读与规划约 3,200 积分 · 约 40 分钟 */
 function EstimateLine({ state }: { state: ReturnType<typeof useSourceEstimate> }) {
   const est = state.estimate;
+  /** 模型装不下原文的原因已写在文本模型下面，这里不重复 */
+  if (state.status === "error" && state.code === DRAMA_ERR.contextTooSmall) return null;
   if (state.status === "error") {
     return (
       <span role="alert" className="text-destructive text-[12.5px]">
@@ -619,16 +708,24 @@ function EstimateLine({ state }: { state: ReturnType<typeof useSourceEstimate> }
   }
   if (!est) return null;
   return (
-    <span
+    <div
       className={cn(
-        "text-muted-foreground text-[12.5px] tabular-nums transition-opacity",
+        "text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] leading-5 tabular-nums transition-opacity",
         state.status === "loading" && "opacity-50",
       )}
     >
-      预计约 {episodesLabel(est)} 集 · 研读与规划约{" "}
-      <span className="text-credit">{est.credits.toLocaleString("en-US")}</span> 积分 · 约{" "}
-      {durationLabel(est.minutes)}
-    </span>
+      <span className="whitespace-nowrap">预计约 {episodesLabel(est)} 集</span>
+      <span aria-hidden="true" className="text-muted-foreground/50">
+        ·
+      </span>
+      <span className="whitespace-nowrap">
+        研读与规划约 <span className="text-credit">{est.credits.toLocaleString("en-US")}</span> 积分
+      </span>
+      <span aria-hidden="true" className="text-muted-foreground/50">
+        ·
+      </span>
+      <span className="whitespace-nowrap">约 {durationLabel(est.minutes)}</span>
+    </div>
   );
 }
 
@@ -663,6 +760,8 @@ export function StartDialog({
   /** 点「开始」建剧 */
   onSubmit: (input: CreateDramaInput) => Promise<void>;
 }) {
+  // 草稿过期时外面会同时关弹窗、清掉 pre：留住上一份，退出动画期间内容不消失
+  const shown = useRetained(pre);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -670,10 +769,10 @@ export function StartDialog({
         aria-label="开拍设置"
         className="bg-chrome ring-chrome-border w-160 max-w-[calc(100%-2rem)] gap-0 rounded-3xl p-0 shadow-lg ring-1 backdrop-blur-xl backdrop-saturate-150 sm:max-w-160"
       >
-        {open && pre && (
+        {shown && (
           <StartDialogBody
-            key={pre.sourceToken}
-            pre={pre}
+            key={shown.sourceToken}
+            pre={shown}
             onCancel={() => onOpenChange(false)}
             onSubmit={onSubmit}
           />

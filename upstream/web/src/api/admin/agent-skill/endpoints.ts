@@ -7,12 +7,12 @@
  *   POST   /admin/agent/skills/imports                      上传并预检（multipart）
  *   GET    /admin/agent/skills/imports/:id/files?path=      预览暂存包里的一个文件
  *   DELETE /admin/agent/skills/imports/:id                  放弃暂存
- *   POST   /admin/agent/skills/imports/:id/confirm          确认入库
+ *   POST   /admin/agent/skills/imports/:id/confirm          确认入库，body 可选 {enabled, drama_steps}（新技能的使用场景）
  *   GET    /admin/agent/skills/:name                        详情（含版本列表）
  *   PUT    /admin/agent/skills/:name                        改显示名，body = {title}
- *   PUT    /admin/agent/skills/:name/enabled                启停，body = {enabled}
+ *   PUT    /admin/agent/skills/:name/enabled                画布 Agent 开关，body = {enabled}
  *   PUT    /admin/agent/skills/:name/active-version         设为生效版本，body = {version}
- *   PUT    /admin/agent/skills/:name/drama-steps            短剧适用环节，body = {steps}（接口契约 docs/design/短剧开拍设置）
+ *   PUT    /admin/agent/skills/:name/drama-steps            短剧环节开关（整组覆盖），body = {steps}（docs/design/技能管理重设计 §8）
  *   GET    /admin/agent/skills/:name/delete-check           删除预检
  *   DELETE /admin/agent/skills/:name                        删除技能
  *   GET    /admin/agent/skills/:name/versions/:v            某版本的清单、问题、正文

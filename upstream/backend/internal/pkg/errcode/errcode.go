@@ -204,7 +204,7 @@ var (
 	ErrSkillBuiltin        = New(61007, "内置技能不可修改", http.StatusConflict)
 	ErrSkillActiveVersion  = New(61008, "生效版本不能删除", http.StatusConflict)
 	ErrSkillCannotEnable   = New(61009, "无法启用", http.StatusConflict) // 原因写进 Msg
-	ErrSkillNeedDisable    = New(61010, "技能需先停用才能删除", http.StatusConflict)
+	ErrSkillNeedDisable    = New(61010, "请先关闭所有使用场景再删除", http.StatusConflict)
 	ErrSkillTooLarge       = New(61011, "技能包超过大小限制", http.StatusRequestEntityTooLarge)
 )
 
@@ -282,6 +282,7 @@ var (
 	ErrDramaAdaptMissing         = New(67027, "还没有这个格式的转写稿", http.StatusBadRequest)
 	ErrDramaModelCall            = New(67028, "文本模型调用失败", http.StatusBadGateway)     // Msg 换成上游返回的错误原文
 	ErrDramaContentFiltered      = New(67029, "内容触发了模型的安全过滤", http.StatusBadGateway) // 上游按安全策略截断输出；Msg 可点名被过滤的资产
+	ErrDramaOutputTruncated      = New(67030, "模型单次输出超过最大输出被截断，请在后台调大该模型的最大输出，或换用输出更长的模型", http.StatusBadGateway)
 )
 
 // 环节协议层（stepkit）与营销工作室 68xxx。68001–68011、68015、68016、68018 由营销业务使用（见 docs/design/营销工作室/接口契约.md §6），
@@ -309,4 +310,20 @@ var (
 	ErrMarketingReverseBad   = New(68015, "拆解内容不合法", http.StatusBadRequest)
 	ErrMarketingNoReverse    = New(68016, "没有可用的拆解，不能重写跟拍", http.StatusConflict)
 	ErrMarketingAdaptFailed  = New(68018, "转写提示词失败：两次输出都不合格，请稍后重试", http.StatusBadGateway)
+)
+
+// 真人库（方舟虚拟人像库备案）69xxx。66xxx 曾被旧版角色卡使用，已发布的号段不复用。
+var (
+	ErrVirtualHumanNotFound       = New(69001, "真人不存在", http.StatusNotFound)
+	ErrVirtualHumanImageNotFound  = New(69002, "图片不存在", http.StatusNotFound)
+	ErrVirtualHumanInvalid        = New(69003, "参数不合法", http.StatusBadRequest) // 具体原因写进 Msg
+	ErrVirtualHumanImageDup       = New(69004, "这张图片已在真人库里", http.StatusConflict)
+	ErrVirtualHumanImageLimit     = New(69005, "每个真人最多 5 张图片", http.StatusConflict)
+	ErrVirtualHumanInUse          = New(69006, "图片正被角色卡使用，先在角色卡里换掉或删掉", http.StatusConflict)
+	ErrFilingNotConfigured        = New(69007, "管理员尚未配置虚拟人像库，暂时不能加入真人库", http.StatusConflict)
+	ErrFilingUpstream             = New(69008, "方舟接口调用失败，请稍后重试", http.StatusBadGateway)
+	ErrVirtualHumanLastImage      = New(69009, "这是唯一的图片，请改用移除真人", http.StatusConflict)
+	ErrVirtualHumanImageNotPublic = New(69010, "素材地址不是公网地址，方舟拉取不到，请联系管理员配置对象存储或本地存储的公网地址", http.StatusConflict)
+	ErrVirtualHumanRetryInvalid   = New(69011, "只有备案失败的图片可以重新提交", http.StatusConflict)
+	ErrVirtualHumanLimit          = New(69012, "真人数量已达上限", http.StatusConflict)
 )

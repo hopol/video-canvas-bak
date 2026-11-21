@@ -91,6 +91,8 @@ func dramaErrorType(err error) string {
 		switch e.Code {
 		case errcode.ErrDramaOutputInvalid.Code:
 			return "invalid_output"
+		case errcode.ErrDramaOutputTruncated.Code:
+			return "truncated"
 		case errcode.ErrDramaCustomPrompt.Code:
 			return "custom_prompt"
 		case errcode.ErrDramaContext.Code, errcode.ErrDramaEpisodeSourceTooLong.Code:

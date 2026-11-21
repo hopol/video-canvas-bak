@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>技能管理重设计</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+    <style>
+      /* 颜色全走变量，明暗主题只换变量。仓库已有演示或前端令牌时，改用同一套。 */
+      :root {
+        --radius: 0.625rem;
+        --background: 0 0% 100%;
+        --foreground: 240 10% 3.9%;
+        --card: 0 0% 100%;
+        --muted: 240 4.8% 95.9%;
+        --muted-foreground: 240 3.8% 46.1%;
+        --primary: 240 5.9% 10%;
+        --primary-foreground: 0 0% 98%;
+        --accent: 240 4.8% 95.9%;
+        --border: 240 5.9% 90%;
+        --ok: 5 150 105;
+        --bad: 220 38 38;
+        --warn: 180 83 9;
+        --info: 2 132 199;
+        --violet: 124 58 237;
+        color-scheme: light;
+      }
+      .dark {
+        --background: 240 10% 3.9%;
+        --foreground: 0 0% 98%;
+        --card: 240 10% 5.5%;
+        --muted: 240 3.7% 15.9%;
+        --muted-foreground: 240 5% 64.9%;
+        --primary: 0 0% 98%;
+        --primary-foreground: 240 5.9% 10%;
+        --accent: 240 3.7% 15.9%;
+        --border: 240 3.7% 17%;
+        --ok: 52 211 153;
+        --bad: 248 113 113;
+        --warn: 251 191 36;
+        --info: 56 189 248;
+        --violet: 167 139 250;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        font-family: Geist, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        -webkit-font-smoothing: antialiased;
+        line-height: 1.55;
+      }
+      code, .mono { font-family: "Geist Mono", "SF Mono", Consolas, monospace; }
+      code { font-size: 0.92em; background: hsl(var(--muted)); padding: 1px 5px; border-radius: 5px; }
+      [data-lucide] { width: 1em; height: 1em; flex: none; }
+      h1, h2, h3, h4, p { margin: 0; }
+      button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+      table { border-collapse: collapse; width: 100%; }
+      th { font-weight: 500; text-align: left; }
+      [hidden] { display: none !important; }
+      .muted { color: hsl(var(--muted-foreground)); }
+      .row { display: flex; align-items: center; gap: 8px; }
+      .wrapflex { flex-wrap: wrap; }
+      .spacer { margin-left: auto; }
+
+      /* ---- 顶栏与标签页 ---- */
+      .top {
+        position: sticky; top: 0; z-index: 30;
+        background: hsl(var(--background) / 0.92);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid hsl(var(--border));
+      }
+      .top-in { max-width: 1160px; margin: 0 auto; padding: 0 20px; display: flex; align-items: center; gap: 16px; height: 56px; }
+      .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; white-space: nowrap; }
+      .logo { width: 28px; height: 28px; border-radius: 8px; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); display: grid; place-items: center; }
+      .tabs { display: flex; gap: 2px; margin-left: 8px; overflow-x: auto; }
+      .tab {
+        height: 32px; padding: 0 12px; border-radius: 8px; font-size: 13px; font-weight: 500;
+        color: hsl(var(--muted-foreground)); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+        transition: background 0.15s, color 0.15s;
+      }
+      .tab:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+      .tab[aria-selected="true"] { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+      .btn { height: 32px; padding: 0 10px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; }
+      .btn:hover { background: hsl(var(--accent)); }
+      .btn-primary { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+      .btn-primary:hover { background: hsl(var(--primary) / 0.9); }
+      .btn-outline { border: 1px solid hsl(var(--border)); }
+      .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .switch { width: 34px; height: 20px; border-radius: 999px; background: hsl(var(--border)); position: relative; transition: background 0.15s; }
+      .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
+      .switch[aria-checked="true"] { background: rgb(var(--violet)); }
+      .switch[aria-checked="true"]::after { transform: translateX(14px); }
+
+      /* ---- 页面内容 ---- */
+      .wrap { max-width: 1160px; margin: 0 auto; padding: 32px 20px 80px; }
+      .h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+      .lead { margin-top: 10px; max-width: 820px; font-size: 15px; color: hsl(var(--muted-foreground)); }
+      .lead b { color: hsl(var(--foreground)); }
+      .sec { margin-top: 36px; }
+      .sec > h2 { font-size: 18px; font-weight: 600; }
+      .sec > .sub { margin: 4px 0 14px; max-width: 820px; font-size: 13.5px; color: hsl(var(--muted-foreground)); }
+      .card { border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: var(--radius); padding: 16px; }
+      .grid { display: grid; gap: 12px; }
+      .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      @media (max-width: 820px) { .g2, .g3 { grid-template-columns: 1fr; } .top-in { padding: 0 12px; } .wrap { padding: 24px 16px 64px; } }
+      ul.list { margin: 0; padding-left: 18px; font-size: 13.5px; }
+
+      /* ---- 标签：核实度、状态 ---- */
+      .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 500; }
+      .t-ok { background: rgb(var(--ok) / 0.12); color: rgb(var(--ok)); }
+      .t-bad { background: rgb(var(--bad) / 0.12); color: rgb(var(--bad)); }
+      .t-warn { background: rgb(var(--warn) / 0.12); color: rgb(var(--warn)); }
+      .t-info { background: rgb(var(--info) / 0.12); color: rgb(var(--info)); }
+      .t-mute { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+
+      /* ---- 提示框 ---- */
+      .callout { display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--radius); font-size: 13.5px; border: 1px solid; }
+      .callout > i { margin-top: 3px; }
+      .c-info { background: rgb(var(--info) / 0.07); border-color: rgb(var(--info) / 0.3); }
+      .c-info > i { color: rgb(var(--info)); }
+      .c-warn { background: rgb(var(--warn) / 0.07); border-color: rgb(var(--warn) / 0.3); }
+      .c-warn > i { color: rgb(var(--warn)); }
+      .c-bad { background: rgb(var(--bad) / 0.07); border-color: rgb(var(--bad) / 0.3); }
+      .c-bad > i { color: rgb(var(--bad)); }
+      .c-ok { background: rgb(var(--ok) / 0.07); border-color: rgb(var(--ok) / 0.3); }
+      .c-ok > i { color: rgb(var(--ok)); }
+
+      /* ---- 主线流程图 ---- */
+      .flow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; padding: 14px; border-radius: var(--radius); }
+      .flow .node { flex: 1 1 140px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; }
+      .flow .node b { display: block; font-size: 13px; margin-bottom: 2px; }
+      .flow .node.hl { border-color: hsl(var(--primary)); box-shadow: 0 0 0 1px hsl(var(--primary)); }
+      .flow .arrow { display: grid; place-items: center; color: hsl(var(--muted-foreground)); }
+
+      /* ---- 对比表 ---- */
+      .cmp-wrap { overflow-x: auto; border: 1px solid hsl(var(--border)); border-radius: var(--radius); }
+      .cmp th, .cmp td { padding: 9px 12px; font-size: 13px; vertical-align: top; border-bottom: 1px solid hsl(var(--border)); }
+      .cmp tr:last-child th, .cmp tr:last-child td { border-bottom: 0; }
+      .cmp thead th { background: hsl(var(--muted)); font-size: 12.5px; white-space: nowrap; }
+      .cmp tbody th { width: 120px; color: hsl(var(--muted-foreground)); font-weight: 500; }
+      .cmp .y { color: rgb(var(--ok)); }
+      .cmp .m { color: rgb(var(--warn)); }
+      .cmp .m b, .cmp .m { font-weight: 500; }
+
+      /* ---- 有序步骤 ---- */
+      .steps { list-style: none; counter-reset: s; display: grid; gap: 12px; }
+      .steps li { counter-increment: s; position: relative; padding-left: 32px; font-size: 13.5px; }
+      .steps li::before {
+        content: counter(s); position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 50%;
+        background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); display: grid; place-items: center; font-size: 12px; font-weight: 600;
+      }
+      .steps li small { display: block; color: hsl(var(--muted-foreground)); font-size: 12.5px; }
+
+      /* ---- 代码块（提案伪代码） ---- */
+      .codeblock { background: hsl(var(--muted)); border-radius: var(--radius); padding: 14px; font-family: "Geist Mono", "SF Mono", Consolas, monospace; font-size: 12.5px; overflow-x: auto; }
+
+      /* ---- 假浏览器框（原型） ---- */
+      .frame { border: 1px solid hsl(var(--border)); border-radius: 12px; overflow: hidden; background: hsl(var(--background)); }
+      .frame-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: hsl(var(--muted)); font-size: 12px; color: hsl(var(--muted-foreground)); }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: hsl(var(--border)); }
+      .proto { min-height: 360px; position: relative; }
+
+      /* ---- 设计标注层：顶栏开关控制显隐 ---- */
+      .note { outline: 1.5px dashed rgb(var(--violet)); outline-offset: 3px; position: relative; }
+      .note-txt { display: none; margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: rgb(var(--violet)); }
+      .show-notes .note-txt { display: block; }
+      body:not(.show-notes) .note { outline: none; }
+
+      /* ---- 轻提示 ---- */
+      .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 60; pointer-events: none; }
+      .toast > div { display: flex; align-items: center; gap: 8px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: 10px; padding: 10px 14px; font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); }
+    </style>
+    <style>
+      /* ---- 原型：清透风格（对应 coding-standards §6.1） ---- */
+      .pt { display: grid; grid-template-columns: 168px minmax(0, 1fr); min-height: 620px; font-size: 13px; }
+      .pt-side { border-right: 1px solid hsl(var(--border)); padding: 14px 10px; display: grid; align-content: start; gap: 2px; }
+      .pt-side .grp { font-size: 11px; color: hsl(var(--muted-foreground)); padding: 6px 8px; }
+      .pt-side .it { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 999px; color: hsl(var(--muted-foreground)); }
+      .pt-side .it.on { background: hsl(var(--accent)); color: hsl(var(--foreground)); font-weight: 500; }
+      .pt-main { min-width: 0; padding: 18px 20px; display: grid; align-content: start; gap: 14px; }
+      .glass { background: hsl(var(--card) / 0.7); border: 1px solid hsl(var(--border)); border-radius: 22px; backdrop-filter: blur(16px); }
+      .pill { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid hsl(var(--border)); background: hsl(var(--card) / 0.6); font-size: 12.5px; }
+      .pill:hover { background: hsl(var(--accent)); }
+      .pill.solid { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border-color: transparent; }
+      .pill.danger { color: rgb(var(--bad)); }
+      .pill:disabled { opacity: 0.45; cursor: not-allowed; }
+      .seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; border: 1px solid hsl(var(--border)); background: hsl(var(--card) / 0.6); }
+      .seg button { height: 26px; padding: 0 11px; border-radius: 999px; font-size: 12.5px; color: hsl(var(--muted-foreground)); }
+      .seg button.on { background: hsl(var(--accent)); color: hsl(var(--foreground)); font-weight: 500; box-shadow: 0 0 0 1px hsl(var(--border)); }
+      .search { height: 32px; border-radius: 999px; border: 1px solid hsl(var(--border)); background: hsl(var(--accent)); padding: 0 12px; width: 220px; font: inherit; color: inherit; outline: none; }
+      .sk-table { width: 100%; }
+      .sk-table th { font-size: 12px; color: hsl(var(--muted-foreground)); padding: 10px 12px; border-bottom: 1px solid hsl(var(--border)); }
+      .sk-table td { padding: 12px; border-bottom: 1px solid hsl(var(--border)); vertical-align: middle; }
+      .sk-table tr:last-child td { border-bottom: 0; }
+      .sk-table tbody tr { cursor: pointer; transition: background 0.12s; }
+      .sk-table tbody tr:hover { background: hsl(var(--accent) / 0.6); }
+      .sk-table tr.fresh { animation: fresh 2.4s ease-out; }
+      @keyframes fresh { from { background: rgb(var(--violet) / 0.18); } to { background: transparent; } }
+      .ico { width: 32px; height: 32px; border-radius: 10px; border: 1px solid hsl(var(--border)); background: hsl(var(--accent)); display: grid; place-items: center; flex: none; color: hsl(var(--muted-foreground)); }
+      .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+      .clamp4 { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+      .chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid hsl(var(--border)); background: hsl(var(--card) / 0.6); white-space: nowrap; }
+      .chip.agent { border-color: rgb(var(--info) / 0.35); color: rgb(var(--info)); background: rgb(var(--info) / 0.08); }
+      .chip.drama { border-color: rgb(var(--violet) / 0.35); color: rgb(var(--violet)); background: rgb(var(--violet) / 0.08); }
+      .chip.pend { border-color: rgb(var(--warn) / 0.35); color: rgb(var(--warn)); background: rgb(var(--warn) / 0.08); }
+      .chip svg { width: 11px; height: 11px; }
+      .tchip { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid hsl(var(--border)); font-size: 12px; color: hsl(var(--muted-foreground)); }
+      .tchip[aria-pressed="true"] { background: hsl(var(--foreground)); color: hsl(var(--background)); border-color: transparent; }
+      .d-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .d-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+      @media (max-width: 1060px) { .d-grid { grid-template-columns: 1fr; } .d-grid > aside { order: -1; } }
+      @media (max-width: 720px) { .pt { grid-template-columns: 1fr; } .pt-side { display: none; } .hide-sm { display: none; } }
+      .card-h { font-size: 12px; color: hsl(var(--muted-foreground)); font-weight: 500; padding: 14px 16px 4px; }
+      .scope-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 16px; cursor: pointer; }
+      .scope-row:hover { background: hsl(var(--accent) / 0.6); }
+      .scope-row.dis { cursor: not-allowed; opacity: 0.55; }
+      .scope-row.dis:hover { background: none; }
+      .scope-row .switch.busy { opacity: 0.6; }
+      .info-dl { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px 10px; padding: 8px 16px 16px; font-size: 12.5px; }
+      .info-dl dt { color: hsl(var(--muted-foreground)); }
+      .info-dl dd { margin: 0; min-width: 0; }
+      .utabs { display: flex; gap: 18px; border-bottom: 1px solid hsl(var(--border)); padding: 0 16px; }
+      .utabs button { height: 40px; position: relative; color: hsl(var(--muted-foreground)); font-size: 13px; }
+      .utabs button.on { color: hsl(var(--foreground)); font-weight: 500; }
+      .utabs button.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: hsl(var(--foreground)); border-radius: 2px; }
+      .fw { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 380px; }
+      .fw-tree { border-right: 1px solid hsl(var(--border)); padding: 8px; font-size: 12.5px; }
+      .fw-tree div { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-radius: 8px; }
+      .fw-tree div.on { background: hsl(var(--accent)); }
+      .fw-prev { padding: 16px; font-size: 12.5px; min-width: 0; }
+      .banner { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 16px; border: 1px solid rgb(var(--warn) / 0.35); background: rgb(var(--warn) / 0.07); font-size: 12.5px; flex-wrap: wrap; }
+      .vcard { border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 12px 14px; display: grid; gap: 6px; }
+      .vcard.act { border-color: rgb(var(--ok) / 0.45); background: rgb(var(--ok) / 0.05); }
+      .menu { position: absolute; right: 0; top: 38px; z-index: 5; min-width: 168px; padding: 4px; border-radius: 14px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); box-shadow: 0 12px 30px rgb(0 0 0 / 0.18); }
+      .menu button { width: 100%; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 10px; font-size: 12.5px; text-align: left; }
+      .menu button:hover { background: hsl(var(--accent)); }
+      .modal-bg { position: absolute; inset: 0; background: rgb(0 0 0 / 0.35); display: grid; place-items: center; z-index: 10; padding: 16px; }
+      .modal { width: min(560px, 100%); border-radius: 24px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); box-shadow: 0 20px 50px rgb(0 0 0 / 0.25); }
+      .modal-h { padding: 16px 18px 6px; font-size: 15px; font-weight: 600; }
+      .modal-b { padding: 6px 18px 14px; display: grid; gap: 10px; font-size: 13px; }
+      .modal-f { padding: 12px 18px; border-top: 1px solid hsl(var(--border)); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .ptoast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 60; }
+      .ptoast > div { display: flex; align-items: center; gap: 10px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: 999px; padding: 8px 10px 8px 14px; font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.16); }
+      .ptoast button { height: 26px; padding: 0 10px; border-radius: 999px; background: hsl(var(--accent)); font-size: 12px; font-weight: 500; }
+      .before { position: relative; }
+      .before .x { position: absolute; inset: 0; border: 2px solid rgb(var(--bad)); border-radius: 12px; pointer-events: none; }
+      .chips-old { display: flex; gap: 8px; flex-wrap: wrap; }
+      .chips-old span { height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid hsl(var(--border)); display: inline-flex; align-items: center; font-size: 12.5px; }
+    </style>
+  </head>
+
+  <body class="show-notes">
+    <header class="top">
+      <div class="top-in">
+        <div class="brand">
+          <span class="logo"><i data-lucide="lightbulb"></i></span>技能管理重设计
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="overview" aria-selected="true"><i data-lucide="map"></i>总览</button>
+          <button class="tab" role="tab" data-tab="proto" aria-selected="false"><i data-lucide="layout-dashboard"></i>可点击原型</button>
+          <button class="tab" role="tab" data-tab="impl" aria-selected="false"><i data-lucide="database"></i>数据与接口</button>
+        </div>
+        <div class="spacer row">
+          <label class="row muted" style="font-size: 12px">
+            设计标注
+            <button class="switch" id="notesSw" role="switch" aria-checked="true" onclick="toggleNotes()"></button>
+          </label>
+          <button class="btn" onclick="document.documentElement.classList.toggle('dark')" aria-label="切换明暗主题">
+            <i data-lucide="sun-moon"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- ============ 1. 总览 ============ -->
+      <section id="tab-overview">
+        <h1 class="h1">把「启用」和「短剧环节」合成一组「用在哪里」</h1>
+        <p class="lead">
+          现在一个技能用在哪，被拆成顶部的启用开关（点了就生效）和底部的环节胶囊（还要另点「保存」）。新设计里，<b>画布 Agent 和短剧四个环节是五个平级开关，每个点了立即生效、可以撤销</b>，页面上不再有「保存」按钮；技能可以<b>只给短剧用</b>。详情从弹窗改成独立页面，列表直接显示每个技能用在哪。
+        </p>
+
+        <div class="callout c-info" style="margin-top: 16px">
+          <i data-lucide="info"></i>
+          <div>
+            <b>阅读说明。</b>现状来自仓库代码（已核对）；新界面全是<b>提案</b>，尚未实现，原型里的数据是示意。完整依据见同目录 <code>技能管理重设计.md</code>。<br />
+            <span class="muted">核实度图例：</span>
+            <span class="tag t-ok">已核对</span>
+            <span class="tag t-info">调研检索，未逐条复核</span>
+            <span class="tag t-warn">未验证 · 需实测</span>
+            <span class="tag t-mute">提案</span>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>现在哪里不好</h2>
+          <p class="sub">你截图圈出的那块，以及同一页上的其他问题。<span class="tag t-ok">已核对</span></p>
+          <div class="grid g2">
+            <div class="card before">
+              <p class="muted" style="font-size: 12px; margin-bottom: 8px">短剧适用环节（现状）</p>
+              <div class="chips-old"><span>剧本改编</span><span>资产拆解</span><span>资产图提示词</span><span>视频提示词</span></div>
+              <div style="margin-top: 10px"><span class="pill" style="opacity: 0.5">保存</span></div>
+            </div>
+            <div class="card">
+              <ul class="list">
+                <li><b>两套保存规则</b>：启用开关点了立即生效，环节却要另点「保存」。</li>
+                <li><b>看不出能多选</b>：没选中的胶囊和普通按钮一模一样。</li>
+                <li><b>最重要的信息放在最底下</b>：「用在哪里」排在「更新时间」后面。</li>
+                <li><b>只给短剧用做不到</b>：短剧要求先「启用」，而启用必然进画布 Agent。</li>
+                <li><b>重复和空白</b>：显示名和技能名常常一样，头部字段又列一遍；状态卡、版本卡大半是空的。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>主线：一个技能从导入到被用上</h2>
+          <p class="sub">管理员最常走的路径，高亮的是这次新加或改掉的环节。</p>
+          <div class="flow note">
+            <div class="node"><b>导入</b>选文件夹 / zip，预检</div>
+            <div class="arrow"><i data-lucide="arrow-right"></i></div>
+            <div class="node hl"><b>确认时勾场景</b>默认都不勾；新版本不出现</div>
+            <div class="arrow"><i data-lucide="arrow-right"></i></div>
+            <div class="node hl"><b>列表一眼看清</b>「用在哪里」标签列</div>
+            <div class="arrow"><i data-lucide="arrow-right"></i></div>
+            <div class="node hl"><b>详情页改范围</b>五个开关，即时生效 + 撤销</div>
+            <div class="arrow"><i data-lucide="arrow-right"></i></div>
+            <div class="node"><b>被用到</b>画布 Agent 目录 / 短剧下拉</div>
+          </div>
+          <div class="note-txt">设计：把「设置范围」放进导入流程和列表，是因为调研里 Claude 管理员后台把「每个技能的可用范围」当一等信息；NN/G 指出即时开关和需要保存的控件不要混放，所以统一成即时开关。</div>
+          <div class="callout c-warn" style="margin-top: 10px">
+            <i data-lucide="corner-down-right"></i>
+            <div><b>开关失败时：</b>开关翻回原状态，错误提示已由全局弹出；连续快速点多个开关会排队逐个提交，每次都带完整目标状态，不会丢改动。<b>没有生效版本时</b>关着的开关不能打开，悬停写原因。</div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>五个场景</h2>
+          <p class="sub">平级、互不依赖，没有总开关。<span class="tag t-mute">提案</span></p>
+          <div class="grid g3">
+            <div class="card">
+              <div class="row"><i data-lucide="bot"></i><b>画布 Agent</b></div>
+              <div class="row wrapflex" style="margin-top: 6px"><span class="tag t-info">原「启用」</span></div>
+              <p class="muted" style="font-size: 13px; margin-top: 8px">进入 Agent 的技能目录、搜索和 <code>@</code> 弹层。后端仍是 <code>enabled</code> 字段，只是<b>不再管短剧</b>。</p>
+            </div>
+            <div class="card">
+              <div class="row"><i data-lucide="clapperboard"></i><b>短剧四环节</b></div>
+              <div class="row wrapflex" style="margin-top: 6px"><span class="tag t-mute">剧本改编 · 资产拆解 · 资产图提示词 · 视频提示词</span></div>
+              <p class="muted" style="font-size: 13px; margin-top: 8px">开了就出现在用户开拍设置 / 提示词设置对应环节的「技能」下拉里。<b>只要求有生效版本</b>，不再要求画布 Agent 开着。</p>
+            </div>
+            <div class="card">
+              <div class="row"><i data-lucide="lock"></i><b>内置技能</b></div>
+              <div class="row wrapflex" style="margin-top: 6px"><span class="tag t-warn">只读</span></div>
+              <p class="muted" style="font-size: 13px; margin-top: 8px">画布 Agent 固定开、短剧固定关，五个开关置灰并悬停写原因。<b>和今天一致。</b></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>三个方案对比</h2>
+          <p class="sub">推荐方案是用户在访谈中逐项选定的；备选列出来说明放弃了什么。</p>
+          <div class="cmp-wrap">
+            <table class="cmp">
+              <thead><tr><th></th><th>推荐：独立详情页 + 场景开关</th><th>备选 A：保留弹窗，只改环节</th><th>备选 B：右侧抽屉</th></tr></thead>
+              <tbody>
+                <tr><th>一眼看清用在哪</th><td class="y">列表标签列 + 详情侧栏常驻</td><td class="m">列表看不到</td><td class="y">列表 + 抽屉</td></tr>
+                <tr><th>保存规则一致</th><td class="y">全部即时 + 撤销</td><td class="y">全部即时</td><td class="y">全部即时</td></tr>
+                <tr><th>只给短剧用</th><td class="y">能</td><td class="m">不改后端就不能</td><td class="y">能</td></tr>
+                <tr><th>看 28 个文件的包</th><td class="y">整页</td><td class="m">弹窗里挤</td><td class="m">抽屉更挤</td></tr>
+                <tr><th>可分享链接 / 刷新不丢</th><td class="y">有</td><td class="m">无</td><td class="m">需额外做</td></tr>
+                <tr><th>实现成本</th><td class="m">中：新路由 + 后端语义 + 一次迁移</td><td class="y">低：只改前端</td><td class="m">中</td></tr>
+                <tr><th>核实度</th><td><span class="tag t-mute">提案</span></td><td><span class="tag t-mute">提案</span></td><td><span class="tag t-mute">提案</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>运营说「短剧资产拆解效果差」时，会发生什么</h2>
+          <p class="sub">新设计下排查和处理的完整路径，以及一个要提前说清的边界。</p>
+          <div class="grid g2">
+            <div class="card">
+              <ol class="steps" style="margin: 0; padding: 0">
+                <li><b>列表筛选「短剧」</b><small>标签列里带「拆解」的就是挂在资产拆解上的技能</small></li>
+                <li><b>点进详情</b><small>侧栏看到它同时开着画布 Agent 和资产拆解</small></li>
+                <li><b>关掉「资产拆解」</b><small>立即生效，toast 可撤销；画布 Agent 不受影响</small></li>
+                <li><b>或切到「版本」换回旧版</b><small>设为生效同样即时、可撤销</small></li>
+              </ol>
+            </div>
+            <div class="card">
+              <div class="callout c-warn">
+                <i data-lucide="triangle-alert"></i>
+                <div>
+                  <b>边界：已经开拍的剧不受影响</b>
+                  <ul class="list" style="margin-top: 6px">
+                    <li>用户开拍时提示词是快照，关掉环节后已有剧照常用旧快照，界面在该行标「来源已停用」（短剧开拍设置已有的 <code>missing</code> 行为）。</li>
+                    <li>新开拍的剧下拉里不再出现这个技能。</li>
+                  </ul>
+                </div>
+              </div>
+              <p class="muted" style="font-size: 12.5px; margin-top: 10px">上线时要告诉运营：迁移会把「停用但标了环节」的技能的环节清空（它们本来对用户不可见），之后需要的话重新打开。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 2. 可点击原型 ============ -->
+      <section id="tab-proto" hidden>
+        <h1 class="h1">可点击原型</h1>
+        <p class="lead">
+          数据在内存里，刷新复原。预置了 6 个技能：从列表点进 <b>分镜节奏大师</b> 试试开关和撤销；<b>想看失败</b>：进入 <b>flaky-demo</b> 点任意开关（模拟网络失败，开关会翻回）；<b>想看删除被拦</b>：在开着场景的技能里点 <code>⋯ → 删除技能</code>；<b>导入</b>：点「导入技能」直接到第 2 步，勾场景后确认。所有请求都是 <code>setTimeout</code> 模拟。
+        </p>
+        <div class="frame" style="margin-top: 18px">
+          <div class="frame-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span style="margin-left: 8px" id="addr">admin / AI 配置 / 技能</span>
+          </div>
+          <div class="proto" id="proto"></div>
+        </div>
+      </section>
+
+      <!-- ============ 3. 数据与接口（提案） ============ -->
+      <section id="tab-impl" hidden>
+        <h1 class="h1">数据与接口（提案）</h1>
+        <p class="lead">下面都是设计提案，尚未实现，对应 Markdown 设计文档 §8。<b>不加新列</b>：只调整 <code>enabled</code> 和 <code>drama_steps</code> 的含义，再做一次迁移。</p>
+
+        <div class="sec">
+          <h2>两个字段的含义变化</h2>
+          <p class="sub">核心是让短剧不再依赖画布 Agent 开关。</p>
+          <div class="cmp-wrap">
+            <table class="cmp">
+              <thead><tr><th>字段</th><th>现在 <span class="tag t-ok">已核对</span></th><th>改为</th></tr></thead>
+              <tbody>
+                <tr><th><code>enabled</code></th><td>「启用」：进画布 Agent，且是短剧可见的前提（<code>drama_skill.go</code> <code>DramaSkills</code>）</td><td><b>只表示画布 Agent</b>，不再影响短剧</td></tr>
+                <tr><th><code>drama_steps</code></th><td>标了且 <code>enabled</code> 才在短剧可见；设置时不查生效版本</td><td><b>标了且有就绪生效版本</b>就可见；新增环节时要求有生效版本，否则 61009</td></tr>
+                <tr><th><code>in_use</code>（派生）</th><td>无</td><td><code>enabled || drama_steps 非空</code>，不落库，列表返回</td></tr>
+                <tr><th>删除预检</th><td><code>can_delete = !enabled</code></td><td><code>!enabled && drama_steps 为空</code>，原因「请先关闭所有使用场景」</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>接口</h2>
+          <p class="sub">路径都沿用现有的，只有入参 / 规则变化。错误码沿用 61007 内置只读、61009 没有生效版本、10001 参数错。</p>
+          <div class="cmp-wrap">
+            <table class="cmp">
+              <thead><tr><th>方法与路径</th><th>变化</th></tr></thead>
+              <tbody>
+                <tr><th><code>GET /admin/agent/skills</code></th><td><code>status</code> 改为 <code>agent | drama | unused | builtin</code>（不传=全部）；旧值 <code>enabled→agent</code>、<code>disabled→unused</code> 兼容一个版本；返回项加 <code>in_use</code></td></tr>
+                <tr><th><code>PUT …/:name/enabled</code></th><td>不变，界面叫「画布 Agent」</td></tr>
+                <tr><th><code>PUT …/:name/drama-steps</code></th><td>请求不变（整组覆盖 <code>{steps}</code>）；新增 61009</td></tr>
+                <tr><th><code>POST …/imports/:id/confirm</code></th><td>请求体可选 <code>{ enabled: bool, drama_steps: [] }</code>，只在 <code>plan.action = create</code> 时生效，与建技能同一事务，审计各记一条</td></tr>
+                <tr><th><code>GET …/:name/delete-check</code></th><td>规则见上表</td></tr>
+                <tr><th><code>GET /drama-skills?step=</code></th><td>条件去掉 <code>enabled</code>，响应不变</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>迁移与前端开关队列</h2>
+          <div class="codeblock"><pre style="margin: 0; font: inherit; white-space: pre-wrap">-- 迁移（提案）：停用但标了环节的技能，上线前对用户不可见；迁移后保持不可见
+UPDATE agent_skills SET drama_steps = '[]'
+ WHERE enabled = false AND drama_steps &lt;&gt; '[]';
+
+// 前端：同一技能的场景开关串行提交（提案）
+toggleScope(item, scope, on):
+  local = optimistic(item, scope, on)          // 立即翻转
+  queue[item.name] = queue[item.name].then(async () =&gt; {
+    const next = scope === "agent"
+      ? await setSkillEnabled(item.name, local.enabled)
+      : await setSkillDramaSteps(item.name, ordered(local.drama_steps))   // 带完整目标状态
+    replaceOne(next)
+    toast(`已在「${label(scope)}」${on ? "启用" : "停用"}「${next.title}」`, { action: 撤销 → toggleScope(next, scope, !on) })
+  }).catch(() =&gt; rollback(item, scope))         // 全局错误 toast 已弹</pre></div>
+        </div>
+
+        <div class="sec">
+          <h2>前端改动面</h2>
+          <div class="cmp-wrap">
+            <table class="cmp">
+              <thead><tr><th>文件</th><th>改动</th></tr></thead>
+              <tbody>
+                <tr><th><code>router/index.tsx</code></th><td>新增 <code>agent/skills/:name</code></td></tr>
+                <tr><th><code>agent-skills/index.tsx</code></th><td>去掉详情弹窗；筛选换新；列表状态进 URL</td></tr>
+                <tr><th><code>skill-table.tsx</code></th><td>列：技能 / 说明 / 用在哪里 / 版本 / 更新；行改 <code>Link</code>；去开关</td></tr>
+                <tr><th>新增 <code>skill-detail/</code></th><td>页面、页头（改名、⋯ 菜单）、待生效横幅、<code>scope-card.tsx</code>、信息卡；承接 <code>skill-dialog.tsx</code> 的取数和版本操作</td></tr>
+                <tr><th>删除</th><td><code>skill-overview.tsx</code>、<code>drama-steps-field.tsx</code>、<code>skill-dialog.tsx</code></td></tr>
+                <tr><th><code>import-dialog.tsx</code></th><td>第 2 步 create 时底部场景多选</td></tr>
+                <tr><th><code>utils/admin/agent-skill.ts</code></th><td><code>scopeTags</code>、<code>scopeBlockReason</code>、<code>deleteBlockReason</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h2>已确认的决定</h2>
+          <div class="card">
+            <ol class="list" style="padding-left: 18px">
+              <li><b>各场景独立开关</b>：技能可以只给短剧用；需要调整后端语义（Q1）。</li>
+              <li><b>独立详情页</b> <code>/admin/agent/skills/:name</code>：内容多、要能分享链接（Q2）。</li>
+              <li><b>列表显示场景标签列 + 场景筛选</b>，改范围进详情（Q3）。</li>
+              <li><b>导入第 2 步顺手勾场景</b>，默认都不勾，新版本不出现（Q4）。</li>
+              <li><b>内置技能继续全只读</b>（Q5）。</li>
+              <li><b>先出设计稿，确认后再改代码</b>。</li>
+              <li>本页没有新增决定，与 Markdown 一致。</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="ptoast" id="ptoast"></div>
+
+    <script>
+      const $ = (s, r = document) => r.querySelector(s);
+      const esc = (s) =>
+        String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+      const icons = () => { if (window.lucide) lucide.createIcons(); };
+
+      function toggleNotes() {
+        const on = document.body.classList.toggle("show-notes");
+        $("#notesSw").setAttribute("aria-checked", String(on));
+      }
+      function showTab(id) {
+        document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== "tab-" + id));
+        document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === id)));
+        window.scrollTo(0, 0);
+      }
+      document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
+
+      /* ---------------- 原型：内存状态，刷新复原 ---------------- */
+      const SCOPES = [
+        { key: "agent", name: "画布 Agent", short: "画布 Agent", group: "画布" },
+        { key: "adapt", name: "剧本改编", short: "改编", group: "短剧工作室" },
+        { key: "assets", name: "资产拆解", short: "拆解", group: "短剧工作室" },
+        { key: "asset_prompts", name: "资产图提示词", short: "资产图", group: "短剧工作室" },
+        { key: "video", name: "视频提示词", short: "视频", group: "短剧工作室" },
+      ];
+      const FILES = ["SKILL.md", "references/镜头语言.md", "references/节奏表.md", "assets/示例分镜.png"];
+      const mk = (o) => ({ builtin: false, agent: false, steps: [], scripts: false, active: 1, latest: 1, files: 12, kb: 86.4, updated: "3 天前", ...o });
+      const S = {
+        skills: [
+          mk({ name: "storyboard-rhythm", title: "分镜节奏大师", desc: "把剧本拆成节奏明确的镜头序列，控制每镜时长与景别切换，适合 15–60 秒短视频。", agent: true, steps: ["video"], active: 2, latest: 3, files: 28, kb: 279.9, updated: "昨天" }),
+          mk({ name: "cross-episode-continuity", title: "跨集连续性", desc: "检查角色造型、道具和场景在多集之间是否一致，给出资产拆解时的统一命名。", steps: ["assets", "asset_prompts"], scripts: true, updated: "5 天前" }),
+          mk({ name: "chaoge-film-director-shotcraft-no-script", title: "chaoge-film-director-shotcraft-no-script", desc: "Chaoge 匠心版无脚本工具版，影视级写实 AI 影片的逐镜 AI 导演与 Seedance 2.0/2.5 生产 Skill。读取定稿剧本后完成十项深度检查与生产路线。", files: 28, kb: 279.9, updated: "2026-10-07" }),
+          mk({ name: "flaky-demo", title: "flaky-demo（模拟失败）", desc: "点这个技能里的任何开关都会模拟请求失败，用来看回滚。", agent: true, updated: "1 小时前" }),
+          mk({ name: "canvas-layout", title: "画布排版", desc: "按阅读顺序整理画布上的节点，自动对齐分组。", builtin: true, agent: true, active: null, files: 1, kb: 3.2, updated: "随版本" }),
+          mk({ name: "prompt-polish", title: "提示词润色", desc: "把口语化描述改写成图像模型更容易理解的提示词。", builtin: true, agent: true, active: null, files: 1, kb: 2.1, updated: "随版本" }),
+        ],
+        page: "list", sel: null, filter: "all", q: "", tab: "files", fileIdx: 0, menu: false, modal: null, busy: {}, fresh: null, descOpen: false,
+        importScopes: [],
+      };
+      const find = (n) => S.skills.find((s) => s.name === n);
+      const isOn = (s, k) => (k === "agent" ? s.agent : s.steps.includes(k));
+      const inUse = (s) => s.agent || s.steps.length > 0;
+      const useCount = (s) => (s.agent ? 1 : 0) + s.steps.length;
+      function blockReason(s, k) {
+        if (s.builtin) return "内置技能随版本发布，不能修改";
+        if (!isOn(s, k) && s.active == null) return "没有生效版本，无法启用";
+        return null;
+      }
+
+      let tt;
+      function showToast(msg, kind = "ok", action) {
+        const icon = { ok: "circle-check", bad: "circle-x" }[kind];
+        $("#ptoast").innerHTML = `<div><i data-lucide="${icon}" style="color: rgb(var(--${kind}))"></i>${esc(msg)}${action ? `<button id="tAct">${esc(action.label)}</button>` : ""}</div>`;
+        if (action) $("#tAct").onclick = () => { $("#ptoast").innerHTML = ""; action.run(); };
+        icons();
+        clearTimeout(tt);
+        tt = setTimeout(() => ($("#ptoast").innerHTML = ""), action ? 6000 : 2400);
+      }
+
+      /* 开关：乐观翻转 → 模拟请求 → 成功给撤销 / 失败回滚（同一技能串行，示意） */
+      const queues = {};
+      function toggleScope(name, k, silentUndo) {
+        const s = find(name);
+        if (blockReason(s, k) || S.busy[name + k]) return;
+        const on = !isOn(s, k);
+        const apply = (v) => { if (k === "agent") s.agent = v; else s.steps = v ? [...s.steps, k] : s.steps.filter((x) => x !== k); };
+        apply(on);
+        S.busy[name + k] = true;
+        render();
+        queues[name] = (queues[name] || Promise.resolve()).then(
+          () => new Promise((res) => setTimeout(() => {
+            delete S.busy[name + k];
+            if (name === "flaky-demo") {
+              apply(!on);
+              showToast("网络异常，未能保存，已恢复原状态", "bad");
+            } else if (!silentUndo) {
+              const label = SCOPES.find((x) => x.key === k).name;
+              showToast(`已在「${label}」${on ? "启用" : "停用"}「${s.title}」`, "ok", { label: "撤销", run: () => toggleScope(name, k, true) });
+            } else showToast("已撤销");
+            render();
+            res();
+          }, 550)),
+        );
+      }
+
+      function scopeChips(s) {
+        if (!inUse(s)) return `<span class="muted" style="font-size: 12px">未使用</span>`;
+        return SCOPES.filter((x) => isOn(s, x.key))
+          .map((x) => `<span class="chip ${x.key === "agent" ? "agent" : "drama"}" title="${x.key === "agent" ? "画布 Agent" : "短剧 · " + x.name}">${s.builtin && x.key === "agent" ? '<i data-lucide="lock"></i>' : ""}${esc(x.short)}</span>`)
+          .join(" ");
+      }
+      const verCell = (s) => (s.active == null ? `<span class="muted">—</span>` : `<span class="mono">v${s.active}</span>${s.latest > s.active ? ` <span class="chip pend">v${s.latest} 待生效</span>` : ""}`);
+      const FILTERS = [["all", "全部"], ["agent", "画布 Agent"], ["drama", "短剧"], ["unused", "未使用"], ["builtin", "内置"]];
+      function passFilter(s) {
+        const q = S.q.trim().toLowerCase();
+        if (q && !(s.name + s.title + s.desc).toLowerCase().includes(q)) return false;
+        return { all: true, agent: s.agent, drama: s.steps.length > 0, unused: !s.builtin && !inUse(s), builtin: s.builtin }[S.filter];
+      }
+
+      function side() {
+        return `<nav class="pt-side"><div class="grp">AI 配置</div>
+          ${["总览", "任务队列", "模型渠道", "插件"].map((t) => `<div class="it">${t}</div>`).join("")}
+          <div class="it on"><i data-lucide="lightbulb"></i>技能</div>
+          ${["运行记录", "分析令牌"].map((t) => `<div class="it">${t}</div>`).join("")}</nav>`;
+      }
+
+      function listView() {
+        const rows = S.skills.filter(passFilter);
+        return `<div class="pt-main">
+          <div class="row"><b style="font-size: 18px">技能</b><span class="spacer"></span>
+            <button class="pill solid" onclick="openImport()"><i data-lucide="upload"></i>导入技能</button></div>
+          <div class="glass" style="overflow: hidden">
+            <div class="row wrapflex note" style="padding: 12px 14px; gap: 10px">
+              <input class="search" id="q" placeholder="搜索名称或说明（/）" value="${esc(S.q)}" oninput="S.q=this.value; clearTimeout(window._qt); window._qt=setTimeout(()=>{render(); const el=$('#q'); el.focus(); el.setSelectionRange(el.value.length, el.value.length)}, 250)" />
+              <div class="seg">${FILTERS.map(([k, l]) => `<button class="${S.filter === k ? "on" : ""}" onclick="S.filter='${k}'; render()">${l}</button>`).join("")}</div>
+              <span class="spacer muted" style="font-size: 12px">共 ${rows.length} 个</span>
+            </div>
+            <div class="note-txt" style="padding: 0 14px 8px">筛选从「已启用 / 已停用」换成按场景：运营排查问题时问的是「短剧用了哪些技能」，而不是「哪些启用了」。</div>
+            <div class="cmp-wrap" style="border: 0; border-top: 1px solid hsl(var(--border)); border-radius: 0">
+            ${rows.length === 0 ? `<div style="padding: 48px; text-align: center" class="muted">没有符合条件的技能</div>` : `
+            <table class="sk-table"><thead><tr><th style="width: 30%">技能</th><th class="hide-sm">说明</th><th class="note" style="width: 210px">用在哪里</th><th style="width: 130px">版本</th><th class="hide-sm" style="width: 84px">更新</th></tr></thead>
+            <tbody>${rows.map((s) => `<tr class="${S.fresh === s.name ? "fresh" : ""}" onclick="openSkill('${s.name}')">
+              <td><div class="row" style="gap: 10px"><span class="ico"><i data-lucide="lightbulb"></i></span>
+                <div style="min-width: 0"><div class="row" style="gap: 6px"><span style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${esc(s.title)}</span>${s.builtin ? '<span class="tag t-mute">内置</span>' : ""}</div>
+                ${s.title !== s.name ? `<div class="mono muted" style="font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${esc(s.name)}</div>` : ""}</div></div></td>
+              <td class="muted hide-sm"><span class="clamp2">${esc(s.desc)}</span></td>
+              <td><div class="row wrapflex" style="gap: 4px">${scopeChips(s)}</div></td>
+              <td>${verCell(s)}</td>
+              <td class="muted hide-sm" style="font-size: 12px">${esc(s.updated)}</td></tr>`).join("")}</tbody></table>`}
+            </div>
+          </div>
+          <div class="note-txt">行末启用开关去掉了，换成只读的场景标签列；改范围要进详情（Q3）。显示名等于技能名时不再重复显示第二行（看第三行）。「来源与内容」列去掉，内置用名称旁的标签表示。</div>
+        </div>`;
+      }
+
+      function scopeCard(s) {
+        let html = "", last = "";
+        for (const x of SCOPES) {
+          if (x.group !== last) {
+            last = x.group;
+            html += `<div class="card-h row">${x.group}${x.group === "短剧工作室" && s.scripts ? '<span class="chip" title="短剧只注入正文，不执行脚本">仅用正文</span>' : ""}</div>`;
+          }
+          const r = blockReason(s, x.key), on = isOn(s, x.key), busy = S.busy[s.name + x.key];
+          html += `<div class="scope-row ${r ? "dis" : ""}" title="${esc(r || "")}" onclick="toggleScope('${s.name}', '${x.key}')">
+            <span>${esc(x.name)}</span><span class="spacer"></span>
+            <button class="switch ${busy ? "busy" : ""}" role="switch" aria-checked="${on}" aria-label="${esc(x.name)}" ${r ? "disabled" : ""} onclick="event.stopPropagation(); toggleScope('${s.name}', '${x.key}')"></button></div>`;
+        }
+        return `<div class="glass note" style="padding-bottom: 8px"><div style="padding: 14px 16px 0; font-weight: 600">用在哪里</div>${html}</div>
+          <div class="note-txt">原来的「启用」开关和底部「短剧适用环节 + 保存」合成这一张卡：五个平级开关，点了即生效，toast 里可撤销，没有保存按钮。整行可点，行高 ≥ 44px。分组标题代替说明小字。</div>`;
+      }
+
+      function detailView() {
+        const s = find(S.sel);
+        if (!s) return `<div class="pt-main"><div style="padding: 60px; text-align: center"><p style="font-weight: 500">技能不存在或已删除</p><button class="pill" style="margin-top: 12px" onclick="back()">返回技能列表</button></div></div>`;
+        const pending = s.active != null && s.latest > s.active;
+        const versions = s.builtin ? [] : Array.from({ length: s.latest }, (_, i) => s.latest - i);
+        const files = s.builtin ? ["SKILL.md"] : FILES;
+        return `<div class="pt-main">
+          <button class="row muted" style="font-size: 12.5px; width: fit-content" onclick="back()"><i data-lucide="arrow-left"></i>技能</button>
+          <div class="d-head">
+            <span class="ico" style="width: 40px; height: 40px"><i data-lucide="lightbulb"></i></span>
+            <div style="min-width: 0; flex: 1">
+              <div class="row" style="gap: 6px"><b style="font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${esc(s.title)}</b>
+                ${s.builtin ? '<span class="tag t-mute">内置</span>' : '<button class="btn" style="height: 26px; padding: 0 6px" title="修改显示名" onclick="rename()"><i data-lucide="pencil"></i></button>'}</div>
+              ${s.title !== s.name ? `<div class="mono muted" style="font-size: 12px">${esc(s.name)}</div>` : ""}
+            </div>
+            <span class="chip ${inUse(s) ? "agent" : ""}">${inUse(s) ? `在用 ${useCount(s)} 处` : "未使用"}</span>
+            ${s.builtin ? "" : `<div style="position: relative"><button class="pill" aria-label="更多操作" onclick="S.menu=!S.menu; render()"><i data-lucide="ellipsis"></i></button>
+              ${S.menu ? `<div class="menu"><button onclick="S.menu=false; showToast('已开始下载 ${esc(s.name)}-v${s.active}.zip（示意）')"><i data-lucide="download"></i>下载生效版本</button>
+              <button style="color: rgb(var(--bad))" onclick="askDelete()"><i data-lucide="trash-2"></i>删除技能</button></div>` : ""}</div>`}
+          </div>
+          ${pending ? `<div class="banner note"><i data-lucide="sparkles" style="color: rgb(var(--warn))"></i><span><b class="mono">v${s.latest}</b> 已导入，尚未生效</span><span class="spacer"></span>
+            <button class="pill" onclick="S.tab='files'; render()">对比文件</button><button class="pill solid" onclick="activate(${s.latest})">设为生效</button></div>
+            <div class="note-txt">原来要切到「版本」页签才看得到「v3 待生效」。现在横幅常驻页头，一步设为生效。</div>` : ""}
+          <div class="d-grid">
+            <div class="glass" style="overflow: hidden; min-width: 0">
+              <div class="utabs"><button class="${S.tab === "files" ? "on" : ""}" onclick="S.tab='files'; render()">文件</button>
+                <button class="${S.tab === "versions" ? "on" : ""}" onclick="S.tab='versions'; render()">版本 ${versions.length || ""}</button></div>
+              ${S.tab === "files" ? `<div class="fw"><div class="fw-tree">${files.map((f, i) => `<div class="${S.fileIdx === i ? "on" : ""}" onclick="S.fileIdx=${i}; render()" style="cursor: pointer"><i data-lucide="${f.endsWith(".png") ? "image" : "file-text"}"></i><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${esc(f)}</span></div>`).join("")}</div>
+                <div class="fw-prev"><p class="muted" style="font-size: 11.5px">${esc(files[S.fileIdx] || files[0])} · 示意</p>
+                ${S.fileIdx === 0 ? `<div class="card" style="margin-top: 10px; font-size: 12px"><div class="muted" style="margin-bottom: 4px">头部字段</div><span class="mono">name: ${esc(s.name)}</span><br /><span class="mono">description: ${esc(s.desc.slice(0, 40))}…</span></div>` : ""}
+                <p style="margin-top: 12px; line-height: 1.8">（文件预览沿用现有 FileWorkbench，整页高度，文件树和预览不再挤在弹窗里。）</p></div></div>
+                <div class="note-txt" style="padding: 0 16px 12px">「头部字段」只在打开 SKILL.md 时出现，不再在概览里重复列 name / description。「概览」页签整个去掉，内容并进右侧栏。</div>`
+              : versions.length === 0 ? `<div style="padding: 48px; text-align: center" class="muted">内置技能没有版本历史</div>`
+              : `<div style="padding: 14px; display: grid; gap: 10px">${versions.map((v) => `<div class="vcard ${v === s.active ? "act" : ""}"><div class="row"><b class="mono">v${v}</b>${v === s.active ? '<span class="tag t-ok">生效中</span>' : v > s.active ? '<span class="tag t-warn">待生效</span>' : ""}<span class="spacer muted" style="font-size: 12px">2026-11-${10 + v}</span></div>
+                  <div class="row wrapflex" style="gap: 6px">${v === s.active ? "" : `<button class="pill" onclick="activate(${v})"><i data-lucide="rotate-ccw"></i>${v < s.active ? "回滚到此版" : "设为生效"}</button>`}<button class="pill" onclick="S.tab='files'; render()"><i data-lucide="file-text"></i>文件</button></div></div>`).join("")}</div>`}
+            </div>
+            <aside style="display: grid; gap: 12px; min-width: 0">
+              ${scopeCard(s)}
+              <div class="glass"><div style="padding: 14px 16px 0; font-weight: 600">信息</div>
+                <dl class="info-dl"><dt>说明</dt><dd><span class="${S.descOpen ? "" : "clamp4"}">${esc(s.desc)}</span>${s.desc.length > 60 ? `<button class="muted" style="font-size: 12px" onclick="S.descOpen=!S.descOpen; render()">${S.descOpen ? "收起" : "展开"}</button>` : ""}</dd>
+                <dt>生效版本</dt><dd>${s.active == null ? "—" : `<span class="mono">v${s.active}</span> · 共 ${s.latest} 个版本`}</dd>
+                <dt>内容</dt><dd>${s.files} 个文件 · ${s.kb} KB</dd>
+                <dt>更新</dt><dd>${esc(s.updated)}</dd></dl></div>
+            </aside>
+          </div>
+        </div>`;
+      }
+
+      function modalView() {
+        if (S.modal === "delete") {
+          const s = find(S.sel), blocked = inUse(s);
+          return `<div class="modal-bg" onclick="if(event.target===this){S.modal=null; render()}"><div class="modal"><div class="modal-h">删除技能「${esc(s.title)}」？</div>
+            <div class="modal-b"><p class="muted">共 ${s.latest} 个版本，删除后不能撤销</p>${blocked ? `<div class="callout c-warn"><i data-lucide="triangle-alert"></i><div>请先关闭所有使用场景（当前在用 ${useCount(s)} 处）</div></div>` : ""}</div>
+            <div class="modal-f"><span class="spacer"></span><button class="pill" onclick="S.modal=null; render()">取消</button><button class="pill solid" style="background: rgb(var(--bad)); color: #fff" ${blocked ? "disabled" : ""} onclick="doDelete()">删除技能</button></div></div></div>`;
+        }
+        if (S.modal === "import") {
+          return `<div class="modal-bg"><div class="modal" style="width: min(680px, 100%)"><div class="modal-h row">导入技能<span class="spacer"></span><span class="muted" style="font-size: 12px; font-weight: 400">① 选择文件 → <b style="color: hsl(var(--foreground))">② 检查并确认</b></span></div>
+            <div class="modal-b"><div class="callout c-ok"><i data-lucide="circle-check"></i><div>预检通过 · 新技能 <b>剧情转折点</b> <span class="mono muted">plot-twist</span> · 6 个文件</div></div>
+              <div class="card muted" style="font-size: 12px">（左侧文件树 + 右侧预览，沿用现有导入对话框，此处省略）</div></div>
+            <div class="modal-f note"><span class="muted" style="font-size: 12px">用在哪里</span>
+              ${SCOPES.map((x) => `<button class="tchip" aria-pressed="${S.importScopes.includes(x.key)}" onclick="toggleImportScope('${x.key}')">${S.importScopes.includes(x.key) ? '<i data-lucide="check"></i>' : ""}${esc(x.short)}</button>`).join("")}
+              <span class="spacer"></span><button class="pill" onclick="S.modal=null; render()">取消</button><button class="pill solid" id="cfm" onclick="confirmImport()">确认导入</button></div>
+            <div class="note-txt" style="padding: 0 18px 12px">只在「新技能」时出现，默认全不选；导入新版本时这一组不出现（新版本不自动生效，范围沿用技能现有设置）。</div></div></div>`;
+        }
+        return "";
+      }
+
+      function render() {
+        $("#addr").textContent = S.page === "list" ? "admin / AI 配置 / 技能" : `admin / AI 配置 / 技能 / ${S.sel}`;
+        $("#proto").innerHTML = `<div class="pt">${side()}${S.page === "list" ? listView() : detailView()}</div>${modalView()}`;
+        icons();
+      }
+      function openSkill(n) { Object.assign(S, { page: "detail", sel: n, tab: "files", fileIdx: 0, menu: false, descOpen: false }); render(); }
+      function back() { Object.assign(S, { page: "list", menu: false }); render(); }
+      function rename() {
+        const s = find(S.sel), v = prompt("显示名（示意：真实实现是原地输入框，Enter 保存）", s.title);
+        if (v && v.trim()) { s.title = v.trim().slice(0, 64); showToast("已修改显示名"); render(); }
+      }
+      function activate(v) {
+        const s = find(S.sel), prev = s.active;
+        s.active = v; render();
+        showToast(`已将 v${v} 设为生效`, "ok", { label: "撤销", run: () => { s.active = prev; showToast("已撤销"); render(); } });
+      }
+      function askDelete() { S.menu = false; S.modal = "delete"; render(); }
+      function doDelete() {
+        const s = find(S.sel);
+        S.skills = S.skills.filter((x) => x !== s);
+        Object.assign(S, { modal: null, page: "list" });
+        showToast(`已删除「${s.title}」`); render();
+      }
+      function openImport() { S.importScopes = []; S.modal = "import"; render(); }
+      function toggleImportScope(k) {
+        S.importScopes = S.importScopes.includes(k) ? S.importScopes.filter((x) => x !== k) : [...S.importScopes, k];
+        render();
+      }
+      function confirmImport() {
+        const btn = $("#cfm"); btn.disabled = true; btn.textContent = "导入中…";
+        setTimeout(() => {
+          const sc = S.importScopes;
+          S.skills.unshift(mk({ name: "plot-twist", title: "剧情转折点", desc: "在分集规划里标出每集的反转与悬念点。", agent: sc.includes("agent"), steps: sc.filter((k) => k !== "agent"), files: 6, kb: 18.7, updated: "刚刚" }));
+          Object.assign(S, { modal: null, page: "list", filter: "all", fresh: "plot-twist" });
+          showToast(sc.length ? `已导入「剧情转折点」，用在 ${sc.length} 处` : "已导入「剧情转折点」，暂未使用");
+          render();
+          setTimeout(() => (S.fresh = null), 2500);
+        }, 700);
+      }
+      render();
+      icons();
+    </script>
+  </body>
+</html>

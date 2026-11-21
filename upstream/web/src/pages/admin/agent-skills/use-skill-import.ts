@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { confirmImport, discardImport, importSkill } from "@/api/admin/agent-skill";
-import type { SkillImportView, SkillItem } from "@/api/admin/agent-skill/type.d";
+import type { DramaStepKey, SkillImportView, SkillItem } from "@/api/admin/agent-skill/type.d";
+import type { SkillScopeKey } from "@/utils/admin/agent-skill";
 import { errorMessage } from "@/utils/admin/errors";
 import {
   confirmFailureNotice,
@@ -22,6 +23,8 @@ export type ImportedResult = {
   item: SkillItem;
   /** 确认前的预检结果（用来写“新技能 / 新版本”的 toast） */
   view: SkillImportView;
+  /** 新技能确认时打开的场景数；新版本为 0 */
+  scopeCount: number;
 };
 
 /** 上传界面上显示的名字：单个文件用文件名，文件夹用外层目录名 */
@@ -46,6 +49,13 @@ export function useSkillImport(onImported: (result: ImportedResult) => void) {
   /** 请求序号：取消或重选之后，旧请求返回的结果直接丢掉 */
   const ticket = useRef(0);
   const controller = useRef<AbortController | null>(null);
+  /** 第 2 步勾选的使用场景：只对新技能生效，默认都不勾 */
+  const [scopes, setScopesState] = useState<SkillScopeKey[]>([]);
+  const scopesRef = useRef<SkillScopeKey[]>([]);
+  const setScopes = useCallback((next: SkillScopeKey[]) => {
+    scopesRef.current = next;
+    setScopesState(next);
+  }, []);
   const onImportedRef = useRef(onImported);
   useEffect(() => {
     onImportedRef.current = onImported;
@@ -132,10 +142,19 @@ export function useSkillImport(onImported: (result: ImportedResult) => void) {
     if (current.step !== "review" || current.confirming || !current.view.can_confirm) return;
     const view = current.view;
     dispatch({ type: "confirm" });
+    const picked = view.plan.action === "create" ? scopesRef.current : [];
     try {
-      const item = await confirmImport(view.id);
+      const item = await confirmImport(
+        view.id,
+        view.plan.action === "create"
+          ? {
+              enabled: picked.includes("agent"),
+              drama_steps: picked.filter((s): s is DramaStepKey => s !== "agent"),
+            }
+          : undefined,
+      );
       // 成功后不改状态：对话框正在退出，内容保持原样，退出动画播完由页面调 reset
-      onImportedRef.current({ item, view });
+      onImportedRef.current({ item, view, scopeCount: picked.length });
     } catch (error) {
       dispatch({ type: "confirmFailed", message: confirmFailureNotice(error) });
     }
@@ -155,7 +174,10 @@ export function useSkillImport(onImported: (result: ImportedResult) => void) {
   }, [discardStaged]);
 
   /** 回到初始状态：对话框退出动画播完后，或再次打开之前调用 */
-  const reset = useCallback(() => dispatch({ type: "reset" }), [dispatch]);
+  const reset = useCallback(() => {
+    setScopes([]);
+    dispatch({ type: "reset" });
+  }, [dispatch, setScopes]);
 
-  return { state, begin, cancel, reselect, confirm, close, reset };
+  return { state, scopes, setScopes, begin, cancel, reselect, confirm, close, reset };
 }

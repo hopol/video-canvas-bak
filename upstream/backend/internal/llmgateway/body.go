@@ -3,10 +3,27 @@ package llmgateway
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
-// chatEndpoint 是请求路径：与 newapi 插件一致，渠道的 base_url 不含 /v1。
-const chatEndpoint = "/v1/chat/completions"
+// chatEndpoint 是 OpenAI 格式请求路径里版本段之后的部分；版本段默认 /v1（渠道的 base_url 不含 /v1），可由 Target.PathPrefix 改。
+const chatEndpoint = "/chat/completions"
+
+// defaultPathPrefix 是没配路径前缀时的版本段。
+const defaultPathPrefix = "/v1"
+
+// normalizePathPrefix 整理路径前缀：空白等于默认 /v1；"/" 表示不加前缀（返回空串）；缺前导斜杠补上，末尾斜杠去掉。
+func normalizePathPrefix(prefix string) string {
+	p := strings.TrimSpace(prefix)
+	if p == "" {
+		return defaultPathPrefix
+	}
+	p = strings.TrimRight(p, "/")
+	if p != "" && !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
 
 // BuildBody 生成翻译前的请求体：流式并带用量；用于网关出站和媒体脱敏留存。
 // 视频用宿主内部分段表示，仅 Gemini 翻译支持，不能发给 OpenAI 渠道。

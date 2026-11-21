@@ -36,13 +36,13 @@ export const DRAMA_ERR = {
   promptNotFound: 67016,
   /** 提示词正文为空、超长或名称重复（Msg 写具体原因） */
   promptInvalid: 67017,
-  /** 技能不可用（未启用或没标这个环节） */
+  /** 技能不可用（后台没打开这个环节，或没有生效版本） */
   skillUnavailable: 67018,
   /** 当前阶段不允许这个操作（规划中增删集、暂停 / 继续状态不对等） */
   phaseNotAllowed: 67019,
   /** 单集对应原文过长（兜底） */
   unitTooLong: 67020,
-  /** 模型上下文不足（低于 128k 或装不下一个单元） */
+  /** 模型上下文不足：装不下原文里最长的一章（Msg 点名那一章），或运行时提示词超出额度 */
   contextTooSmall: 67022,
   /** 不支持转写为这种格式 */
   adaptFormat: 67023,
@@ -80,7 +80,7 @@ const FALLBACK: Record<number, string> = {
   [DRAMA_ERR.skillUnavailable]: "这个技能当前不可用，请换一个",
   [DRAMA_ERR.phaseNotAllowed]: "当前阶段不能进行这个操作",
   [DRAMA_ERR.unitTooLong]: "这一集对应的原文过长",
-  [DRAMA_ERR.contextTooSmall]: "模型上下文不足（低于 128k），请换一个模型",
+  [DRAMA_ERR.contextTooSmall]: "模型上下文不足，装不下原文，请换上下文更大的模型",
   [DRAMA_ERR.adaptFormat]: "不支持转写为这种格式",
   [DRAMA_ERR.adaptEmpty]: "原稿是空的，先写好原稿再转写",
   [DRAMA_ERR.adaptBusy]: "这个片段正在转写，请稍候",
@@ -107,6 +107,7 @@ const MSG_FIRST = new Set<number>([
   DRAMA_ERR.sourceInvalid,
   DRAMA_ERR.stepNotReady,
   DRAMA_ERR.promptInvalid,
+  DRAMA_ERR.contextTooSmall,
 ]);
 
 /**

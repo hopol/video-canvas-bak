@@ -10,7 +10,8 @@
  *
  * 渠道怎么填：
  *   - Key  ：OpenAI 的 API Key（sk-...），由宿主按 Bearer 注入；
- *   - base_url：官方填 https://api.openai.com（路径里已带 /v1，base_url 不要再写 /v1）；兼容中转站填它的根地址。
+ *   - base_url：官方填 https://api.openai.com（路径里已带 /v1，base_url 不要再写 /v1）；兼容中转站填它的根地址；
+ *   - 设置 pathPrefix：接口路径的版本前缀，默认 /v1；上游不是 /v1（如火山方舟 /api/v3）时改这里，不带版本段填 /。
  *
  * 写法说明：goja 只保证 ES5.1 + 部分 ES6，所以这里用 var / function，不用可选链与空值合并。
  * 插件没有网络与文件能力，只把任务翻译成请求描述、把响应翻译成统一结果。
@@ -44,12 +45,20 @@ module.exports = {
     apiVersion: 1,
     key: "openai-image",
     name: "OpenAI · 图片",
-    version: "1.2.0",
+    version: "1.3.0",
     vendor: "openai",
     description: "对接 OpenAI Images API：文生图与图片编辑（同步，支持 URL 与 base64 图片）",
     auth: { type: "bearer" },
     endpoints: {
       image: { mode: "sync", method: "POST", path: "/v1/images/generations" },
+    },
+    channelSettings: {
+      pathPrefix: {
+        type: "string",
+        label: "接口路径前缀",
+        description: "接口路径里版本段的前缀，默认 /v1；上游是 /v4、/api/v3 之类时改成对应值；上游路径不带版本段就填 /",
+        default: "/v1",
+      },
     },
   },
 
@@ -78,11 +87,11 @@ module.exports = {
   },
 
   buildCheckRequest: function (ctx) {
-    return { method: "GET", path: "/v1/models", timeout: 15 };
+    return { method: "GET", path: apiPath(ctx, "/models"), timeout: 15 };
   },
 
   buildImportRequest: function (ctx, args) {
-    return { method: "GET", path: "/v1/models", timeout: 30 };
+    return { method: "GET", path: apiPath(ctx, "/models"), timeout: 30 };
   },
 
   // 只导入图片类模型（dall-e- / gpt-image- / chatgpt-image-）。
@@ -103,6 +112,21 @@ module.exports = {
 // ---------------------------------------------------------------------------
 // 请求
 // ---------------------------------------------------------------------------
+
+// 接口路径 = 渠道设置 pathPrefix + 后半段（如 /images/generations）。
+// 前缀没填或只有空白按默认 /v1；"/" 表示不加前缀；缺前导斜杠会补上，末尾斜杠会去掉。
+function apiPath(ctx, rest) {
+  var settings = ctx.channel && ctx.channel.settings ? ctx.channel.settings : {};
+  var prefix = typeof settings.pathPrefix === "string" ? settings.pathPrefix.replace(/^\s+|\s+$/g, "") : "";
+  if (prefix === "") {
+    prefix = "/v1";
+  }
+  prefix = prefix.replace(/\/+$/, "");
+  if (prefix !== "" && prefix.charAt(0) !== "/") {
+    prefix = "/" + prefix;
+  }
+  return prefix + rest;
+}
 
 // 各系列允许的 size；aspect_ratio 换算时从这里选最接近的。未知模型借用 gpt 的三档。
 var SIZES = {
@@ -153,7 +177,7 @@ function buildGenerateRequest(ctx) {
   if (series === "dalle2" || series === "dalle3") {
     body.response_format = "url"; // gpt-image 系发这个字段官方会 400，所以只对 dall-e 发
   }
-  return { method: "POST", path: "/v1/images/generations", json: body, responseType: "image_json", timeout: 120 };
+  return { method: "POST", path: apiPath(ctx, "/images/generations"), json: body, responseType: "image_json", timeout: 120 };
 }
 
 function buildEditRequest(ctx) {
@@ -193,7 +217,7 @@ function buildEditRequest(ctx) {
   for (var i = 0; i < images.length; i++) {
     parts.push({ name: partName, fileRef: images[i] });
   }
-  return { method: "POST", path: "/v1/images/edits", multipart: { fields: fields, parts: parts }, responseType: "image_json", timeout: 120 };
+  return { method: "POST", path: apiPath(ctx, "/images/edits"), multipart: { fields: fields, parts: parts }, responseType: "image_json", timeout: 120 };
 }
 
 function requirePrompt(input, model) {

@@ -26,6 +26,7 @@ export function useCanvasPersistence({
   onConflict,
   autoMerge,
   onSaved,
+  readOnly = false,
 }: {
   canvasId: string;
   initialVersion: number;
@@ -37,6 +38,11 @@ export function useCanvasPersistence({
   autoMerge?: () => Promise<number | null>;
   /** 一次保存成功：这份图谱就是服务端在该版本的内容 */
   onSaved?: (graph: CanvasGraphDto, version: number) => void;
+  /**
+   * 只读预览：这条链路一点都不写——不写草稿、不上传云端、不写视口（视口在画布页处理）。
+   * 草稿按 user + canvas 一份，只读标签页写它就是把另一个标签页正在编辑的内容覆盖掉。
+   */
+  readOnly?: boolean;
 }) {
   const [status, setStatus] = useState<SaveStatus>("saved");
   /** 保存撞上 409 时拉回来的最新画布；非空期间不再自动上传 */
@@ -99,15 +105,20 @@ export function useCanvasPersistence({
   });
 
   /** 内容有改动：只标脏并排期，真正写草稿和发请求在各自的停手窗口之后 */
-  const changed = useCallback(() => coordinator.changed(), [coordinator]);
+  const changed = useCallback(() => {
+    if (readOnly) return;
+    coordinator.changed();
+  }, [coordinator, readOnly]);
 
   /**
    * 立即保存：先写草稿，再等在途请求落地后上传，返回保存后云端是否没有未保存内容。
    * 手动保存、点重试、离开画布前用；失败或有冲突时返回 false。
+   * 只读时没有要保存的东西，直接当已保存。
    */
   const flush = useCallback(
-    (options?: { keepalive?: boolean }) => coordinator.flush(options),
-    [coordinator],
+    (options?: { keepalive?: boolean }) =>
+      readOnly ? Promise.resolve(true) : coordinator.flush(options),
+    [coordinator, readOnly],
   );
 
   /** 用户选了「加载最新」或「另存为」之后：把冲突态清掉，本地未保存的内容不再提交 */
@@ -122,6 +133,7 @@ export function useCanvasPersistence({
    */
   const rename = useCallback(
     async (title: string) => {
+      if (readOnly) return false;
       if (coordinator.conflicted) return false;
       try {
         const saved = await coordinator.exclusive(() =>
@@ -142,10 +154,13 @@ export function useCanvasPersistence({
         coordinator.reschedule();
       }
     },
-    [canvasId, coordinator],
+    [canvasId, coordinator, readOnly],
   );
 
+  // 只读时不注册这些监听：没有要保存的东西，也不该在这个时候写草稿。
+  // 从可编辑切成只读时，下面这轮的清理会先跑一次 flush，把那之前的改动尝试存掉——正是让位前想做的事
   useEffect(() => {
+    if (readOnly) return;
     coordinator.setActive(true);
     const leaving = () => void coordinator.flush({ keepalive: true });
     const onVisibility = () => {
@@ -176,7 +191,7 @@ export function useCanvasPersistence({
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("online", onOnline);
     };
-  }, [coordinator]);
+  }, [coordinator, readOnly]);
 
   /** 当前的服务端版本号（保存和合并都会推进它） */
   const getVersion = useCallback(() => coordinator.version, [coordinator]);

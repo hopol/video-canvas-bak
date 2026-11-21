@@ -28,27 +28,36 @@ type NodePlaceholderBodyProps = {
   label: string;
   /** 占位画幅 */
   aspect?: number;
+  /** 图标下面的操作（空节点的上传 / 素材库）；不给就只有图标 */
+  actions?: ReactNode;
 };
 
 /**
- * 还没产出东西时的正文：一个撑满宽度的占位框，中间搁个图标。
+ * 还没产出东西时的正文：一个撑满宽度的占位框，中间搁个图标，有操作时摆在图标下面。
  * 各种节点共用同一副画幅，卡片高度才对得齐。
  */
 export function NodePlaceholderBody({
   icon,
   label,
   aspect = NODE_PREVIEW_ASPECT,
+  actions,
 }: NodePlaceholderBodyProps) {
   return (
     <BaseNodeContent>
       <div
-        className="text-muted-foreground/45 flex w-full flex-col items-center justify-center gap-2.5 rounded-[inherit]"
+        className="flex w-full flex-col items-center justify-center gap-2.5 rounded-[inherit]"
         style={{ aspectRatio: aspect }}
-        role="img"
-        aria-label={label}
       >
-        {icon}
-        <span className="text-muted-foreground/70 text-xs">{label}</span>
+        {/* 图标和说明是一张「图」，操作按钮放在它外面，读屏能单独聚焦 */}
+        <div
+          className="text-muted-foreground/45 flex flex-col items-center gap-2.5"
+          role="img"
+          aria-label={label}
+        >
+          {icon}
+          <span className="text-muted-foreground/70 text-xs">{label}</span>
+        </div>
+        {actions}
       </div>
     </BaseNodeContent>
   );

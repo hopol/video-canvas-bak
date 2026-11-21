@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Loader2 } from "lucide-react";
 
+import { DialogSession } from "@/components/dialog-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -38,10 +39,10 @@ export function FolderNameDialog({
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="sm:max-w-sm">
-        {/* 打开时才挂载表单，初始值每次都取最新名称，不用在 effect 里同步 */}
-        {open && (
+        {/* 每次打开重新挂载表单，初始值取最新名称，不用在 effect 里同步；关闭时留给退出动画 */}
+        <DialogSession open={open}>
           <FolderNameForm mode={mode} initial={initial} onClose={onClose} onSubmit={onSubmit} />
-        )}
+        </DialogSession>
       </DialogContent>
     </Dialog>
   );

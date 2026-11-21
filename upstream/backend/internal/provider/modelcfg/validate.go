@@ -19,6 +19,7 @@ var (
 	channelKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	pluginKeyRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,29}$`)
 	semverRe     = regexp.MustCompile(`^[0-9]+.[0-9]+.[0-9]+(-[0-9A-Za-z.-]+)?$`)
+	pathPrefixRe = regexp.MustCompile(`^[A-Za-z0-9._~/-]+$`)
 )
 
 const (
@@ -30,6 +31,8 @@ const (
 	maxIdleTimeout = 10 * time.Minute
 	// maxUpstreamModelLen 是上游模型名的最大字符数。
 	maxUpstreamModelLen = 128
+	// maxPathPrefixLen 是接口路径前缀的最大字符数。
+	maxPathPrefixLen = 128
 	// maxChannels 是首期每个模型允许绑定的渠道数。数据结构是数组，预留多渠道，但首期只接受一个。
 	maxChannels = 1
 	// maxHintLen 是模型描述的最大字符数。
@@ -199,6 +202,25 @@ func validateChannels(kind string, list []ChannelRef, add func(path, msg string)
 		case kind == KindAgent && c.Format() != APIFormatOpenAI && c.Format() != APIFormatGemini:
 			add(base+".api_format", "接口格式只能是 openai 或 gemini")
 		}
+		validatePathPrefix(kind, c, base+".path_prefix", add)
+	}
+}
+
+// validatePathPrefix 校验 Agent 模型的接口路径前缀：只有 OpenAI 兼容格式的 Agent 模型能填
+// （其他种类的版本段在协议设置 pathPrefix 里填，Gemini 的路径固定）；只允许路径安全字符，不能有 // 或 .. 。
+func validatePathPrefix(kind string, c ChannelRef, path string, add func(path, msg string)) {
+	if c.PathPrefix == "" {
+		return
+	}
+	switch {
+	case kind != KindAgent:
+		add(path, "只有 Agent 模型可以设置接口路径前缀；其他模型在所选协议的设置里填")
+	case c.Format() != APIFormatOpenAI:
+		add(path, "只有 OpenAI 兼容格式可以设置接口路径前缀，Gemini 格式的路径固定")
+	case utf8.RuneCountInString(c.PathPrefix) > maxPathPrefixLen:
+		add(path, fmt.Sprintf("不能超过 %d 个字符", maxPathPrefixLen))
+	case !pathPrefixRe.MatchString(c.PathPrefix) || strings.Contains(c.PathPrefix, "//") || strings.Contains(c.PathPrefix, ".."):
+		add(path, "只能包含字母、数字和 . _ ~ - /，且不能出现 // 或 ..")
 	}
 }
 

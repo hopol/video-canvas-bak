@@ -34,16 +34,27 @@ var builtinStyles = loadStyles()
 
 // promptTemplates 只在包初始化读取一次，避免每次任务复制整个嵌入模板。
 var promptTemplates = map[string]string{
-	"analyze":       loadPrompt("analyze"),
-	"outline":       loadPrompt("plan"),
-	"plan":          loadPrompt("plan"),
-	"scripts":       loadPrompt("scripts"),
-	"breakdown":     loadPrompt("breakdown"),
-	"asset_prompts": loadPrompt("asset_prompts"),
-	"storyboard":    loadPrompt("storyboard"),
+	"analyze": loadPrompt("analyze"),
+	// 分集规划：plan 是创作段（纯文本分集目录），plan_format 是格式段（episodes JSON）；outline 与 plan 共用创作段
+	"outline":     loadPrompt("plan_draft"),
+	"plan":        loadPrompt("plan_draft"),
+	"plan_format": loadPrompt("plan_format"),
+	// 无后缀的是创作段：用户正文只替换它的正文，输出纯文本，写法（含内置剧本格式、分栏写法）都在内置正文里。
+	// _format 是系统固定的格式段，只把创作稿装进代码要读的 JSON 字段，不规定写法。
+	// 剧本没有格式段：代码只要整段文本，创作稿原样就是本集剧本。
+	"scripts":              loadPrompt("scripts_draft"),
+	"breakdown":            loadPrompt("breakdown_draft"),
+	"breakdown_format":     loadPrompt("breakdown_format"),
+	"asset_prompts":        loadPrompt("asset_prompts_draft"),
+	"asset_prompts_format": loadPrompt("asset_prompts_format"),
+	// 分镜两段：storyboard 是创作段（内置正文是即梦 / Seedance 分栏写法），storyboard_format 切段并输出 segments JSON
+	"storyboard":        loadPrompt("storyboard_draft"),
+	"storyboard_format": loadPrompt("storyboard_format"),
 	// 片场把 Seedance 原稿转写成其他平台写法；输入是单个片段，输出只有 prompt
 	"adapt_h3":      loadPrompt("adapt_h3"),
 	"adapt_generic": loadPrompt("adapt_generic"),
+	// 故事板宫格图：不经过文本模型，前端把片段原稿填进占位符后直接交给图片模型
+	"board": loadPrompt("board"),
 }
 
 // PromptFormat 取值：视频模型能力里的 prompt_format，空串或未知值都按通用处理。
@@ -104,12 +115,8 @@ func PromptWithBody(step string, variables any, body string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("不支持的短剧提示词步骤：%s", step)
 	}
-	if body != "" {
-		start := strings.Index(template, "## 提示词正文\n")
-		end := strings.Index(template, "## 输出 JSON Schema")
-		if start >= 0 && end > start {
-			template = template[:start] + "## 提示词正文\n\n" + body + "\n\n" + template[end:]
-		}
+	if start, end, ok := promptSection(template); ok && body != "" {
+		template = template[:start] + "## 提示词正文\n\n" + body + "\n\n" + template[end:]
 	}
 	data, err := json.Marshal(variables)
 	if err != nil {
@@ -126,12 +133,26 @@ func PromptWithBody(step string, variables any, body string) (string, error) {
 	return prompt.String(), nil
 }
 
+// promptSection 返回「提示词正文」整段的起止（起点是标题，终点是下一个二级标题），正文可以替换的范围都在这里。
+func promptSection(template string) (start, end int, ok bool) {
+	const heading = "## 提示词正文\n"
+	start = strings.Index(template, heading)
+	if start < 0 {
+		return 0, 0, false
+	}
+	bodyStart := start + len(heading)
+	next := strings.Index(template[bodyStart:], "\n## ")
+	if next < 0 {
+		return 0, 0, false
+	}
+	return start, bodyStart + next + 1, true
+}
+
 // PromptBody 返回可编辑的内置正文，不暴露协议。
 func PromptBody(step string) string {
 	template := promptTemplates[step]
-	start := strings.Index(template, "## 提示词正文\n")
-	end := strings.Index(template, "## 输出 JSON Schema")
-	if start < 0 || end <= start {
+	start, end, ok := promptSection(template)
+	if !ok {
 		return ""
 	}
 	return strings.TrimSpace(template[start+len("## 提示词正文\n") : end])
@@ -139,5 +160,5 @@ func PromptBody(step string) string {
 
 // SkillBlock 只注入写作方法，技能脚本不执行，正文最多一万六千字。
 func SkillBlock(title, body string) string {
-	return "【写作方法：" + title + "】\n以下是本步骤必须遵循的方法与标准，按它决定取舍、粒度与写法。输出仍只能是下方 JSON 结构，方法与结构冲突时以结构为准，方法里要求的其他输出格式一律不输出。\n<skill>\n" + Clip(body, 16000) + "\n</skill>"
+	return "【写作方法：" + title + "】\n以下是本步骤必须遵循的方法与标准，按它决定取舍、粒度与写法。输出格式以下方本步骤的输出约定或 JSON 结构为准，方法与之冲突时以约定为准，方法里要求的其他输出格式一律不输出。\n<skill>\n" + Clip(body, 16000) + "\n</skill>"
 }

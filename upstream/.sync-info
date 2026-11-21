@@ -1,5 +1,5 @@
-commit=4f0761c2b9adeb666a6121378150f6eb66570333
-timestamp=2026-11-16T09:06:27Z
+commit=4277d16f40457664e27a89efabac14d07c1d73e8
+timestamp=2026-11-21T09:19:06Z
 upstream_url=https://github.com/zaylora/video-canvas
 upstream_branch=master
-source_ref=v0.6.13
+source_ref=v0.7.1-1-g4277d16f

@@ -1,21 +1,11 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { motion } from "motion/react";
-import { ArrowUp, ChevronDown, Loader2, Maximize2, Sparkle } from "lucide-react";
+import { ArrowUp, Loader2, Maximize2, Sparkle } from "lucide-react";
 
-import { VendorAvatar } from "@/components/admin-ui/vendor-avatar";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { TAP } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { ModelMenu } from "./model-menu";
 import { canvasDialogGuards } from "@/utils/canvas/dialog-guards";
 import { promptPresets, promptTextLength } from "@/utils/canvas/prompt-tokens";
 
@@ -202,56 +192,14 @@ function PromptFooter({
       )}
 
       <div className="flex min-w-0 items-center gap-2">
-        <DropdownMenu modal={false}>
-          <DropdownMenuTrigger
-            className={cn(PANEL_CHIP_CLASS, modelInvalid && "text-destructive")}
-            aria-label="选择模型"
-          >
-            <span className="min-w-0 truncate">{modelLabel ?? model?.label ?? "加载模型…"}</span>
-            <ChevronDown className="opacity-50" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-72" align="start" sideOffset={8}>
-            <DropdownMenuGroup>
-              {/* GroupLabel 必须待在 Group 里，否则 Base UI 会抛 MenuGroupContext 缺失 */}
-              <DropdownMenuLabel>选择模型</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuRadioGroup
-                value={model?.id ?? ""}
-                onValueChange={(next) => onModelChange(next as string)}
-              >
-                {models.map((item) => (
-                  <DropdownMenuRadioItem key={item.id} value={item.id}>
-                    <VendorAvatar
-                      vendor={item.vendor}
-                      name={item.label}
-                      seed={item.id}
-                      className="size-7 rounded-md text-xs"
-                    />
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate">{item.label}</span>
-                        {item.tags?.map((tag) => (
-                          <span
-                            key={tag}
-                            className="bg-muted text-muted-foreground shrink-0 rounded px-1 py-px text-[10px] leading-4"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </span>
-                      {item.hint && (
-                        <span className="text-muted-foreground truncate text-xs">{item.hint}</span>
-                      )}
-                    </span>
-                    <span className="text-muted-foreground ml-auto text-xs">
-                      {item.priceLabel ?? `${item.credits} 积分`}
-                    </span>
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <ModelMenu
+          models={models}
+          model={model}
+          onModelChange={onModelChange}
+          label={modelLabel}
+          invalid={modelInvalid}
+          className={PANEL_CHIP_CLASS}
+        />
 
         {toolbarExtra}
 

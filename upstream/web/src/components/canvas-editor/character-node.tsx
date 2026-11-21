@@ -25,13 +25,22 @@ import type { CanvasNode, CanvasNodeData } from "@/types";
 import { shouldRecordAspect } from "@/utils/canvas/media-aspect";
 import { showVersionBadge } from "@/utils/canvas/versions";
 import { nodeFrameSize, paramAspect } from "@/utils/canvas/node-frame";
-import { applyPickedAssets, emptyCharacter, MAX_EXTRAS } from "@/utils/characters/node-character";
+import {
+  applyPickedAssets,
+  characterImageUploaded,
+  emptyCharacter,
+  MAX_EXTRAS,
+} from "@/utils/characters/node-character";
 import { characterNodeAspect, characterNodeView, voiceCell } from "@/utils/characters/node-view";
 import { lowestUnit } from "@/utils/pricing/quote";
 
 import { CharacterDetailDialog } from "./character-detail-dialog";
 import { useRegisterNodeActions } from "./node-actions";
-import { PROMPT_DIALOG_PANEL_CLASS, PromptEditDialog } from "./prompt-edit-dialog";
+import {
+  PROMPT_DIALOG_ACTION_CLASS,
+  PROMPT_DIALOG_PANEL_CLASS,
+  PromptEditDialog,
+} from "./prompt-edit-dialog";
 import { NodeOverlays, NodeOverlaysPresence } from "./node-overlays";
 import { useDragSelected } from "./overlay-gate";
 import { useMultiSelected } from "./selection-toolbar";
@@ -79,6 +88,7 @@ export function CharacterCanvasNode({
   useRegisterNodeActions(id, {
     blockedReason: () => vm.blockedReason,
     submit: () => vm.submit(),
+    setModel: vm.applyModel,
     voice: {
       blockedReason: () => voiceBlocked,
       submitAfterImage: submitWithVoice,
@@ -92,66 +102,74 @@ export function CharacterCanvasNode({
   };
   const multiSelected = useMultiSelected();
   const dragSelected = useDragSelected(id);
+  // 主图是用户自己上传 / 从素材库选的：没有提示词可改，不出生成面板（功能区照常）
+  const userImage = characterImageUploaded(data);
   return (
     <>
       <CharacterNodeBody id={id} data={data} vm={vm} voiceGen={voiceGen} />
       <NodeOverlaysPresence multiSelected={multiSelected}>
         {selected && !dragSelected && (
           <NodeOverlays key="overlays" id={id} data={data}>
-            {(width) => (
-              <TaskPromptPanel
-                vm={vm}
-                data={data}
-                kind="image"
-                nodeId={id}
-                width={width}
-                secondarySubmit={withVoice}
-              />
-            )}
+            {userImage
+              ? undefined
+              : (width) => (
+                  <TaskPromptPanel
+                    vm={vm}
+                    data={data}
+                    kind="image"
+                    nodeId={id}
+                    width={width}
+                    secondarySubmit={withVoice}
+                  />
+                )}
           </NodeOverlays>
         )}
       </NodeOverlaysPresence>
-      <PromptEditDialog
-        id={id}
-        title={data.label}
-        actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              usePromptEditor.getState().close();
-              useCharacterDetail.getState().open(id);
-            }}
-          >
-            <AudioLines />
-            角色详情与音色
-          </Button>
-        }
-      >
-        {(width) => (
-          <TaskPromptPanel
-            vm={vm}
-            data={data}
-            kind="image"
-            nodeId={id}
-            width={width}
-            className={PROMPT_DIALOG_PANEL_CLASS}
-            secondarySubmit={withVoice}
-          />
-        )}
-      </PromptEditDialog>
+      {!userImage && (
+        <PromptEditDialog
+          id={id}
+          title={data.label}
+          actions={
+            <button
+              type="button"
+              className={PROMPT_DIALOG_ACTION_CLASS}
+              onClick={() => {
+                usePromptEditor.getState().close();
+                useCharacterDetail.getState().open(id);
+              }}
+            >
+              角色详情与音色
+            </button>
+          }
+        >
+          {(width) => (
+            <TaskPromptPanel
+              vm={vm}
+              data={data}
+              kind="image"
+              nodeId={id}
+              width={width}
+              className={PROMPT_DIALOG_PANEL_CLASS}
+              secondarySubmit={withVoice}
+            />
+          )}
+        </PromptEditDialog>
+      )}
     </>
   );
 }
 
-/** 声音格里的音频试听：圆形按钮，点一下播放 / 暂停（全站同一时刻只放一条） */
-function AudioCell({ asset, title }: { asset: AssetDto; title: string }) {
+/** 声音格里的音频试听：点一下播放 / 暂停（全站同一时刻只放一条）。绑了有名字的音色时，格子里直接写出名字。 */
+function AudioCell({ asset, name }: { asset: AssetDto; name?: string }) {
   const playing = useVoicePlaying(asset.id);
+  const label = name?.trim() ?? "";
   return (
     <button
       type="button"
-      title={title}
-      aria-label={playing ? "暂停试听" : "试听声音"}
+      title={label ? `${label}（点击试听 / 暂停）` : "点击试听 / 暂停"}
+      aria-label={
+        playing ? `暂停试听${label ? `：${label}` : ""}` : `试听声音${label ? `：${label}` : ""}`
+      }
       aria-pressed={playing}
       onClick={(event) => {
         event.stopPropagation();
@@ -159,10 +177,12 @@ function AudioCell({ asset, title }: { asset: AssetDto; title: string }) {
       }}
       onPointerDown={(event) => event.stopPropagation()}
       className={cn(
-        "focus-visible:ring-ring/60 bg-info/15 text-info grid size-9 shrink-0 place-items-center rounded-[10px] outline-none focus-visible:ring-2 [&_svg]:size-4",
+        "focus-visible:ring-ring/60 bg-info/15 text-info flex h-9 min-w-9 shrink-0 items-center gap-1.5 rounded-[10px] px-2 outline-none focus-visible:ring-2 [&_svg]:size-4 [&_svg]:shrink-0",
+        !label && "w-9 justify-center px-0",
       )}
     >
       {playing ? <Pause /> : <Play />}
+      {label && <span className="max-w-24 truncate text-[11px] leading-none">{label}</span>}
     </button>
   );
 }
@@ -223,6 +243,8 @@ function CharacterNodeBody({
   const badge = showVersionBadge(data);
 
   const showTask = SHOWS_TASK_BODY.has(vm.view.phase);
+  // 主图在传：节点上自己点的，或者从短剧资产列表 / 拖放传进来的（只记在节点的 uploadProgress 上）
+  const mainUploading = media.uploading === "main" || data.uploadProgress !== undefined;
   const extraFull = character.extras.length >= MAX_EXTRAS;
 
   return (
@@ -263,11 +285,11 @@ function CharacterNodeBody({
                 variant="secondary"
                 size="sm"
                 className="w-full max-w-40"
-                disabled={media.uploading === "main"}
+                disabled={mainUploading}
                 onClick={() => media.pickFile("image", "main")}
               >
                 <Upload />
-                {media.uploading === "main" ? "上传中…" : "上传"}
+                {mainUploading ? "上传中…" : "上传"}
               </Button>
               <Button
                 variant="secondary"
@@ -289,7 +311,7 @@ function CharacterNodeBody({
           {cell.kind === "audio" && character.voice ? (
             <AudioCell
               asset={{ id: character.voice.assetId, url: character.voice.src } as AssetDto}
-              title={cell.title}
+              name={character.voice.name}
             />
           ) : (
             <button

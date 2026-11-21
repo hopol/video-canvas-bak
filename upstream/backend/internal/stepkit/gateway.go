@@ -37,7 +37,7 @@ func (g *GatewayCaller) Complete(ctx context.Context, snap *provider.Snapshot, m
 	}
 	target := llmgateway.Target{
 		ChannelKey: snap.Channel.Key, BaseURL: snap.Channel.BaseURL, APIKey: key, Headers: snap.Channel.Headers,
-		UpstreamModel: snap.Model.UpstreamModel, Format: snap.Model.APIFormat,
+		UpstreamModel: snap.Model.UpstreamModel, Format: snap.Model.APIFormat, PathPrefix: snap.Model.PathPrefix,
 		RPS: snap.Channel.RateLimit.RPS, MaxConcurrency: snap.Channel.RateLimit.MaxConcurrency,
 		IdleTimeout: snap.Model.IdleTimeout.D(),
 	}

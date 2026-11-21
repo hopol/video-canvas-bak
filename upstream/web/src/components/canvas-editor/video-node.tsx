@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { RefStrip } from "@/components/canvas/ref-strip";
 import { FrameStage } from "@/components/canvas/frame-stage";
 import { TrimStage } from "@/components/canvas/trim-stage";
+import type { AssetDto } from "@/api/asset/type";
 import type { GenerationOp } from "@/api/model/type";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,7 +41,9 @@ import { useTrimStore } from "@/store/trim";
 import { useTaskGeneration } from "@/hooks/use-task-generation";
 import { useMediaAspect } from "@/hooks/use-media-aspect";
 import { useTaskNode } from "@/hooks/use-task-node";
+import { useFillUploadActions } from "@/hooks/use-fill-upload";
 import type { CanvasNode, CanvasNodeData, NodeKind } from "@/types";
+import { canFillNode } from "@/utils/canvas/fill-upload";
 import { canLinkFrom } from "@/utils/canvas/link-rule";
 import { shouldRecordAspect } from "@/utils/canvas/media-aspect";
 import { nodeFrameSize, paramAspect, resolveNodeAspect } from "@/utils/canvas/node-frame";
@@ -51,10 +54,13 @@ import {
   OP_LABEL,
   PORTS_OF_KIND,
   REF_KEYS,
+  acceptableRefKinds,
   manualRefs,
   opDisabledHint,
+  opToAcceptSource,
   openParams,
   paramSummary,
+  refKindsOf,
 } from "@/utils/tasks/capabilities";
 import type { VideoNodeView } from "@/utils/tasks/node-view";
 
@@ -62,6 +68,7 @@ import { VersionBadge } from "@/components/canvas/version-badge";
 import { showVersionBadge } from "@/utils/canvas/versions";
 
 import { useRegisterNodeActions } from "./node-actions";
+import { NodeFillActions } from "./node-fill-actions";
 import { PROMPT_DIALOG_PANEL_CLASS, PromptEditDialog } from "./prompt-edit-dialog";
 import { NodeOverlays, NodeOverlaysPresence } from "./node-overlays";
 import { useDragSelected } from "./overlay-gate";
@@ -195,6 +202,27 @@ export function TaskPromptPanel({
   const locked = vm.running || vm.submitting;
   const ops = vm.caps?.ops ?? [];
   const params = openParams(vm.caps);
+
+  // 音色库放在引用条的「+」里：模型只要支持参考音频就能选；当前方式不收音频时自动切到全能参考。
+  const supportsVoice = !!vm.caps && acceptableRefKinds(vm.caps).includes("audio");
+  const voiceOp =
+    supportsVoice && !refKindsOf(vm.caps, vm.op).includes("audio")
+      ? opToAcceptSource(vm.caps, vm.op, "audio")
+      : vm.op;
+  const officialVoice = supportsVoice
+    ? {
+        disabled: locked,
+        onPick: (asset: AssetDto) => {
+          if (voiceOp && voiceOp !== vm.op) vm.setOp(voiceOp);
+          vm.addRef("audios", asset.id, {
+            url: asset.url,
+            fileName: asset.fileName ?? "音色",
+            mediaType: asset.kind,
+          });
+        },
+      }
+    : undefined;
+
   const panelProps = vm.caps && {
     caps: vm.caps,
     op: vm.refOp,
@@ -289,6 +317,7 @@ export function TaskPromptPanel({
           onUnlink={vm.unlink}
           uploadKinds={vm.uploadKinds}
           onUpload={vm.addRef}
+          officialVoice={officialVoice}
           onRemoveManual={vm.removeRef}
           errors={REF_KEYS.flatMap((ref) => (vm.errors[ref.key] ? [vm.errors[ref.key]] : []))}
           notices={vm.bindings.notices}
@@ -326,6 +355,7 @@ function MediaTaskNode({
   useRegisterNodeActions(id, {
     blockedReason: () => vm.blockedReason,
     submit: () => vm.submit(),
+    setModel: vm.applyModel,
   });
 
   // 输入口随所选模型的 schema 增减；xyflow 只在节点挂载时量一次连接点，
@@ -413,6 +443,9 @@ function MediaTaskNode({
   }, [id, leaveFramePick, multiSelected, selected]);
 
   const badge = showVersionBadge(data);
+  // 空节点占位里给「上传」「素材库」，放进去后变成上传素材
+  const fillActions = useFillUploadActions();
+  const fillable = !!fillActions && canFillNode(data);
 
   return (
     <>
@@ -445,6 +478,9 @@ function MediaTaskNode({
             placeholder={`选中后输入提示词生成${meta?.label ?? ""}`}
             mediaType={mediaType}
             placeholderIcon={PlaceholderIcon ? <PlaceholderIcon className="size-10" /> : undefined}
+            placeholderActions={
+              fillable ? <NodeFillActions id={id} actions={fillActions} /> : undefined
+            }
             // 扩图在合成 / 上传的阶段还没有任务，没有可取消的东西（设计稿 6.17：本期不做）
             onCancel={!outpaintRunner.isActive(id) ? vm.cancel : undefined}
             cancelling={vm.cancelling}

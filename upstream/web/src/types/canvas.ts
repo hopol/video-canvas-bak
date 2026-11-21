@@ -102,6 +102,11 @@ export type CharacterVoice = {
   assetId: string;
   src: string;
   origin: "upload" | "generated" | "library";
+  /**
+   * 声音的名字（绑定那一刻从素材带过来，BytePlus 的「年龄 - 性别 - 」前缀已去掉）。
+   * 角色卡、素材条上直接显示它，让人一眼知道绑的是哪个音色；老数据没有这个字段，退回显示「声音」。
+   */
+  name?: string;
 };
 
 /**

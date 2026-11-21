@@ -64,7 +64,8 @@
 浮层、工具条、标签组、筛选 / 下拉按钮组等浮在内容上的控件，统一用画布工具条那套半透明外观，不用 `bg-card` / `bg-muted` 加 `border` 的实心卡片。
 
 - 优先直接用 `src/components/canvas/chrome/chrome.tsx` 的 `ChromePill`、`ChromeSeparator`、`ChromeButton`、`ChromeSegment`，不要自己再拼一套。
-- 需要自己写时，底用 `bg-chrome ring-1 ring-chrome-border shadow-lg backdrop-blur-xl backdrop-saturate-150`；胶囊用 `rounded-full`，面板用 `rounded-3xl`。
+- 需要自己写时，底用 `bg-chrome ring-1 ring-chrome-border shadow-lg backdrop-blur-xl backdrop-saturate-150`；胶囊用 `rounded-full`，面板（弹窗、浮窗、托盘）用 `rounded-2xl [corner-shape:squircle]`。
+- 圆角参考苹果：半径偏小，加 `[corner-shape:squircle]` 用连续曲率（不支持的浏览器自动退回普通圆角）。面板里再套的块按「同心」取圆角：内圆角 = 外圆角 − 内边距（16px 的托盘里离边 8px 的块用 `rounded-lg`）；按钮照旧用胶囊 `rounded-full`。
 - 选中态用 `bg-chrome-hover ring-1 ring-chrome-border rounded-full`（同 `ChromeSegment` 的滑块），悬停用 `hover:bg-chrome-hover`。
 - 面板里的输入框用 `bg-chrome-hover border-chrome-border rounded-full`，不用默认的实心输入框。
 - 间距宽松，不要挤：列表行高不低于 40px，面板四周留白不低于 16px。
@@ -82,6 +83,18 @@
 ### 6.3 弹窗：常驻挂载、限高滚动
 
 - 不要写 `{open && <XxxDialog open />}`：关闭时组件被直接卸载，退出动画放不出来，弹窗「一下就没了」。弹窗常驻挂载，用 `open={open}` 控制开关。
+- 弹窗里的正文也不要写 `{open && <Body />}`（`DialogContent` 外面包 `open &&` 同理）：一关就把正文卸掉，只剩空壳做动画。正文用 `components/dialog-session.tsx` 的 `DialogSession` 包住：关闭时留到退出动画播完，每次打开重新挂载、状态从头开始。`tests/components/dialog-session.test.tsx` 会扫源码拦住这两种写法。
+
+  ```tsx
+  <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent>
+      <DialogSession open={open}>
+        <Body onClose={() => onOpenChange(false)} />
+      </DialogSession>
+    </DialogContent>
+  </Dialog>
+  ```
+
 - 表单类弹窗要在每次打开时重新取数据：在打开的事件里递增一个计数当 `key`（见 `pages/marketing/detail/index.tsx` 的 `factsSession`）。不要把会在保存后变化的值（如 `revision`）当 `key`，否则关闭动画途中会被重挂打断。
 - 内容可能变长的弹窗（多个文本框、列表）必须限高：`DialogContent` 加 `flex max-h-[min(88svh,…px)] flex-col`，标题和底部按钮之间的内容区加 `min-h-0 flex-1 overflow-y-auto`。`Textarea` 默认随内容长高，弹窗里的要加 `max-h-36 overflow-y-auto` 之类的上限，免得把弹窗撑出屏幕、挡住标题和按钮。
 

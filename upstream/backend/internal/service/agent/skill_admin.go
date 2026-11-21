@@ -22,8 +22,8 @@ type SkillPage struct {
 }
 
 // List 返回管理页列表（分页）：内置技能（只读，永远启用）加导入技能。
-// q 在名字、显示名、说明里做不区分大小写的包含匹配；status 为 enabled / disabled 时按启停过滤，
-// builtin 只要内置技能，空取全部。
+// q 在名字、显示名、说明里做不区分大小写的包含匹配；status 按使用场景过滤：agent 开着画布 Agent，
+// drama 开着任一短剧环节，unused 是哪里都没用的导入技能，builtin 只要内置技能，空取全部。
 func (s *SkillService) List(ctx context.Context, req *model.ListSkillReq) (*SkillPage, error) {
 	// 1. 导入技能：三次查询（技能、生效版本头、版本号）凑齐一页，避免逐个技能查
 	list, err := s.repo.ListSkills(ctx)
@@ -53,10 +53,12 @@ func (s *SkillService) List(ctx context.Context, req *model.ListSkillReq) (*Skil
 			return false
 		}
 		switch req.Status {
-		case "enabled":
+		case "agent", "enabled": // enabled、disabled 是旧取值，兼容一个版本
 			return it.Enabled
-		case "disabled":
-			return !it.Enabled
+		case "drama":
+			return len(it.DramaSteps) > 0
+		case "unused", "disabled":
+			return it.Source == SkillSourceImported && !it.InUse
 		case "builtin":
 			return it.Source == SkillSourceBuiltin
 		}
@@ -66,13 +68,18 @@ func (s *SkillService) List(ctx context.Context, req *model.ListSkillReq) (*Skil
 }
 
 func builtinItem(b skills.Brief) SkillItem {
-	return SkillItem{DramaSteps: []string{}, Name: b.Name, Title: b.Title, Description: b.Description, Source: SkillSourceBuiltin, Readonly: true, Enabled: true, UnsupportedFields: []string{}}
+	return SkillItem{DramaSteps: []string{}, InUse: true, Name: b.Name, Title: b.Title, Description: b.Description, Source: SkillSourceBuiltin, Readonly: true, Enabled: true, UnsupportedFields: []string{}}
+}
+
+// skillInUse 表示技能开着画布 Agent 或任一短剧环节。
+func skillInUse(sk *model.AgentSkill) bool {
+	return sk.Enabled || len(sk.DramaSteps) > 0
 }
 
 // importedItem 由技能行、生效版本头和全部 ready 版本号组装列表项；生效版本缺失（不应出现）时字段留零值。
 func importedItem(sk *model.AgentSkill, active *model.AgentSkillVersion, versions []int) SkillItem {
 	it := SkillItem{
-		DramaSteps: append([]string{}, sk.DramaSteps...), Name: sk.Name, Title: sk.Title, Source: SkillSourceImported, Enabled: sk.Enabled,
+		DramaSteps: append([]string{}, sk.DramaSteps...), InUse: skillInUse(sk), Name: sk.Name, Title: sk.Title, Source: SkillSourceImported, Enabled: sk.Enabled,
 		ActiveVersion: sk.ActiveVersion, LatestVersion: sk.LatestVersion, VersionCount: len(versions),
 		UnsupportedFields: []string{}, UpdatedAt: sk.UpdatedAt,
 	}
@@ -258,13 +265,7 @@ func (s *SkillService) SetEnabled(ctx context.Context, actorID uint64, name stri
 	}
 	// 1. 启用前确认生效版本存在且就绪：停用状态下不会被删（生效版本不能删），但仍以库为准
 	if enabled {
-		if sk.ActiveVersion == nil {
-			return nil, errcode.ErrSkillCannotEnable.WithMsg("没有生效版本，请先把一个版本设为生效")
-		}
-		if _, err := s.repo.GetVersion(ctx, sk.ID, *sk.ActiveVersion); err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
-				return nil, errcode.ErrSkillCannotEnable.WithMsg("生效版本不可用，请重新设置生效版本")
-			}
+		if err := s.requireActiveVersion(ctx, sk); err != nil {
 			return nil, err
 		}
 	}
@@ -283,6 +284,20 @@ func (s *SkillService) SetEnabled(ctx context.Context, actorID uint64, name stri
 	}
 	s.auditSkill(ctx, actorID, action, sk.ID, map[string]any{"name": sk.Name})
 	return s.itemFor(ctx, sk)
+}
+
+// requireActiveVersion 确认技能有就绪的生效版本，打开任何使用场景前都要求它，否则返回 61009。
+func (s *SkillService) requireActiveVersion(ctx context.Context, sk *model.AgentSkill) error {
+	if sk.ActiveVersion == nil {
+		return errcode.ErrSkillCannotEnable.WithMsg("没有生效版本，请先把一个版本设为生效")
+	}
+	if _, err := s.repo.GetVersion(ctx, sk.ID, *sk.ActiveVersion); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return errcode.ErrSkillCannotEnable.WithMsg("生效版本不可用，请重新设置生效版本")
+		}
+		return err
+	}
+	return nil
 }
 
 // SetActiveVersion 把某个版本设为生效；回滚就是把旧版本设为生效，不新建版本。
@@ -338,7 +353,7 @@ func (s *SkillService) Rename(ctx context.Context, actorID uint64, name, title s
 	return s.itemFor(ctx, sk)
 }
 
-// DeleteCheck 删除技能前的预检：必须先停用；返回版本数，界面据此写「将同时删除对象存储里的整包」。
+// DeleteCheck 删除技能前的预检：画布 Agent 和短剧环节都要先关掉；返回版本数，界面据此写「将同时删除对象存储里的整包」。
 func (s *SkillService) DeleteCheck(ctx context.Context, name string) (*SkillDeleteCheck, error) {
 	sk, err := s.writable(ctx, name)
 	if err != nil {
@@ -348,9 +363,10 @@ func (s *SkillService) DeleteCheck(ctx context.Context, name string) (*SkillDele
 	if err != nil {
 		return nil, err
 	}
-	out := &SkillDeleteCheck{CanDelete: !sk.Enabled, VersionCount: len(vs)}
-	if sk.Enabled {
-		out.Reason = "技能正在启用，请先停用"
+	inUse := skillInUse(sk)
+	out := &SkillDeleteCheck{CanDelete: !inUse, VersionCount: len(vs)}
+	if inUse {
+		out.Reason = "请先关闭所有使用场景"
 	}
 	return out, nil
 }
@@ -384,7 +400,7 @@ func (s *SkillService) DeleteSkill(ctx context.Context, actorID uint64, name str
 	if err != nil {
 		return err
 	}
-	if sk.Enabled {
+	if skillInUse(sk) {
 		return errcode.ErrSkillNeedDisable
 	}
 	if err := s.repo.DeleteSkill(ctx, sk.ID); err != nil {

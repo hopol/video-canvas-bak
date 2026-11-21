@@ -105,3 +105,27 @@ describe("音频节点正文（设计 6.18）", () => {
     for (const view of phases) expect(audio(view)).toContain("aspect-ratio:1");
   });
 });
+
+describe("空节点的上传入口", () => {
+  test("给了占位操作就在大图标下面摆出来，按钮不在 role=img 里", () => {
+    const out = render(
+      { phase: "idle" },
+      { placeholderActions: <button type="button">上传</button> },
+    );
+    expect(out).toContain(">上传</button>");
+    const img = out.slice(out.indexOf('role="img"'));
+    expect(img.slice(0, img.indexOf(">上传<"))).toContain("</div>");
+  });
+
+  test("没给就和原来一样只有图标", () => {
+    expect(render({ phase: "idle" })).not.toContain("<button");
+  });
+
+  test("生成失败的节点不出占位操作", () => {
+    const out = render(
+      { phase: "failed", message: "失败", refunded: false, taskRef: null },
+      { placeholderActions: <button type="button">上传</button> },
+    );
+    expect(out).not.toContain(">上传</button>");
+  });
+});

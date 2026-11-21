@@ -35,7 +35,10 @@ export function readModelApiFormat(body: unknown): "openai" | "gemini" {
   return isRecord(first) && first.api_format === "gemini" ? "gemini" : "openai";
 }
 
-/** 改首渠道的接口格式；切回 OpenAI 同时关闭看视频，避免保存不兼容的能力组合。 */
+/**
+ * 改首渠道的接口格式；切回 OpenAI 同时关闭看视频，避免保存不兼容的能力组合；
+ * 切到 Gemini 同时清掉路径前缀（Gemini 的路径固定，后端不接受前缀）。
+ */
 export function withModelApiFormat(
   body: unknown,
   format: "openai" | "gemini",
@@ -50,7 +53,29 @@ export function withModelApiFormat(
   if (format === "openai" && !isRecord(channels[0])) return current;
   const first = isRecord(channels[0]) ? { ...channels[0] } : {};
   if (format === "openai") delete first.api_format;
-  else first.api_format = format;
+  else {
+    first.api_format = format;
+    delete first.path_prefix;
+  }
+  channels[0] = first;
+  return { ...current, channels };
+}
+
+/** Agent 模型首渠道的接口路径前缀（OpenAI 兼容格式下请求路径里的版本段）；没写返回空串，后端按 /v1 处理 */
+export function readModelPathPrefix(body: unknown): string {
+  const first = isRecord(body) && Array.isArray(body.channels) ? body.channels[0] : undefined;
+  return isRecord(first) && typeof first.path_prefix === "string" ? first.path_prefix : "";
+}
+
+/** 改首渠道的路径前缀；空白删除字段（回到默认 /v1），其余字段与其他渠道不动。没有渠道时清除不凭空新增。 */
+export function withModelPathPrefix(body: unknown, prefix: string): Record<string, unknown> {
+  const current = isRecord(body) ? body : {};
+  const text = prefix.trim();
+  const channels = Array.isArray(current.channels) ? [...current.channels] : [];
+  if (text === "" && !isRecord(channels[0])) return current;
+  const first = isRecord(channels[0]) ? { ...channels[0] } : {};
+  if (text === "") delete first.path_prefix;
+  else first.path_prefix = text;
   channels[0] = first;
   return { ...current, channels };
 }

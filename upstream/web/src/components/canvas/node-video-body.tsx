@@ -22,6 +22,8 @@ type NodeVideoBodyProps = {
   mediaType?: NodeMediaType;
   /** 空状态占位框里的大图标；默认视频图标 */
   placeholderIcon?: ReactNode;
+  /** 空状态大图标下面的操作（上传 / 素材库），只在还没生成过时显示 */
+  placeholderActions?: ReactNode;
   /** 取消任务，排队中 / 生成中才给按钮 */
   onCancel?: () => void;
   cancelling?: boolean;
@@ -49,6 +51,7 @@ export function NodeVideoBody({
   placeholder,
   mediaType = "video",
   placeholderIcon,
+  placeholderActions,
   onCancel,
   cancelling,
   onRetry,
@@ -99,6 +102,7 @@ export function NodeVideoBody({
           icon={placeholderIcon ?? <VideoPlaceholderIcon className="size-10" />}
           label={placeholder}
           aspect={aspect}
+          actions={placeholderActions}
         />
       );
   }

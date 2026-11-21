@@ -105,6 +105,7 @@ type Target struct {
 	Headers        map[string]string // 渠道自定义请求头；先于协议头与鉴权头写入，覆盖不了 Content-Type / Accept / Authorization；Gemini 还保护 x-goog-api-key
 	UpstreamModel  string            // 上游模型名
 	Format         string            // 上游接口格式：openai / gemini，空等于 openai
+	PathPrefix     string            // OpenAI 格式请求路径里的版本段：空等于 /v1，"/" 表示不加前缀；Gemini 格式的路径固定，忽略它
 	RPS            float64           // 每秒最多发起几次请求，0 不限
 	MaxConcurrency int               // 同时在途的请求数上限，0 不限
 	IdleTimeout    time.Duration     // 上游多久没发数据就判定超时（含等首字节）；0 用网关默认值。来自模型配置，不同模型的首字耗时差别很大

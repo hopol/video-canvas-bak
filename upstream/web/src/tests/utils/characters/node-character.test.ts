@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { CanvasNodeData, NodeCharacter } from "@/types";
 import {
+  characterImageUploaded,
   addExtra,
   applyMainImage,
+  applyHumanImages,
   applyPickedAssets,
   applyVoiceAudio,
   characterDisplayName,
@@ -471,5 +473,106 @@ describe("renameCharacter：改角色名", () => {
   test("名字超过上限按字符截断，保留首尾以外的内容不动", () => {
     const out = renameCharacter(data(), "字".repeat(80));
     expect([...(out.character?.name ?? "")]).toHaveLength(64);
+  });
+});
+
+describe("characterImageUploaded：主图是不是用户自己给的", () => {
+  const output = (id: string, taskId?: string) => ({
+    id,
+    src: `https://cdn/${id}.png`,
+    mediaType: "image" as const,
+    assetId: id,
+    createdAt: 1,
+    ...(taskId ? { taskId } : {}),
+  });
+  const node = (activeOutputId?: string) =>
+    ({
+      kind: "character",
+      label: "林晚",
+      outputs: [output("gen", "t1"), output("up")],
+      ...(activeOutputId ? { activeOutputId } : {}),
+    }) as CanvasNodeData;
+
+  test("当前主图是上传 / 素材库来的（没有生成任务）", () => {
+    expect(characterImageUploaded(node("up"))).toBe(true);
+  });
+
+  test("切回生成的那一版就不是了", () => {
+    expect(characterImageUploaded(node("gen"))).toBe(false);
+  });
+
+  test("还没有主图的空角色卡不是", () => {
+    expect(characterImageUploaded({ kind: "character", label: "x" } as CanvasNodeData)).toBe(false);
+  });
+
+  test("不是角色卡一律不是", () => {
+    expect(characterImageUploaded({ ...node("up"), kind: "image" })).toBe(false);
+  });
+});
+
+describe("applyHumanImages：从真人库引入", () => {
+  const img = (id: string) => ({ id, url: `/a/${id}` });
+
+  test("第一张作主图，其余按顺序替换补充图，最多 4 张；音色等其余字段不动", () => {
+    const voice = {
+      mode: "audio" as const,
+      assetId: "90",
+      src: "/a/90",
+      origin: "upload" as const,
+    };
+    const base = data({
+      character: character({ extras: [{ assetId: "11", src: "/a/11" }], voice }),
+    });
+    const patch = applyHumanImages(base, [
+      img("1"),
+      img("2"),
+      img("3"),
+      img("4"),
+      img("5"),
+      img("6"),
+    ]);
+    expect(patch).toMatchObject({ assetId: "1", src: "/a/1", mediaType: "image" });
+    expect(patch.character?.extras.map((x) => x.assetId)).toEqual(["2", "3", "4", "5"]);
+    expect(patch.character?.voice).toEqual(voice);
+    expect(patch.character?.name).toBe("林晚");
+  });
+
+  test("只有一张图时清空补充图", () => {
+    const base = data({ character: character({ extras: [{ assetId: "11", src: "/a/11" }] }) });
+    const patch = applyHumanImages(base, [img("1")]);
+    expect(patch.assetId).toBe("1");
+    expect(patch.character?.extras).toEqual([]);
+  });
+
+  test("没有图时不改节点", () => {
+    expect(applyHumanImages(data(), [])).toEqual({});
+  });
+});
+
+describe("applyVoiceAudio：绑定时记下音色名", () => {
+  const role = character();
+  test("公开音色的名字去掉 BytePlus 的年龄性别前缀", () => {
+    const out = applyVoiceAudio(
+      role,
+      { id: "9", url: "/a/9.mp3", fileName: "Teen - Female - Shiny" },
+      "library",
+    );
+    expect(out.voice).toEqual({
+      mode: "audio",
+      assetId: "9",
+      src: "/a/9.mp3",
+      origin: "library",
+      name: "Shiny",
+    });
+  });
+
+  test("上传的音频用文件名当名字；没有文件名时不写名字", () => {
+    expect(
+      applyVoiceAudio(role, { id: "8", url: "/a/8.mp3", fileName: "我的录音.mp3" }, "upload").voice,
+    ).toMatchObject({ name: "我的录音.mp3" });
+
+    expect(
+      applyVoiceAudio(role, { id: "7", url: "/a/7.mp3", fileName: null }, "upload").voice,
+    ).not.toHaveProperty("name");
   });
 });

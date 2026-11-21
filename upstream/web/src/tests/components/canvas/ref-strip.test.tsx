@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 
 import type { RefStrip as RefStripType } from "@/components/canvas/ref-strip";
 import { installDom, type DomEnv } from "@/tests/helpers/dom";
@@ -6,6 +6,11 @@ import { installDom, type DomEnv } from "@/tests/helpers/dom";
 /**
  * 引用条：点上游缩略图是把画布视口飞到那个源节点，不再往提示词里插 chip。
  */
+
+// 引用条会拉官方音色：只拦住底层请求（用完还原），不整模块替换。
+// bun 的 mock.module 会跨文件生效，换掉 @/api/official-voice 会让别的测试文件拿到假的接口。
+const service = (await import("@/utils/requests/service")).default;
+const getSpy = spyOn(service, "get").mockResolvedValue({ items: [], total: 0 } as never);
 
 const located: string[] = [];
 const focusNodeModule = await import("@/components/canvas-editor/use-focus-node");
@@ -23,7 +28,10 @@ beforeAll(async () => {
   dom = await installDom();
   RefStrip = (await import("@/components/canvas/ref-strip")).RefStrip;
 });
-afterAll(() => dom.restore());
+afterAll(() => {
+  dom.restore();
+  getSpy.mockRestore();
+});
 
 describe("引用条上的上游缩略图", () => {
   test("点击定位到画布上的源节点，不插入到提示词", async () => {
@@ -46,6 +54,27 @@ describe("引用条上的上游缩略图", () => {
     expect(thumb?.getAttribute("aria-label")).not.toContain("插入到提示词");
     await dom.click(thumb);
     expect(located).toEqual(["n1"]);
+    await unmount();
+  });
+
+  test("模型支持参考音频时，+ 菜单提供 音色库入口", async () => {
+    const { container, unmount } = await dom.mount(
+      <RefStrip
+        items={[]}
+        manual={[]}
+        candidates={() => []}
+        onLink={() => {}}
+        onUnlink={() => {}}
+        uploadKinds={[]}
+        onUpload={() => {}}
+        officialVoice={{ onPick: () => {} }}
+        onRemoveManual={() => {}}
+        errors={[]}
+      />,
+    );
+    await dom.click(container.querySelector('button[aria-label="引用画布里的素材"]'));
+    await dom.flush();
+    expect(dom.win.document.body.textContent).toContain("音色库");
     await unmount();
   });
 });

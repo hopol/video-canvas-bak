@@ -1,4 +1,4 @@
-import { File as FileIcon, FileText, ImageIcon, Loader2, Terminal } from "lucide-react";
+import { File as FileIcon, FileText, ImageIcon, Terminal } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -15,7 +15,6 @@ import { Notice } from "@/components/admin-ui/notice";
 import { Segmented, SegmentedItem } from "@/components/admin-ui/segmented";
 import { Tag } from "@/components/admin-ui/tag";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { DURATION, EASE_OUT } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import {
@@ -25,6 +24,7 @@ import {
   locateLine,
   stripFrontmatter,
 } from "@/utils/admin/agent-skill";
+import { SkillLoading } from "./skill-loading";
 
 /** 源码态最多渲染的行数，超出的注明已截断（长文件一次画几千行会卡） */
 const SOURCE_MAX_LINES = 400;
@@ -344,12 +344,7 @@ export function FilePreview({
             </Button>
           </div>
         ) : !value ? (
-          <div className="grid gap-2 p-4" aria-busy="true" aria-label="正在读取文件">
-            <Loader2 className="text-muted-foreground size-4 animate-spin" />
-            <Skeleton className="h-4 w-2/3" />
-            <Skeleton className="h-4 w-1/2" />
-            <Skeleton className="h-4 w-3/4" />
-          </div>
+          <SkillLoading className="h-full min-h-56" />
         ) : showSource ? (
           <>
             <SourceView

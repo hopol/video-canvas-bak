@@ -22,6 +22,9 @@ function typeChoices(data: CanvasNodeData): { key: string; label: string }[] {
   return [{ key: "", label: "已分类" }];
 }
 
+/** 出现集数弹层的碰撞策略：放不下就翻面、水平方向平移 */
+const EPISODES_COLLISION = { side: "flip", align: "shift" } as const;
+
 /**
  * 节点功能区的「出现集数」（只在短剧资产画布出现，由 toolbarExtra 注入）：
  * 读写节点的 data.drama —— 类型（角色 / 场景 / 道具 / 未分类）和出现集数（都不勾 = 全集）。
@@ -52,7 +55,10 @@ export function NodeEpisodesButton({ id, data }: { id: string; data: CanvasNodeD
         side="top"
         align="start"
         sideOffset={10}
-        className="nodrag nowheel w-72 gap-2 rounded-xl p-3"
+        // 工具条本身就在节点上方，再往上弹常常顶出屏幕：上方放不下就翻到下方（不沿用全站的固定方向），
+        // 整体高度也不超过可用空间
+        collisionAvoidance={EPISODES_COLLISION}
+        className="nodrag nowheel max-h-(--available-height) w-72 gap-2 overflow-y-auto rounded-xl p-3"
       >
         <div className="text-muted-foreground text-xs">资产类型</div>
         <div className="flex flex-wrap gap-1.5">
@@ -97,7 +103,8 @@ export function NodeEpisodesButton({ id, data }: { id: string; data: CanvasNodeD
         </div>
 
         <div className="text-muted-foreground pt-1 text-xs">出现集数 · 都不勾 = 全集</div>
-        <div className="grid grid-cols-6 gap-1">
+        {/* 集数多时限高、在格子区内滚动（约 5 行）；留 2px 内边距，聚焦描边不被裁掉 */}
+        <div className="-m-0.5 grid max-h-40 grid-cols-6 gap-1 overflow-y-auto p-0.5 [scrollbar-width:thin]">
           {drama.episodes.map((ep) => {
             const on = !!episodes?.includes(ep.no);
             return (

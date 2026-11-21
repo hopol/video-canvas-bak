@@ -10,6 +10,7 @@ import type {
   SkillImportView,
   SkillItem,
   SkillPage,
+  SkillScopeInput,
   SkillVersionView,
 } from "./type";
 
@@ -18,6 +19,7 @@ const normalizeItem = (item: SkillItem): SkillItem => ({
   ...item,
   unsupported_fields: item.unsupported_fields ?? [],
   drama_steps: item.drama_steps ?? [],
+  in_use: item.in_use ?? (item.enabled || (item.drama_steps ?? []).length > 0),
 });
 
 const normalizeImport = (view: SkillImportView): SkillImportView => ({
@@ -34,7 +36,7 @@ const clean = (params: Record<string, unknown>) =>
 
 /**
  * 技能列表（含只读内置，后端分页）；list 缺失时补成空数组
- * @param params q 按名称 / 显示名 / 说明搜索；status 只看已启用 / 已停用 / 内置；page、page_size 分页
+ * @param params q 按名称 / 显示名 / 说明搜索；status 按使用场景筛选（画布 Agent / 短剧 / 未使用 / 内置）；page、page_size 分页
  * @returns 当前页技能、命中总数，以及整张列表里有没有导入过的技能
  */
 export const listSkills = async (params: ListSkillsParams = {}): Promise<SkillPage> => {
@@ -158,12 +160,13 @@ export const discardImport = (id: string) =>
   service.delete<void>(ep.importDiscard(id), { silent: true });
 
 /**
- * 确认导入：新技能默认停用；同名技能新增版本但生效版本不变
+ * 确认导入：新技能按 scope 打开使用场景（不传即哪里都不用）；同名技能新增版本，生效版本和场景都不变
  * @param id 暂存 id
+ * @param scope 新技能一并打开的使用场景
  * @returns 入库后的技能
  */
-export const confirmImport = async (id: string): Promise<SkillItem> =>
-  normalizeItem(await service.post<SkillItem>(ep.importConfirm(id), undefined));
+export const confirmImport = async (id: string, scope?: SkillScopeInput): Promise<SkillItem> =>
+  normalizeItem(await service.post<SkillItem>(ep.importConfirm(id), scope));
 
 /**
  * 改显示名（内置技能不可改）
@@ -175,16 +178,16 @@ export const renameSkill = async (name: string, title: string): Promise<SkillIte
   normalizeItem(await service.put<SkillItem>(ep.rename(name), { title }));
 
 /**
- * 启用 / 停用
+ * 画布 Agent 开关
  * @param name 技能名
- * @param enabled 是否启用
+ * @param enabled 是否在画布 Agent 中可用
  * @returns 更新后的技能
  */
 export const setSkillEnabled = async (name: string, enabled: boolean): Promise<SkillItem> =>
   normalizeItem(await service.put<SkillItem>(ep.enabled(name), { enabled }));
 
 /**
- * 设置技能适用的短剧环节（导入技能；内置技能只读）；不产生新版本
+ * 设置技能打开的短剧环节（整组覆盖；导入技能，内置技能只读）；新增环节要求有生效版本
  * @param name 技能名
  * @param steps 适用环节，可以为空（取消全部）
  * @returns 更新后的技能
@@ -218,7 +221,7 @@ export const deleteSkillVersion = (name: string, version: number) =>
   service.delete<void>(ep.version(name, version));
 
 /**
- * 删除技能（必须先停用）；删除全部版本和整包，不可恢复
+ * 删除技能（所有使用场景都要先关掉）；删除全部版本和整包，不可恢复
  * @param name 技能名
  */
 export const deleteSkill = (name: string) => service.delete<void>(ep.remove(name));

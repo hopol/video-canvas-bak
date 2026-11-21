@@ -10,11 +10,13 @@ import {
   readModelChannel,
   readModelKind,
   readModelNumber,
+  readModelPathPrefix,
   readModelString,
   withDefaultPrice,
   withModelChannel,
   withModelApiFormat,
   withModelField,
+  withModelPathPrefix,
   withModelUpstream,
 } from "@/utils/admin/model-body";
 import { withModelKind } from "@/utils/admin/model-protocol";
@@ -245,5 +247,74 @@ describe("Agent 模型接口格式", () => {
     const next = withModelApiFormat(original, "openai");
     expect(next.capabilities).toEqual({ vision: true });
     expect(original.capabilities.video).toBe(true);
+  });
+});
+
+describe("Agent 模型的接口路径前缀 path_prefix", () => {
+  test("读取：没写、非字符串都是空串", () => {
+    for (const value of [
+      null,
+      {},
+      { channels: [] },
+      { channels: [{}] },
+      { channels: [{ path_prefix: 3 }] },
+    ])
+      expect(readModelPathPrefix(value)).toBe("");
+    expect(readModelPathPrefix({ channels: [{ path_prefix: "/v4" }] })).toBe("/v4");
+  });
+
+  test("写入首渠道，空白或空串删除字段，其余配置与其他渠道不动，不改原对象", () => {
+    const original = {
+      ...body,
+      kind: "agent",
+      channels: [
+        { channel: "c", upstream_model: "m", extra: "保留" },
+        { channel: "backup", upstream_model: "other" },
+      ],
+    };
+    const copy = structuredClone(original);
+    const next = withModelPathPrefix(original, " /v4 ");
+    expect(next).toEqual({
+      ...original,
+      channels: [{ ...original.channels[0], path_prefix: "/v4" }, original.channels[1]],
+    });
+    expect(withModelPathPrefix(next, "")).toEqual(original);
+    expect(withModelPathPrefix(next, "   ")).toEqual(original);
+    expect(original).toEqual(copy);
+  });
+
+  test("没有渠道时不凭空新增，写入时才补一项", () => {
+    expect(withModelPathPrefix({ key: "m" }, "")).toEqual({ key: "m" });
+    expect(withModelPathPrefix({ key: "m" }, "/v4")).toEqual({
+      key: "m",
+      channels: [{ path_prefix: "/v4" }],
+    });
+  });
+
+  test("改成 Gemini 会清掉路径前缀（Gemini 路径固定），改回 OpenAI 不会凭空恢复", () => {
+    const openai = {
+      kind: "agent",
+      channels: [{ channel: "c", upstream_model: "m", path_prefix: "/v4" }],
+    };
+    const gemini = withModelApiFormat(openai, "gemini");
+    expect(gemini.channels).toEqual([{ channel: "c", upstream_model: "m", api_format: "gemini" }]);
+    expect(withModelApiFormat(gemini, "openai").channels).toEqual([
+      { channel: "c", upstream_model: "m" },
+    ]);
+    // 切到 OpenAI（本来就是 OpenAI）保留已填的前缀
+    expect(withModelApiFormat(openai, "openai").channels).toEqual(openai.channels);
+  });
+
+  test("切换成非 Agent 能力清掉路径前缀，切到 Agent 保留", () => {
+    const agent = withModelPathPrefix(
+      withModelKind(blankModelBody("c", "m"), "agent", [])!.body,
+      "/v4",
+    );
+    expect(agent.channels).toEqual([{ channel: "c", upstream_model: "m", path_prefix: "/v4" }]);
+    expect(withModelKind(agent, "agent", [])!.body.channels).toEqual(agent.channels);
+    for (const kind of ["text", "video", "image", "audio"])
+      expect(withModelKind(agent, kind, [])!.body.channels).toEqual([
+        { channel: "c", upstream_model: "m" },
+      ]);
   });
 });

@@ -64,7 +64,11 @@ function AgentModelMenu({
         )}
       >
         <p className="text-muted-foreground px-2.5 pt-1 pb-0.5 text-xs">Agent 模型</p>
-        <div role="radiogroup" aria-label="Agent 模型" className="flex flex-col">
+        <div
+          role="radiogroup"
+          aria-label="Agent 模型"
+          className="flex max-h-80 flex-col overflow-y-auto"
+        >
           {models.map((m) => (
             <button
               key={m.key}

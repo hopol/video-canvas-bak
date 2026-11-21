@@ -4,7 +4,32 @@ import (
 	"regexp"
 	"strconv"
 	"unicode"
+	"unicode/utf8"
 )
+
+// draftMaxChars 与提示词正文的字数上限同口径，超出的创作稿会挤占格式段的上下文。
+const draftMaxChars = 20000
+
+// draftStep 是只输出纯文本创作稿的步骤：分镜、剧本、资产拆解、资产图提示词各有一段创作稿。
+func draftStep(step string) bool {
+	switch step {
+	case "storyboard", "scripts", "breakdown", "asset_prompts", "plan":
+		return true
+	}
+	return false
+}
+
+// decodeDraft 校验创作段的纯文本输出：非空、合法 UTF-8、不超过上限；原样返回，不解析结构。
+func decodeDraft(data []byte) (string, error) {
+	text := string(data)
+	if !nonemptyText(text) {
+		return "", invalidOutput("创作稿不能为空")
+	}
+	if utf8.RuneCountInString(text) > draftMaxChars {
+		return "", invalidOutput("创作稿不能超过 20000 字")
+	}
+	return text, nil
+}
 
 // StoryboardSegment 是可单独生成视频的连续片段；镜头、景别、运镜和台词都写在 Prompt 里，不另出分镜表。
 type StoryboardSegment struct {

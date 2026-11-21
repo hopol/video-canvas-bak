@@ -1,4 +1,7 @@
 import type { CanvasNodeData, FlowNode, NodeDrama } from "@/types";
+import { characterImageUploaded } from "@/utils/characters/node-character";
+
+import { isBoardNode } from "./board";
 
 /** 资产区的类型 tab（角色 / 场景 / 道具来自拆解，其余是画布里随手建的素材） */
 export type AssetType = "character" | "scene" | "prop" | "text" | "image" | "video" | "audio";
@@ -20,7 +23,8 @@ export const GENERATED_TYPES: AssetType[] = ["character", "scene", "prop"];
 export type EpisodeFilter = { kind: "all" } | { kind: "episode"; no: number } | { kind: "none" };
 
 /** 卡片状态 */
-export type AssetStatus = "idle" | "analyzing" | "running" | "done" | "error";
+/** uploading：正在把本地文件传进这个节点 */
+export type AssetStatus = "idle" | "analyzing" | "uploading" | "running" | "done" | "error";
 
 /** 列表里的一项资产：读自画布节点，不另存 */
 export type AssetItem = {
@@ -38,9 +42,9 @@ export type AssetItem = {
   data: CanvasNodeData;
 };
 
-/** 节点属于哪个类型 tab；导演台不是资产，返回 null */
+/** 节点属于哪个类型 tab；导演台、故事板（在故事板页里管）不是资产，返回 null */
 export function assetTypeOf(data: CanvasNodeData): AssetType | null {
-  if (data.kind === "director") return null;
+  if (data.kind === "director" || isBoardNode(data)) return null;
   if (data.drama?.type) return data.drama.type;
   switch (data.kind) {
     case "character":
@@ -60,7 +64,7 @@ export function assetTypeOf(data: CanvasNodeData): AssetType | null {
  * 节点的出现集数：没有 drama 字段、或 episodes 为 null（所在的集被删了）是未分类（null），
  * 空数组是全集，其余升序去重
  */
-export function assetEpisodesOf(data: CanvasNodeData): number[] | null {
+export function assetEpisodesOf(data: Pick<CanvasNodeData, "drama">): number[] | null {
   if (!data.drama || data.drama.episodes === null) return null;
   return [...new Set(data.drama.episodes ?? [])].sort((a, b) => a - b);
 }
@@ -79,8 +83,10 @@ export type StatusContext = {
   analyzing?: boolean;
 };
 
-/** 卡片状态：失败 / 生成中优先，其次看有没有素材；还在写提示词的空节点是「分析设定中」 */
+/** 卡片状态：上传中、失败 / 生成中优先，其次看有没有素材；还在写提示词的空节点是「分析设定中」 */
 export function assetStatusOf(data: CanvasNodeData, ctx: StatusContext = {}): AssetStatus {
+  // 带着上传进度就是在传文件：媒体节点同时是 running，角色卡只有进度
+  if (data.uploadProgress !== undefined) return "uploading";
   if (data.status === "running") return "running";
   if (data.status === "error") return "error";
   // 角色卡节点的主图就是节点自己的 src，和图片节点同一个判断
@@ -138,23 +144,65 @@ export function countByType(
   return counts;
 }
 
-/** 可批量生成的：角色 / 场景 / 道具里已分类、待生成或失败的 */
+/**
+ * 资产是不是用户自己给的素材（上传或从素材库选）：上传的媒体节点；
+ * 角色卡看当前主图那一版有没有生成任务，没有就是上传 / 素材库来的。
+ * 这类资产没有提示词可改，批量生成和勾选都跳过。
+ */
+export function assetUploaded(data: CanvasNodeData): boolean {
+  return !!data.uploaded || characterImageUploaded(data);
+}
+
+const isUploadedAsset = (item: AssetItem) => assetUploaded(item.data);
+
+/** 可批量生成的：角色 / 场景 / 道具里已分类、待生成或失败的；上传的不算 */
 export function pendingGenerate(items: readonly AssetItem[], type: AssetType): AssetItem[] {
   if (!GENERATED_TYPES.includes(type)) return [];
   return items.filter(
     (item) =>
       item.type === type &&
+      !isUploadedAsset(item) &&
       item.episodes !== null &&
       (item.status === "idle" || item.status === "error"),
   );
 }
 
-/** 可框选生成的：角色 / 场景 / 道具里已分类、不在生成或分析中的；已生成的再生成一次就是重新生成 */
+/** 还没生成的：角色 / 场景 / 道具里已分类、待生成、失败或还在分析设定的；项目设置换图片模型时跟着换的就是这些，上传的不算 */
+export function ungenerated(items: readonly AssetItem[], type: AssetType): AssetItem[] {
+  if (!GENERATED_TYPES.includes(type)) return [];
+  return items.filter(
+    (item) =>
+      item.type === type &&
+      !isUploadedAsset(item) &&
+      item.episodes !== null &&
+      (item.status === "idle" || item.status === "error" || item.status === "analyzing"),
+  );
+}
+
+/**
+ * 项目设置换了某类资产的图片模型后，要跟着换的卡：还没生成、且现在用的不是新模型。
+ * @param key 新模型
+ * @param fallback 节点没设模型时实际用的模型（清单里第一个）
+ * @returns 节点 ID
+ */
+export function modelSwitchTargets(
+  items: readonly AssetItem[],
+  type: AssetType,
+  key: string,
+  fallback?: string,
+): string[] {
+  return ungenerated(items, type)
+    .filter((item) => (item.data.model ?? fallback) !== key)
+    .map((item) => item.id);
+}
+
+/** 可框选生成的：角色 / 场景 / 道具里已分类、不在生成或分析中的；已生成的再生成一次就是重新生成；上传的不算 */
 export function generatable(items: readonly AssetItem[], type: AssetType): AssetItem[] {
   if (!GENERATED_TYPES.includes(type)) return [];
   return items.filter(
     (item) =>
       item.type === type &&
+      !isUploadedAsset(item) &&
       item.episodes !== null &&
       (item.status === "idle" || item.status === "error" || item.status === "done"),
   );

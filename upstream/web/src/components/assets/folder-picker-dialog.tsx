@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Check, Folder, FolderPlus, Home, Loader2 } from "lucide-react";
 
+import { DialogSession } from "@/components/dialog-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -44,8 +45,10 @@ export function FolderPickerDialog(props: FolderPickerProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
-        {/* 打开时才挂载内容：选中项、新建输入框每次都从初始状态开始 */}
-        {open && <PickerBody {...props} />}
+        {/* 每次打开重新挂载内容：选中项、新建输入框都从初始状态开始；关闭时留给退出动画 */}
+        <DialogSession open={open}>
+          <PickerBody {...props} />
+        </DialogSession>
       </DialogContent>
     </Dialog>
   );

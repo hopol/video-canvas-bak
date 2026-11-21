@@ -1,8 +1,6 @@
-import { Check } from "lucide-react";
-
 import type { ModelInfo } from "@/api/model/type";
 import { ModelLogo } from "@/components/model-logo";
-import { cn } from "@/lib/utils";
+import { OptionRow } from "@/components/option-menu";
 import { modelSummary, videoModelSupport } from "@/utils/drama/video-models";
 
 import { ChipPopover } from "./pickers";
@@ -29,6 +27,7 @@ export function ModelMenu({
   size,
   prefix,
   defaultLabel,
+  fallback,
   title,
 }: {
   models: readonly ModelInfo[];
@@ -47,41 +46,40 @@ export function ModelMenu({
   prefix?: string;
   /** 「不指定」项的文案（如「跟随默认」）；不传则没有这一项 */
   defaultLabel?: string;
+  /** 没选时胶囊上显示的模型（如「跟随默认」实际会用的那个）；下拉里仍是「跟随默认」打勾 */
+  fallback?: ModelInfo;
   title?: string;
 }) {
+  const shown = model ?? fallback;
   const name =
-    model?.label ??
+    shown?.label ??
     (defaultLabel && !loading ? defaultLabel : loading ? "加载模型…" : `没有可用的${kindName}模型`);
   return (
     <ChipPopover
       variant={variant}
       size={size}
       icon={
-        model && (
-          <ModelLogo vendor={model.vendor} name={model.label} className="size-5 rounded-md" />
+        shown && (
+          <ModelLogo vendor={shown.vendor} name={shown.label} className="size-5 rounded-md" />
         )
       }
       label={prefix ? `${prefix} · ${name}` : name}
       title={title}
       width="w-80"
+      contentClassName="max-h-80 overflow-y-auto"
     >
       {(close) => (
         <>
           {defaultLabel && (
-            <button
-              type="button"
+            <OptionRow
+              active={!model}
               onClick={() => {
                 close();
                 onPick("");
               }}
-              className={cn(
-                "hover:bg-muted focus-visible:ring-ring/50 flex min-h-10 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none focus-visible:ring-2",
-                !model && "bg-muted font-medium",
-              )}
             >
               <span className="min-w-0 flex-1 truncate">{defaultLabel}</span>
-              {!model && <Check className="size-4 shrink-0" />}
-            </button>
+            </OptionRow>
           )}
           {models.length === 0 && (
             <div className="text-muted-foreground px-2 py-3 text-sm">
@@ -93,20 +91,15 @@ export function ModelMenu({
             const active = model?.key === info.key;
             const note = ability.ok ? summary?.(info) : ability.reason;
             return (
-              <button
+              <OptionRow
                 key={info.key}
-                type="button"
+                active={active}
                 disabled={!ability.ok}
                 title={ability.reason ?? undefined}
                 onClick={() => {
                   close();
                   onPick(info.key);
                 }}
-                className={cn(
-                  "hover:bg-muted focus-visible:ring-ring/50 flex min-h-10 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none focus-visible:ring-2",
-                  "disabled:hover:bg-transparent disabled:cursor-not-allowed disabled:opacity-45",
-                  active && "bg-muted font-medium",
-                )}
               >
                 <ModelLogo vendor={info.vendor} name={info.label} className="size-5" />
                 <span className="min-w-0 flex-1">
@@ -117,8 +110,7 @@ export function ModelMenu({
                     </span>
                   )}
                 </span>
-                {active && <Check className="size-4 shrink-0" />}
-              </button>
+              </OptionRow>
             );
           })}
         </>
@@ -138,6 +130,7 @@ export function VideoModelMenu({
   onPick,
   variant = "bar",
   defaultLabel,
+  fallback,
 }: {
   models: readonly ModelInfo[];
   loading: boolean;
@@ -146,6 +139,8 @@ export function VideoModelMenu({
   variant?: "chip" | "bar" | "chrome" | "field";
   /** 开拍设置用：多一项「不指定」 */
   defaultLabel?: string;
+  /** 没选时胶囊上显示的模型，见 ModelMenu */
+  fallback?: ModelInfo;
 }) {
   return (
     <ModelMenu
@@ -159,6 +154,7 @@ export function VideoModelMenu({
       variant={variant}
       size={variant === "bar" ? "lg" : undefined}
       defaultLabel={defaultLabel}
+      fallback={fallback}
       title={variant === "bar" ? "生成片段视频用的模型" : undefined}
     />
   );

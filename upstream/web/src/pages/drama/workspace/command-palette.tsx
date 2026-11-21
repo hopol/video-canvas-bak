@@ -43,14 +43,14 @@ export function CommandPalette({
   onOpenChange,
   onGo,
   onBreakdownOpen,
-  onPromptsOpen,
+  onSettingsOpen,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onGo: (stage: WorkspaceStage, ep?: number) => void;
   onBreakdownOpen: () => void;
-  /** 打开「提示词设置」 */
-  onPromptsOpen: () => void;
+  /** 打开「项目设置」 */
+  onSettingsOpen: () => void;
 }) {
   const { drama } = useWorkspace();
   const theme = useSettingsStore((state) => state.theme);
@@ -92,9 +92,9 @@ export function CommandPalette({
               <ScanSearch />
               资产拆解
             </CommandItem>
-            <CommandItem value="操作 提示词设置 提示词 技能" onSelect={run(onPromptsOpen)}>
+            <CommandItem value="操作 项目设置 图片模型 提示词 技能" onSelect={run(onSettingsOpen)}>
               <SlidersHorizontal />
-              提示词设置
+              项目设置
             </CommandItem>
             <CommandItem
               value="操作 切换 明暗 主题"

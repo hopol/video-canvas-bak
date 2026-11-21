@@ -11,7 +11,7 @@ import (
 	"video-canvas/internal/repository"
 )
 
-// checkDramaMediaTasks 同一集的片段视频和分镜、合成共享互斥，不影响其他集与文本任务。
+// checkDramaMediaTasks 分镜、合成提交前检查所选集里有没有进行中的片段视频，不影响其他集与文本任务。
 func checkDramaMediaTasks(ctx context.Context, tx repository.DramaTx, p *model.DramaProject, eps []model.DramaEpisode, key string) error {
 	for _, ep := range eps {
 		if ep.LockedAt == nil {
@@ -36,7 +36,8 @@ func checkDramaMediaTasks(ctx context.Context, tx repository.DramaTx, p *model.D
 	return nil
 }
 
-// guardDramaGeneration 在生成任务自身事务里锁短剧项目，防止两个片段同时穿透预检查。
+// guardDramaGeneration 在生成任务自身事务里锁短剧项目，防止同一片段的两次提交、或片段与同集分镜、合成同时穿透预检查。
+// 同一集的不同片段可以同时生成，总并发交给任务队列统一限制。
 func guardDramaGeneration(ctx context.Context, tx repository.GenerationTaskTx, task *model.GenerationTask) error {
 	if task.IsTest || !strings.HasPrefix(task.NodeID, "seg:") {
 		return nil
@@ -64,5 +65,14 @@ func guardDramaGeneration(ctx context.Context, tx repository.GenerationTaskTx, t
 	if dramaJobsConflict(jobs, &model.DramaJobReq{Step: "segment", Episodes: []int{ep.No}}) {
 		return errcode.ErrDramaJobBusy
 	}
-	return checkDramaMediaTasks(ctx, dtx, p, []model.DramaEpisode{*ep}, task.IdempotencyKey)
+	tasks, err := dtx.SegmentTasks(ctx, p.UserID, p.CanvasID, task.NodeID)
+	if err != nil {
+		return err
+	}
+	for _, other := range tasks {
+		if slices.Contains(model.ActiveTaskStatuses, other.Status) && other.IdempotencyKey != task.IdempotencyKey {
+			return errcode.ErrDramaJobBusy
+		}
+	}
+	return nil
 }

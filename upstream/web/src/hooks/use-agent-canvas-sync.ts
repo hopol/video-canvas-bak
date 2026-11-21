@@ -1,4 +1,11 @@
-import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 
 import type { CanvasDetailDto } from "@/api/canvas/type";
 import { getCanvas } from "@/api/canvas";
@@ -36,6 +43,8 @@ export type AgentCanvasSyncArgs = {
   markTasksKnown: (ids: string[]) => void;
   /** 清空撤销栈 */
   resetHistory: () => void;
+  /** 只读预览：Agent 的补丁也不往本地并（并进来也存不出去，只会让人以为改了） */
+  readOnly?: boolean;
 };
 
 /**
@@ -44,6 +53,11 @@ export type AgentCanvasSyncArgs = {
  * @returns 给保存用的 autoMerge 和 saved 回调（引用稳定）
  */
 export function useAgentCanvasSync(args: AgentCanvasSyncArgs) {
+  // 只读开关会在运行中变（编辑权被另一个标签页拿走），订阅回调建得早，得读最新值
+  const readOnlyRef = useRef(args.readOnly);
+  useEffect(() => {
+    readOnlyRef.current = args.readOnly;
+  }, [args.readOnly]);
   const [sync] = useState(() =>
     createAgentSync<FlowNode, CanvasEdge & MergeEdge>({
       initial: { graph: args.canvas.graph, version: args.canvas.version },
@@ -78,7 +92,12 @@ export function useAgentCanvasSync(args: AgentCanvasSyncArgs) {
   );
 
   useEffect(
-    () => subscribeCanvasPatch(args.canvas.id, (patch) => void sync.handlePatch(patch)),
+    () =>
+      subscribeCanvasPatch(args.canvas.id, (patch) => {
+        // 只读预览：Agent 的补丁不往本地并（并进来也存不出去，只会让人以为改了）
+        if (readOnlyRef.current) return;
+        void sync.handlePatch(patch);
+      }),
     [args.canvas.id, sync],
   );
 

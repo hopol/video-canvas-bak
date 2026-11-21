@@ -98,6 +98,23 @@ func TestJSONSchema_与ParseModel一致(t *testing.T) {
 	}
 }
 
+func TestJSONSchema_PathPrefix(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(modelcfg.JSONSchema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	item := schema["properties"].(map[string]any)["channels"].(map[string]any)["items"].(map[string]any)
+	prefix, ok := item["properties"].(map[string]any)["path_prefix"].(map[string]any)
+	if !ok || prefix["type"] != "string" {
+		t.Fatalf("path_prefix 应声明为字符串: %v", item["properties"])
+	}
+	for _, required := range item["required"].([]any) {
+		if required == "path_prefix" {
+			t.Error("path_prefix 应允许省略")
+		}
+	}
+}
+
 func TestJSONSchema_APIFormat(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal(modelcfg.JSONSchema(), &schema); err != nil {

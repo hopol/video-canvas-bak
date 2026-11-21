@@ -27,7 +27,8 @@ type ModelSnapshot struct {
 	Deadline      modelcfg.Duration     `json:"deadline"`
 	IdleTimeout   modelcfg.Duration     `json:"idle_timeout,omitempty"` // 仅 agent：上游响应超时，0 用平台默认值
 	UpstreamModel string                `json:"upstream_model"`
-	APIFormat     string                `json:"api_format,omitempty"` // 仅 agent：接口格式，默认 openai 省略以保持旧快照形状
+	APIFormat     string                `json:"api_format,omitempty"`  // 仅 agent：接口格式，默认 openai 省略以保持旧快照形状
+	PathPrefix    string                `json:"path_prefix,omitempty"` // 仅 agent 的 openai 格式：请求路径的版本段，空等于 /v1
 	Capabilities  modelcfg.Capabilities `json:"capabilities"`
 	Pricing       modelcfg.Pricing      `json:"pricing"` // 定价规则：运营中途调价不影响进行中的任务
 }
@@ -115,9 +116,10 @@ func channelSnapshotOf(ch *model.AIChannel) (*ChannelSnapshot, error) {
 // NewSnapshot 由模型配置（取 channels[0] 的上游模型名与接口格式）、渠道运行时与模型 revision 组装快照。
 // cfg.Channels 为空时上游模型名与接口格式为空，由调用方（已校验过配置）保证不会发生。
 func NewSnapshot(cfg *modelcfg.ModelConfig, rt *ChannelRuntime, modelRevisionID uint64) *Snapshot {
-	upstream, apiFormat := "", ""
+	upstream, apiFormat, pathPrefix := "", "", ""
 	if len(cfg.Channels) > 0 {
 		upstream = cfg.Channels[0].UpstreamModel
+		pathPrefix = cfg.Channels[0].PathPrefix
 		if format := cfg.Channels[0].Format(); format != modelcfg.APIFormatOpenAI {
 			apiFormat = format
 		}
@@ -125,7 +127,7 @@ func NewSnapshot(cfg *modelcfg.ModelConfig, rt *ChannelRuntime, modelRevisionID 
 	return &Snapshot{
 		Model: ModelSnapshot{
 			Key: cfg.Key, Kind: cfg.Kind, Label: cfg.Label, Deadline: cfg.Deadline, IdleTimeout: cfg.IdleTimeout,
-			UpstreamModel: upstream, APIFormat: apiFormat, Capabilities: cfg.Capabilities, Pricing: cfg.Pricing,
+			UpstreamModel: upstream, APIFormat: apiFormat, PathPrefix: pathPrefix, Capabilities: cfg.Capabilities, Pricing: cfg.Pricing,
 		},
 		Channel:         rt.Channel,
 		Plugin:          rt.Plugin,

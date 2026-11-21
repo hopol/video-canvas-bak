@@ -37,6 +37,9 @@ func WeakPasswordCount() int { return len(weakPasswords) }
 
 func (s *AIConfigService) Repo() AIConfigRepo { return s.repo }
 
+// SetRetryDelaysForTest 替换短剧模型调用遇到限流 / 上游故障时的退避间隔，测试里不真等几秒。
+func (s *DramaService) SetRetryDelaysForTest(d []time.Duration) { s.retryDelays = d }
+
 // SetKeyGenForTest 替换渠道 key 的生成函数，测试撞 key 重试用。
 func (s *AIChannelService) SetKeyGenForTest(fn func() string) { s.genKey = fn }
 

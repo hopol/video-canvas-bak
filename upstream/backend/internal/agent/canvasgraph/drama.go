@@ -310,6 +310,13 @@ func newDramaNode(opt Options, asset DramaAsset) Node {
 	if key := opt.DramaModels[asset.Type]; key != "" {
 		n.Data()["model"] = key
 	}
+	if preset := opt.DramaParams[asset.Type]; len(preset) > 0 {
+		params := make(map[string]any, len(preset))
+		for name, value := range preset {
+			params[name] = value
+		}
+		n.Data()["params"] = params
+	}
 	return n
 }
 

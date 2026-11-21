@@ -68,8 +68,8 @@ func (h *DramaHandler) EstimateSource(c *gin.Context) {
 // PromptTemplates 只返回可替换正文，不返回固定协议。
 func (h *DramaHandler) PromptTemplates(c *gin.Context) {
 	items := []gin.H{}
-	labels := map[string]string{"plan": "分集规划", "scripts": "分集剧本", "breakdown": "资产拆解", "asset_prompts": "资产图提示词", "storyboard": "视频提示词"}
-	for _, step := range []string{"adapt", "assets", "asset_prompts", "video"} {
+	labels := map[string]string{"plan": "分集规划", "scripts": "分集剧本", "breakdown": "资产拆解", "asset_prompts": "资产图提示词", "storyboard": "视频提示词", "board": "故事板提示词"}
+	for _, step := range service.DramaPromptSteps {
 		pages := []gin.H{}
 		for _, key := range service.DramaPromptPages(step) {
 			pages = append(pages, gin.H{"key": key, "label": labels[key], "body": drama.PromptBody(key)})
@@ -82,7 +82,7 @@ func (h *DramaHandler) PromptTemplates(c *gin.Context) {
 // ListPrompts 返回本人提示词，包括可编辑正文。
 func (h *DramaHandler) ListPrompts(c *gin.Context) {
 	var req struct {
-		Step string `form:"step" binding:"omitempty,oneof=adapt assets asset_prompts video"`
+		Step string `form:"step" binding:"omitempty,oneof=plan scripts assets asset_prompts video board"`
 	}
 	if !BindQuery(c, &req) {
 		return
@@ -140,10 +140,10 @@ func (h *DramaHandler) DeletePrompt(c *gin.Context) {
 	response.NoContent(c)
 }
 
-// Skills 返回启用且管理员标记本环节的技能。
+// Skills 返回管理员打开了本环节、且有生效版本的技能（与画布 Agent 开关无关）。
 func (h *DramaHandler) Skills(c *gin.Context) {
 	var req struct {
-		Step string `form:"step" binding:"required,oneof=adapt assets asset_prompts video"`
+		Step string `form:"step" binding:"required,oneof=plan scripts assets asset_prompts video"`
 	}
 	if !BindQuery(c, &req) {
 		return

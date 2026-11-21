@@ -42,25 +42,26 @@ func (s *DramaService) runScripts(ctx context.Context, p *model.DramaProject, j 
 				return nil, 0, errcode.ErrDramaEpisodeSourceTooLong
 			}
 		}
-		v, c, e := s.callDrama(ctx, j, snap, "scripts", fmt.Sprintf("episode=%d", ep.No), vars, nil)
+		// 只有一次调用：写法和格式都由提示词正文决定（内置是标准短剧剧本），输出原样就是本集剧本，代码不再改写
+		v, callCost, e := s.callDrama(ctx, j, snap, "scripts", fmt.Sprintf("episode=%d", ep.No), vars, nil)
 		if e != nil {
 			if markErr := s.markScriptFailed(ctx, j, ep.No); markErr != nil {
 				return nil, 0, markErr
 			}
 			return nil, 0, e
 		}
-		script := v.(drama.ScriptOutput)
-		if e = s.saveDramaScript(ctx, j, ep.No, script.ScriptMD, "ready"); e != nil {
+		script := v.(string)
+		if e = s.saveDramaScript(ctx, j, ep.No, script, "ready"); e != nil {
 			return nil, 0, e
 		}
-		cost += c
+		cost += callCost
 		for k := range all {
 			if all[k].No == ep.No {
-				all[k].ScriptMD = script.ScriptMD
+				all[k].ScriptMD = script
 				all[k].ScriptStatus = "ready"
 			}
 		}
-		outputs = append(outputs, map[string]any{"no": ep.No, "script_md": script.ScriptMD})
+		outputs = append(outputs, map[string]any{"no": ep.No, "script_md": script})
 		if e = s.dramaProgress(ctx, j, (i+1)*90/len(selected)); e != nil {
 			return nil, 0, e
 		}

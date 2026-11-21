@@ -15,7 +15,7 @@ import { isUploading } from "./upload-state";
 /** 判断连线只要节点的这几项 */
 export type LinkEnd = Pick<
   CanvasNodeData,
-  "kind" | "model" | "params" | "prompt" | "status" | "uploadProgress"
+  "kind" | "model" | "params" | "prompt" | "status" | "uploadProgress" | "uploaded"
 >;
 
 /** 下游节点当前模型的能力：节点没选模型就按清单第一条，清单还没到或不接模型返回 undefined */
@@ -36,6 +36,8 @@ function capabilitiesOf(node: LinkEnd) {
 export function canLinkNodes(source: LinkEnd, target: LinkEnd): boolean {
   // 还在上传的节点没有正式素材，没东西可引用
   if (isUploading(source)) return false;
+  // 上传的素材节点不生成，接进来的线没有用处
+  if (target.uploaded) return false;
   if (!canConnectKinds(source.kind, "source", target.kind)) return false;
   // 分镜表连出去的线只表示来源，下游不把它当参考素材，所以不看下游模型收不收这种素材
   if (source.kind === "storyboard") return true;

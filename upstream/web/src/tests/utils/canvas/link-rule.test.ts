@@ -214,3 +214,12 @@ describe("音频节点能引用图片：只看目标模型有没有开图片参�
     expect(mentionableNodes("audio", nodes, []).canvas.map((item) => item.id)).toEqual(["img"]);
   });
 });
+
+describe("canLinkNodes：上传节点不收输入", () => {
+  test("任何上游都接不进上传素材节点，上传节点照样能连到下游", () => {
+    const uploaded = { kind: "image" as const, uploaded: true, status: "done" as const };
+    expect(canLinkNodes({ kind: "script" }, uploaded)).toBe(false);
+    expect(canLinkNodes({ kind: "image" }, uploaded)).toBe(false);
+    expect(canLinkNodes(uploaded, { kind: "image" })).toBe(true);
+  });
+});

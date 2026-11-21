@@ -238,3 +238,47 @@ describe("选集网格：集多时虚拟化", () => {
     expect(rendered).toBeLessThan(80);
   });
 });
+
+describe("提交中：按钮转圈并禁用，免得用户以为卡了", () => {
+  /** 让提交请求一直挂着，直到调用 release */
+  const holdSubmit = () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const original = post.getMockImplementation()!;
+    post.mockImplementation((async (url: string, body: unknown) => {
+      if (url.endsWith("/jobs")) await gate;
+      return original(url, body);
+    }) as never);
+    return () => release();
+  };
+  const spinning = (button: HTMLButtonElement | undefined) =>
+    !!button?.querySelector(".animate-spin") && button.disabled;
+
+  test("写剧本", async () => {
+    const release = holdSubmit();
+    const m = await mountWith(dramaWith(), <ScriptsBody onClose={() => {}} />);
+    const button = byText(m.container, "生成 3 集剧本") as HTMLButtonElement;
+    expect(spinning(button)).toBe(false);
+    await dom.click(button);
+    await dom.flush();
+    expect(spinning(button)).toBe(true);
+    release();
+    await dom.flush();
+    await m.unmount();
+  });
+
+  test("资产拆解", async () => {
+    const release = holdSubmit();
+    const m = await mountWith(
+      dramaWith(),
+      <BreakdownBody onClose={() => {}} onStarted={() => {}} />,
+    );
+    const button = byText(m.container, "开始拆解") as HTMLButtonElement;
+    await dom.click(button);
+    await dom.flush();
+    expect(spinning(button)).toBe(true);
+    release();
+    await dom.flush();
+    await m.unmount();
+  });
+});

@@ -42,7 +42,7 @@ func mustImport(t *testing.T, e *skillEnv, actor uint64, zipBytes []byte) *Skill
 func mustConfirm(t *testing.T, e *skillEnv, actor uint64, zipBytes []byte) *SkillItem {
 	t.Helper()
 	v := mustImport(t, e, actor, zipBytes)
-	it, err := e.svc.ConfirmImport(context.Background(), actor, v.ID)
+	it, err := e.svc.ConfirmImport(context.Background(), actor, v.ID, SkillScope{})
 	if err != nil {
 		t.Fatalf("ConfirmImport: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestSkillService_ImportPrecheck(t *testing.T) {
 		if !hasCode(v.Issues, "HAS_SCRIPTS", "warn") || hasCode(v.Issues, "HAS_SCRIPTS", "error") {
 			t.Fatalf("HAS_SCRIPTS 应只是 warn 级提示: %+v", v.Issues)
 		}
-		it, err := e.svc.ConfirmImport(context.Background(), 1, v.ID)
+		it, err := e.svc.ConfirmImport(context.Background(), 1, v.ID, SkillScope{})
 		if err != nil {
 			t.Fatalf("确认导入失败: %v", err)
 		}
@@ -123,7 +123,7 @@ func TestSkillService_ConfirmAndVersions(t *testing.T) {
 		if v.CanConfirm || v.Issues[0].Code != "SAME_AS_VERSION" {
 			t.Fatalf("%+v", v.Issues)
 		}
-		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID); codeOf(err) != 61006 {
+		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID, SkillScope{}); codeOf(err) != 61006 {
 			t.Errorf("%v", err)
 		}
 	})
@@ -172,10 +172,10 @@ func TestSkillService_ConfirmGuards(t *testing.T) {
 	t.Run("别人的暂存、不存在的暂存都是 61001", func(t *testing.T) {
 		e := newSkillEnv(t)
 		v := mustImport(t, e, 1, standardPkg(t, "demo", "x"))
-		if _, err := e.svc.ConfirmImport(ctx, 2, v.ID); codeOf(err) != 61001 {
+		if _, err := e.svc.ConfirmImport(ctx, 2, v.ID, SkillScope{}); codeOf(err) != 61001 {
 			t.Errorf("他人: %v", err)
 		}
-		if _, err := e.svc.ConfirmImport(ctx, 1, "nope"); codeOf(err) != 61001 {
+		if _, err := e.svc.ConfirmImport(ctx, 1, "nope", SkillScope{}); codeOf(err) != 61001 {
 			t.Errorf("不存在: %v", err)
 		}
 	})
@@ -183,7 +183,7 @@ func TestSkillService_ConfirmGuards(t *testing.T) {
 		e := newSkillEnv(t)
 		v := mustImport(t, e, 1, standardPkg(t, "demo", "x"))
 		*e.now = e.now.Add(2 * time.Hour)
-		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID); codeOf(err) != 61001 {
+		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID, SkillScope{}); codeOf(err) != 61001 {
 			t.Errorf("%v", err)
 		}
 		e.svc.Sweep(ctx)
@@ -197,7 +197,7 @@ func TestSkillService_ConfirmGuards(t *testing.T) {
 		for _, k := range e.store.keys() {
 			_ = e.store.Delete(ctx, k)
 		}
-		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID); codeOf(err) != 61001 {
+		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID, SkillScope{}); codeOf(err) != 61001 {
 			t.Errorf("应为 61001: %v", err)
 		}
 	})
@@ -211,7 +211,7 @@ func TestSkillService_ConfirmGuards(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := e.svc.ConfirmImport(ctx, 1, v.ID)
+				_, err := e.svc.ConfirmImport(ctx, 1, v.ID, SkillScope{})
 				mu.Lock()
 				defer mu.Unlock()
 				switch {
@@ -238,14 +238,14 @@ func TestSkillService_ConfirmGuards(t *testing.T) {
 		e := newSkillEnv(t)
 		v := mustImport(t, e, 1, standardPkg(t, "demo", "x"))
 		e.store.fail = true
-		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID); err == nil {
+		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID, SkillScope{}); err == nil {
 			t.Fatal("写对象失败应报错")
 		}
 		e.store.fail = false
 		if len(e.repo.versions) != 0 {
 			t.Errorf("pending 行应被回退: %d", len(e.repo.versions))
 		}
-		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID); err != nil {
+		if _, err := e.svc.ConfirmImport(ctx, 1, v.ID, SkillScope{}); err != nil {
 			t.Errorf("暂存仍在，应能重试: %v", err)
 		}
 	})

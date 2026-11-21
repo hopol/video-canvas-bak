@@ -451,10 +451,15 @@ func dramaQuote(p *model.DramaProject, step string, eps []model.DramaEpisode, sn
 	chars := utf8.RuneCountInString(p.SourceSummary) + utf8.RuneCountInString(p.OutlineMD) + 4096
 	switch step {
 	case "scripts":
-		requests = max(1, len(eps))
+		// 每集两次：创作段与格式段
+		requests = 2 * max(1, len(eps))
+	case "asset_prompts":
+		requests = 2
 	case "analyze":
 		chars = min(40000, min(max(p.SourceChars, utf8.RuneCountInString(p.SourceText)), dramaContextLimit(snap))) + 2048
 	case "plan":
+		// 两次调用：分集目录的创作段与格式段，创作段读原文
+		requests = 2
 		chars += min(30000, p.SourceChars)
 	case "breakdown":
 		units := make([]drama.Unit, 0, len(eps))
@@ -462,19 +467,25 @@ func dramaQuote(p *model.DramaProject, step string, eps []model.DramaEpisode, sn
 			units = append(units, drama.Unit{Chars: utf8.RuneCountInString(ep.ScriptMD)})
 		}
 		total := 0
-		for _, batch := range drama.ScriptBatches(units) {
+		for _, batch := range drama.ScriptBatches(units, dramaBatchBudget(snap)) {
 			size := chars
 			for _, u := range batch {
 				size += u.Chars
 			}
-			// 每批一次拆解，再为这批新资产写一次提示词
-			total += 2 * modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: size, Params: map[string]any{}})
+			// 每批两次拆解（创作段与格式段），再为这批新资产写两次提示词
+			total += 4 * modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: size, Params: map[string]any{}})
 		}
 		return total
 	case "storyboard":
+		// 两次调用：创作段读剧本，格式段读创作稿（按与剧本等长估）
+		script := 0
 		for _, ep := range eps {
-			chars += utf8.RuneCountInString(ep.ScriptMD)
+			script += utf8.RuneCountInString(ep.ScriptMD)
 		}
+		price := func(n int) int {
+			return modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: n, Params: map[string]any{}})
+		}
+		return price(chars+script) + price(chars+2*script)
 	}
 	return requests * modelcfg.Quote(snap.Model.Pricing, snap.Model.Capabilities, modelcfg.Spec{PromptChars: chars, Params: map[string]any{}})
 }

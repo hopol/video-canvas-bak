@@ -3,6 +3,7 @@ import { createContext, useContext } from "react";
 import type { CanvasTool } from "@/components/canvas";
 import type { SaveStatus } from "@/hooks/use-canvas-persistence";
 import type { CanvasHistory } from "@/hooks/use-canvas-history";
+import type { FillUploadActions } from "@/hooks/use-fill-upload";
 import type { FlowNode, NodeKind } from "@/types";
 
 /**
@@ -29,6 +30,11 @@ export type CanvasEditorCommands = {
 export type CanvasEditorApi = CanvasEditorCommands & {
   canvasId: string;
   title: string;
+  /**
+   * 只能看、不能改。另一标签页正拿着编辑锁时是这个状态：
+   * 顶栏改名、底栏新建、上传、撤销重做这些入口据此收起来。
+   */
+  readOnly: boolean;
   /** 改名并保存；失败会自己回滚并提示 */
   rename: (next: string) => void;
   saveStatus: SaveStatus;
@@ -49,6 +55,8 @@ export type CanvasEditorApi = CanvasEditorCommands & {
   openAssetPicker: () => void;
   /** 打开设置弹窗（里面按节点种类列出模型清单） */
   openSettings: () => void;
+  /** 往空节点里放素材（上传 / 素材库）、按文件新建并放好的节点 */
+  fill: FillUploadActions;
 };
 
 const CanvasEditorApiContext = createContext<CanvasEditorApi | null>(null);

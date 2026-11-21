@@ -157,7 +157,8 @@ describe("上传 → 预检 → 开拍设置 → 建剧", () => {
       style_key: "real_city_film",
       episode_seconds: 60,
       prompts: {
-        adapt: { source: "builtin" },
+        plan: { source: "builtin" },
+        scripts: { source: "builtin" },
         assets: { source: "builtin" },
         asset_prompts: { source: "builtin" },
         video: { source: "builtin" },

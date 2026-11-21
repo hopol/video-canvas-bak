@@ -1,21 +1,28 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Hand, Plus, Search } from "lucide-react";
+import { Hand, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { ChromePill, ChromeZone } from "@/components/canvas/chrome/chrome";
 import { useCanvasEditor } from "@/components/canvas-editor/editor-api";
-import { submitNodeById, submitWithVoiceById } from "@/components/canvas-editor/node-actions";
+import {
+  setModelById,
+  submitNodeById,
+  submitWithVoiceById,
+} from "@/components/canvas-editor/node-actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EnrollDialog } from "@/components/virtual-human/enroll-dialog";
 import { useRemoteModels } from "@/hooks/use-models";
+import { useVirtualHumans } from "@/hooks/use-virtual-humans";
 import { BottomToolbar } from "@/pages/canvas/chrome/bottom-toolbar";
 import { ViewControls } from "@/pages/canvas/chrome/view-controls";
 import { openShortcuts } from "@/pages/canvas/shortcuts-state";
 import { DURATION, EASE_OUT } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useCharacterDetail } from "@/store/character-detail";
+import { useModelSwitchStore } from "@/store/drama-model-switch";
 import { usePromptEditor } from "@/store/prompt-editor";
 import {
   ASSET_TYPES,
@@ -25,13 +32,17 @@ import {
   newNodeKindOf,
   dramaForNewAsset,
   pendingGenerate,
+  modelSwitchTargets,
   toAssetItems,
   type AssetItem,
 } from "@/utils/drama/assets";
-import { writingAssetPrompts } from "@/utils/drama/jobs";
+import { isActiveJob, writingAssetPrompts } from "@/utils/drama/jobs";
+import { planFileDrop } from "@/utils/canvas/fill-upload";
 import { lowestUnit } from "@/utils/pricing/quote";
+import { enrollTarget, humanOfAsset } from "@/utils/virtual-human/virtual-human";
+import type { AssetDto } from "@/api/asset/type";
 
-import { AssetCard, TYPE_ICON } from "./asset-card";
+import { AddAssetCard, AssetCard, TYPE_ICON } from "./asset-card";
 import { useAssetsUi } from "./assets-ui";
 import { useWorkspace } from "./context";
 import { useMarquee } from "./use-marquee";
@@ -128,6 +139,7 @@ function Credits({ value }: { value: number }) {
 /** 列表视图：类型 tab、资产卡网格（可鼠标框选，已生成的也能选上重新生成）、有选中时底部浮出批量操作栏 */
 function AssetList({ items }: { items: AssetItem[] }) {
   const ui = useAssetsUi();
+  const { jobs } = useWorkspace();
   const editor = useCanvasEditor();
   const imageModels = useRemoteModels("image");
   const audioModels = useRemoteModels("audio");
@@ -159,6 +171,21 @@ function AssetList({ items }: { items: AssetItem[] }) {
     const ids = new Set(candidates.map((item) => item.id));
     return shown.filter((item) => ids.has(item.id)).map((item) => item.id);
   }, [candidates, shown]);
+
+  /**
+   * 真人库：已有形象图的角色卡可以把形象图加入真人库备案。管理员没配置虚拟人像库时不给入口，
+   * 已在真人库里的图只显示状态；还没生成形象、上传中、生成中的卡都没有按钮。
+   */
+  const humans = useVirtualHumans(true);
+  const ownerOf = useMemo(() => humanOfAsset(humans.humans ?? []), [humans.humans]);
+  const [enrolling, setEnrolling] = useState<AssetDto | null>(null);
+  const enrollOf = (item: AssetItem) => {
+    const asset = ui.multi ? null : enrollTarget(item);
+    if (!asset) return undefined;
+    const human = ownerOf.get(asset.id) ?? null;
+    if (!human && !humans.filingReady) return undefined;
+    return { human, onEnroll: () => setEnrolling(asset) };
+  };
 
   const { setMulti, setSelected, multi } = ui;
   const {
@@ -237,10 +264,53 @@ function AssetList({ items }: { items: AssetItem[] }) {
     toast.info("已在短剧画布上新建节点，列表同步出现");
   };
 
+  /** 每个文件建一张当前类型的卡并传进去，归类和「新建」一样按当前 tab 和集数 */
+  const createFromFiles = (files: File[]) => {
+    if (files.length === 0 || ui.type === "text") return;
+    ui.setNewDrama({ drama: dramaForNewAsset(ui.type, ui.filter) });
+    editor.fill.createFilled(newNodeKindOf(ui.type), files);
+  };
+  /** 文件拖进列表：一个文件松在空卡上就放进那张卡，其余按文件新建卡；文本 tab 不收文件 */
+  const [fileOver, setFileOver] = useState(false);
+  const acceptsFiles = (event: React.DragEvent) =>
+    ui.type !== "text" && event.dataTransfer.types.includes("Files");
+  const onFileDragOver = (event: React.DragEvent) => {
+    if (!acceptsFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setFileOver(true);
+  };
+  const onFileDragLeave = (event: React.DragEvent) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFileOver(false);
+  };
+  const onFileDrop = (event: React.DragEvent) => {
+    setFileOver(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (!acceptsFiles(event) || files.length === 0) return;
+    event.preventDefault();
+    const id = (event.target as Element)
+      .closest?.("[data-asset-id]")
+      ?.getAttribute("data-asset-id");
+    const target = shown.find((item) => item.id === id);
+    const plan = planFileDrop(files, target ? { id: target.id, data: target.data } : null);
+    if (plan.mode === "fill") editor.fill.fillFile(plan.id, files[0]);
+    else createFromFiles(files);
+  };
+
+  /** 正在拆解的是当前筛选的集（全集时任一集在拆）：空列表不说「还没有」，说拆完会出现 */
+  const breaking = jobs.some(
+    (job) =>
+      job.step === "breakdown" &&
+      isActiveJob(job) &&
+      (ui.filter.kind === "all" ||
+        (ui.filter.kind === "episode" && job.episodes.includes(ui.filter.no))),
+  );
   const hint =
     ui.filter.kind === "none"
       ? `画布里没有未分类的${typeMeta.label}`
-      : `这个筛选下还没有${typeMeta.label}`;
+      : breaking
+        ? `资产正在拆解，拆出的${typeMeta.label}会出现在这里`
+        : `这个筛选下还没有${typeMeta.label}`;
 
   return (
     <div className="bg-background absolute inset-0 z-20 flex flex-col">
@@ -292,6 +362,9 @@ function AssetList({ items }: { items: AssetItem[] }) {
         <div
           ref={marqueeRef}
           {...marqueeHandlers}
+          onDragOver={onFileDragOver}
+          onDragLeave={onFileDragLeave}
+          onDrop={onFileDrop}
           className={cn(
             "relative min-h-full p-4",
             selectedItems.length > 0 && "pb-24",
@@ -315,26 +388,45 @@ function AssetList({ items }: { items: AssetItem[] }) {
                 onLocate={() => locate(item.id)}
                 onEditPrompt={() => usePromptEditor.getState().open(item.id)}
                 onEditCharacter={() => useCharacterDetail.getState().open(item.id)}
+                onUpload={() => editor.fill.pickFile(item.id)}
+                onPickLibrary={() => editor.fill.pickAsset(item.id)}
+                enroll={enrollOf(item)}
               />
             ))}
-            <button
-              type="button"
-              onClick={createNew}
-              className="text-muted-foreground hover:bg-muted/60 focus-visible:ring-ring/50 flex aspect-3/4 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed text-sm outline-none focus-visible:ring-2"
-            >
-              <Plus className="size-5" />
-              {ui.type === "character" ? "引入角色卡" : `新建${typeMeta.label}`}
-              <span className="text-xs">
-                {ui.filter.kind === "none"
+            <EnrollDialog
+              asset={enrolling}
+              humans={humans.humans ?? []}
+              onClose={() => setEnrolling(null)}
+              onDone={(human) => {
+                humans.upsert(human);
+                toast.success(`已加入「${human.name}」，正在备案`);
+              }}
+            />
+            <AddAssetCard
+              type={ui.type}
+              scope={
+                ui.filter.kind === "none"
                   ? "未分类"
                   : ui.filter.kind === "episode"
                     ? `出现在第 ${ui.filter.no} 集`
-                    : "全集出现"}
-              </span>
-            </button>
+                    : "全集出现"
+              }
+              onCreate={createNew}
+            />
           </div>
           {shown.length === 0 && (
             <div className="text-muted-foreground py-8 text-center text-sm">{hint}</div>
+          )}
+          {fileOver && (
+            <div
+              aria-hidden
+              className="ring-primary/70 bg-primary/5 text-foreground pointer-events-none absolute inset-2 z-30 grid place-items-center rounded-2xl ring-2 ring-inset"
+            >
+              <span className="bg-chrome ring-chrome-border flex items-center gap-1.5 rounded-full px-4 py-2 text-sm ring-1 backdrop-blur-xl">
+                <Upload className="size-4" />
+                松手上传
+              </span>
+            </div>
           )}
           {marqueeBox && (
             <div
@@ -409,12 +501,31 @@ function AssetList({ items }: { items: AssetItem[] }) {
   );
 }
 
-/** 画布视图下的外壳：左上资产库浮窗、底部居中横排工具条、视图控件、操作提示 */
-function CanvasChrome({ items }: { items: AssetItem[] }) {
+/**
+ * 项目设置换了图片模型：把这几类里还没生成的卡换过去（和在节点上换一样迁移参数）。
+ * 节点要挂载后才登记动作，没换成的留着，节点数据变了（挂载、出图……）再试，全换好才清掉请求。
+ */
+function useApplyModelSwitch(dramaId: string, items: AssetItem[]) {
+  const pending = useModelSwitchStore((state) => state.byDrama[dramaId]);
+  const imageModels = useRemoteModels("image");
+  useEffect(() => {
+    if (!pending || imageModels.status !== "ready") return;
+    const fallback = imageModels.models[0]?.key;
+    for (const [slot, picked] of Object.entries(pending) as [keyof typeof pending, string][]) {
+      const key = picked || fallback;
+      const left = key
+        ? modelSwitchTargets(items, slot, key, fallback).filter((id) => !setModelById(id, key))
+        : [];
+      if (left.length === 0) useModelSwitchStore.getState().done(dramaId, slot);
+    }
+  }, [dramaId, imageModels.models, imageModels.status, items, pending]);
+}
+
+/** 画布视图的底部工具：居中横排工具条、左下视图控件；资产管理和故事板共用 */
+export function CanvasTools() {
   const editor = useCanvasEditor();
   return (
     <>
-      <LibraryFloat items={items} />
       <ChromeZone position="bottom-center">
         <BottomToolbar
           orientation="horizontal"
@@ -436,6 +547,16 @@ function CanvasChrome({ items }: { items: AssetItem[] }) {
           onOpenShortcuts={openShortcuts}
         />
       </ChromeZone>
+    </>
+  );
+}
+
+/** 画布视图下的外壳：左上资产库浮窗、底部工具、操作提示 */
+function CanvasChrome({ items }: { items: AssetItem[] }) {
+  return (
+    <>
+      <LibraryFloat items={items} />
+      <CanvasTools />
       <ChromeZone position="bottom-right" className="max-md:hidden">
         <ChromePill className="text-muted-foreground gap-1.5 px-3 text-xs">
           <Hand className="size-3.5" />
@@ -453,9 +574,10 @@ function CanvasChrome({ items }: { items: AssetItem[] }) {
 export const AssetsOverlay = memo(function AssetsOverlay() {
   const ui = useAssetsUi();
   const editor = useCanvasEditor();
-  const { jobs } = useWorkspace();
+  const { drama, jobs } = useWorkspace();
   const analyzing = writingAssetPrompts(jobs);
   const items = useMemo(() => toAssetItems(editor.nodes, { analyzing }), [analyzing, editor.nodes]);
+  useApplyModelSwitch(drama.id, items);
 
   const { clearSelection } = editor;
   const { setNewDrama } = ui;

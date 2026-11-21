@@ -13,9 +13,10 @@ import (
 	"video-canvas/internal/service"
 )
 
-// TestDramaMediaIntegration_ConcurrentSegments 验证片段任务插入和项目互斥在同一真实事务，两个并发请求只能接受一个。
+// TestDramaMediaIntegration_ConcurrentSegments 验证同一集的不同片段可以同时提交视频，同一片段并发提交只接受一个。
 func TestDramaMediaIntegration_ConcurrentSegments(t *testing.T) {
-	e := newGTIEnv(t, defaultTaskLimits())
+	// 排队上限放宽到 5：同集两段 + 另一集一段同时在排队
+	e := newGTIEnv(t, &fakeLimits{initial: 50, defMax: 5})
 	if err := e.db.AutoMigrate(&model.DramaProject{}, &model.DramaEpisode{}, &model.DramaSegment{}, &model.DramaJob{}); err != nil {
 		t.Fatal(err)
 	}
@@ -32,35 +33,34 @@ func TestDramaMediaIntegration_ConcurrentSegments(t *testing.T) {
 	if err := e.db.Create(&segments).Error; err != nil {
 		t.Fatal(err)
 	}
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	var wg sync.WaitGroup
-	for i, row := range segments {
-		wg.Add(1)
-		go func(i int, row model.DramaSegment) {
-			defer wg.Done()
-			<-start
-			req := validCreateReq()
-			req.NodeID = "seg:" + idcodec.Encode(row.ID)
-			req.CanvasID = 7
-			_, err := createSingle(context.Background(), e.svc, e.user, "media-"+idcodec.Encode(uint64(i+1)), req)
-			errs <- err
-		}(i, row)
+	// submit 让每个片段各发一次请求，同时出发，返回各自的错误
+	submit := func(rows []model.DramaSegment, prefix string) []error {
+		start := make(chan struct{})
+		errs := make([]error, len(rows))
+		var wg sync.WaitGroup
+		for i, row := range rows {
+			wg.Add(1)
+			go func(i int, row model.DramaSegment) {
+				defer wg.Done()
+				<-start
+				req := validCreateReq()
+				req.NodeID = "seg:" + idcodec.Encode(row.ID)
+				req.CanvasID = 7
+				_, errs[i] = createSingle(context.Background(), e.svc, e.user, prefix+idcodec.Encode(uint64(i+1)), req)
+			}(i, row)
+		}
+		close(start)
+		wg.Wait()
+		return errs
 	}
-	close(start)
-	wg.Wait()
-	close(errs)
-	accepted, rejected := 0, 0
-	for err := range errs {
-		if err == nil {
-			accepted++
-		} else {
-			assertTaskCode(t, err, errcode.ErrDramaJobBusy.Code)
-			rejected++
+	for i, err := range submit(segments, "media-") {
+		if err != nil {
+			t.Fatalf("同一集的片段 %d 应能并行提交: %v", i, err)
 		}
 	}
-	if accepted != 1 || rejected != 1 {
-		t.Fatalf("接受 %d 拒绝 %d", accepted, rejected)
+	// 同一片段已有进行中的视频，再提交（并发两次）都要拒绝
+	for _, err := range submit([]model.DramaSegment{segments[0], segments[0]}, "again-") {
+		assertTaskCode(t, err, errcode.ErrDramaJobBusy.Code)
 	}
 	// 已排队的视频不应被自动规划阻塞，也不能被同集零费用合成绕过。
 	dramaSvc := service.NewDramaService(service.DramaDeps{Repo: repository.NewDramaRepository(e.db)})

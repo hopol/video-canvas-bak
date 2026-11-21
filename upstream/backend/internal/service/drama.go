@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"video-canvas/internal/agent/canvasgraph"
 	"video-canvas/internal/drama"
 	"video-canvas/internal/llmgateway"
 	"video-canvas/internal/model"
@@ -43,7 +45,12 @@ type DramaCanvasWriter interface {
 	ApplyPrompts(context.Context, uint64, uint64, uint64, string, []drama.AssetPrompt, []DramaCanvasAsset, int) error
 	// DeleteEpisode 删一集、后面的集补位，并改写资产画布上的出现集数（userID, dramaID, canvasID, no）。
 	DeleteEpisode(context.Context, uint64, uint64, uint64, int) error
+	// SyncBoards 让一集的故事板节点和片段对上：每个片段一个节点（没有就建空的），片段已经没了的节点清掉（userID, canvasID, no）。
+	SyncBoards(context.Context, uint64, uint64, int, []DramaBoardSegment) error
 }
+
+// DramaBoardSegment 是一个片段在画布上的故事板要用的信息（分镜成功后同步节点用）。
+type DramaBoardSegment = canvasgraph.BoardSegment
 
 // DramaCoverReader 读取短剧资产画布的封面素材：画布里第一张生成成功的图（canvas_projects.cover_asset_id）。
 type DramaCoverReader interface {
@@ -65,8 +72,9 @@ type DramaStoryboardCanvasReader interface {
 
 // DramaSegmentSummary 提供片段工作区的实时聚合。
 type DramaSegmentSummary interface {
-	// Summary 返回集的片段数、总秒数和已有采用视频的片段数。
-	Summary(context.Context, uint64, uint64) (count, seconds, done int, err error)
+	// Summary 返回集的片段数、总秒数、已有采用视频的片段数和有新鲜故事板的片段数；
+	// 最后一个参数是画布上已出图的故事板（片段 ID → 出图时原稿的哈希），nil 不数故事板。
+	Summary(context.Context, uint64, uint64, map[string]string) (model.DramaSegmentStats, error)
 }
 
 // DramaModelStreamer 向 Agent 模型的渠道发一次对话请求（*llmgateway.Gateway 实现它）。
@@ -111,11 +119,12 @@ type DramaService struct {
 	assets       DramaComposeAssets
 	covers       DramaCoverReader
 	coverURL     func(key string) string
+	retryDelays  []time.Duration // 文本模型遇到限流 / 上游故障时每次重试前等多久，次数即重试上限
 }
 
 // NewDramaService 创建短剧服务，不启动后台任务。
 func NewDramaService(d DramaDeps) *DramaService {
-	return &DramaService{settings: d.Settings, skills: d.Skills, repo: d.Repo, registry: d.Registry, streamer: d.Streamer, secrets: d.Secrets, canvas: d.Canvas, bc: d.Broadcaster, credits: d.Credits, canvasAssets: d.CanvasAssets, segments: d.Segments, compose: d.Compose, assets: d.Assets, covers: d.Covers, coverURL: d.CoverURL}
+	return &DramaService{settings: d.Settings, skills: d.Skills, repo: d.Repo, registry: d.Registry, streamer: d.Streamer, secrets: d.Secrets, canvas: d.Canvas, bc: d.Broadcaster, credits: d.Credits, canvasAssets: d.CanvasAssets, segments: d.Segments, compose: d.Compose, assets: d.Assets, covers: d.Covers, coverURL: d.CoverURL, retryDelays: dramaRetryDelays}
 }
 
 // Create 校验原文和风格，在同一事务建立项目、画布与首个研读任务。
@@ -145,11 +154,17 @@ func (s *DramaService) Create(ctx context.Context, userID uint64, req *model.Cre
 	if err := checkDramaStyle(req.StyleKey, req.StyleCustom); err != nil {
 		return nil, err
 	}
-	snap, err := s.resolvePlanningModel(ctx, req.TextModel)
+	snap, err := s.resolveModel(ctx, req.TextModel)
 	if err != nil {
 		return nil, err
 	}
+	if err = checkUnitsFit(snap, parsed.Units[:end]); err != nil {
+		return nil, err
+	}
 	if err = s.checkDramaModels(ctx, &req.VideoModel, &req.ImageModels); err != nil {
+		return nil, err
+	}
+	if err = s.checkDramaImageParams(ctx, req.ImageModels, req.ImageParams); err != nil {
 		return nil, err
 	}
 	settings, err := s.snapshotPrompts(ctx, userID, req.SourceKind, req.Prompts)
@@ -158,6 +173,7 @@ func (s *DramaService) Create(ctx context.Context, userID uint64, req *model.Cre
 	}
 	raw, _ := json.Marshal(settings)
 	imageModels, _ := json.Marshal(req.ImageModels)
+	imageParams, _ := json.Marshal(req.ImageParams.Normalized())
 	initial, err := s.dramaInitialCredits(ctx)
 	if err != nil {
 		return nil, err
@@ -174,7 +190,7 @@ func (s *DramaService) Create(ctx context.Context, userID uint64, req *model.Cre
 	if seconds == 0 {
 		seconds = 60
 	}
-	p := &model.DramaProject{UserID: userID, Title: title, SourceText: parsed.Text, SourceKind: req.SourceKind, SourceChars: draft.Chars, SourceSHA256: draft.SHA256, SourceFilename: draft.Filename, UnitsTotal: len(parsed.Units), UnitKind: parsed.UnitKind, Phase: "running", RangeEnd: end, PromptSettings: raw, Genre: req.Genre, StyleKey: req.StyleKey, StyleCustom: req.StyleCustom, Ratio: req.Ratio, EpisodeSeconds: seconds, TextModel: req.TextModel, VideoModel: req.VideoModel, ImageModels: imageModels, Status: "analyzing", Revision: 1, TextModelID: &snap.ModelRevisionID}
+	p := &model.DramaProject{UserID: userID, Title: title, SourceText: parsed.Text, SourceKind: req.SourceKind, SourceChars: draft.Chars, SourceSHA256: draft.SHA256, SourceFilename: draft.Filename, UnitsTotal: len(parsed.Units), UnitKind: parsed.UnitKind, Phase: "running", RangeEnd: end, PromptSettings: raw, Genre: req.Genre, StyleKey: req.StyleKey, StyleCustom: req.StyleCustom, Ratio: req.Ratio, EpisodeSeconds: seconds, TextModel: req.TextModel, VideoModel: req.VideoModel, ImageModels: imageModels, ImageParams: imageParams, Status: "analyzing", Revision: 1, TextModelID: &snap.ModelRevisionID}
 	if p.SourceChars == 0 {
 		p.SourceChars = utf8.RuneCountInString(parsed.Text)
 	}
@@ -230,9 +246,14 @@ func (s *DramaService) Get(ctx context.Context, userID, id uint64) (*model.Drama
 	if err != nil {
 		return nil, err
 	}
-	v := &model.DramaView{SourceChars: p.SourceChars, UnitsTotal: p.UnitsTotal, UnitKind: p.UnitKind, Phase: p.Phase, PlanCursor: p.PlanCursor, RangeEnd: p.RangeEnd, PauseReason: p.PauseReason, PauseCode: p.PauseCode, PromptSettings: settings, ID: idcodec.ID(p.ID), Title: p.Title, CanvasID: idcodec.ID(p.CanvasID), Status: p.Status, SourceKind: p.SourceKind, Genre: p.Genre, StyleKey: p.StyleKey, StyleCustom: p.StyleCustom, Ratio: p.Ratio, TargetEpisodes: p.TargetEpisodes, EpisodeSeconds: p.EpisodeSeconds, TextModel: p.TextModel, VideoModel: p.VideoModel, ImageModels: dramaImageModels(p), OutlineMD: p.OutlineMD, CharactersMD: p.CharactersMD, Revision: p.Revision, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, Episodes: []model.DramaEpisodeSummary{}, ActiveJobs: []model.DramaJobView{}}
+	v := &model.DramaView{SourceChars: p.SourceChars, UnitsTotal: p.UnitsTotal, UnitKind: p.UnitKind, Phase: p.Phase, PlanCursor: p.PlanCursor, RangeEnd: p.RangeEnd, PauseReason: p.PauseReason, PauseCode: p.PauseCode, PromptSettings: settings, ID: idcodec.ID(p.ID), Title: p.Title, CanvasID: idcodec.ID(p.CanvasID), Status: p.Status, SourceKind: p.SourceKind, Genre: p.Genre, StyleKey: p.StyleKey, StyleCustom: p.StyleCustom, Ratio: p.Ratio, TargetEpisodes: p.TargetEpisodes, EpisodeSeconds: p.EpisodeSeconds, TextModel: p.TextModel, VideoModel: p.VideoModel, ImageModels: dramaImageModels(p), ImageParams: dramaImageParams(p), OutlineMD: p.OutlineMD, CharactersMD: p.CharactersMD, Revision: p.Revision, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, Episodes: []model.DramaEpisodeSummary{}, ActiveJobs: []model.DramaJobView{}}
+	// 故事板在短剧画布上：读一次画布，各集共用
+	boards, err := s.boardHashes(ctx, p.UserID, p.CanvasID)
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range eps {
-		summary, err := s.dramaEpisodeView(ctx, e)
+		summary, err := s.episodeViewWith(ctx, e, boards)
 		if err != nil {
 			return nil, err
 		}
@@ -240,6 +261,9 @@ func (s *DramaService) Get(ctx context.Context, userID, id uint64) (*model.Drama
 	}
 	for _, j := range jobs {
 		v.ActiveJobs = append(v.ActiveJobs, jobView(j))
+	}
+	if v.Eta, err = s.planningEta(ctx, p); err != nil {
+		return nil, err
 	}
 	return v, nil
 }
@@ -301,16 +325,47 @@ func (s *DramaService) fillCovers(ctx context.Context, userID uint64, rows []mod
 	return nil
 }
 
+// checkModelFitsDrama 换模型前确认新模型装得下这部剧规划范围内的每个单元，只读字数不读正文。
+func (s *DramaService) checkModelFitsDrama(ctx context.Context, userID, id uint64, key string) error {
+	snap, err := s.resolveModel(ctx, key)
+	if err != nil {
+		return err
+	}
+	p, err := s.repo.Project(ctx, userID, id, false)
+	if err != nil {
+		return dramaError(err)
+	}
+	rows, err := s.settings.UnitSizes(ctx, userID, id, 1, p.RangeEnd)
+	if err != nil {
+		return err
+	}
+	return checkUnitsFit(snap, sourceUnits(rows))
+}
+
 // Update 带版本更新项目，不改变已锁定集正文。
 func (s *DramaService) Update(ctx context.Context, userID, id uint64, req *model.UpdateDramaReq) (*model.DramaView, error) {
 	// 1. 模型及来源解析放事务外，入队任务已有正文快照不受影响。
 	if req.TextModel != nil {
-		if _, err := s.resolvePlanningModel(ctx, *req.TextModel); err != nil {
+		if err := s.checkModelFitsDrama(ctx, userID, id, *req.TextModel); err != nil {
 			return nil, err
 		}
 	}
 	if err := s.checkDramaModels(ctx, req.VideoModel, req.ImageModels); err != nil {
 		return nil, err
+	}
+	if req.ImageParams != nil {
+		models := req.ImageModels
+		if models == nil {
+			p, err := s.repo.Project(ctx, userID, id, false)
+			if err != nil {
+				return nil, dramaError(err)
+			}
+			stored := dramaImageModels(p)
+			models = &stored
+		}
+		if err := s.checkDramaImageParams(ctx, *models, *req.ImageParams); err != nil {
+			return nil, err
+		}
 	}
 	var changed map[string]model.DramaPromptSetting
 	if req.Prompts != nil {
@@ -371,6 +426,13 @@ func dramaProjectPatch(p *model.DramaProject, req *model.UpdateDramaReq) (map[st
 			return nil, err
 		}
 		fields["image_models"] = raw
+	}
+	if req.ImageParams != nil {
+		raw, err := json.Marshal(req.ImageParams.Normalized())
+		if err != nil {
+			return nil, err
+		}
+		fields["image_params"] = raw
 	}
 	if req.Title != nil {
 		title := strings.TrimSpace(*req.Title)
@@ -436,15 +498,45 @@ func episodeView(e model.DramaEpisode) model.DramaEpisodeView {
 	return model.DramaEpisodeView{DramaEpisodeSummary: model.DramaEpisodeSummary{No: e.No, Hook: e.Hook, Cliffhanger: e.Cliffhanger, UnitFrom: e.UnitFrom, UnitTo: e.UnitTo, Title: e.Title, Synopsis: e.Synopsis, ScriptStatus: e.ScriptStatus, StoryboardStatus: status, Locked: e.LockedAt != nil, Revision: e.Revision, UpdatedAt: e.UpdatedAt}, ScriptMD: e.ScriptMD}
 }
 
-// dramaEpisodeView 在基础状态上映射实时片段聚合，避免持久化重复计数。
+// dramaEpisodeView 读一次画布上的故事板，再映射单集的实时聚合。
 func (s *DramaService) dramaEpisodeView(ctx context.Context, ep model.DramaEpisode) (*model.DramaEpisodeView, error) {
+	var boards map[string]string
+	if s.segments != nil && s.canvasAssets != nil {
+		p, err := s.repo.Project(ctx, ep.UserID, ep.DramaID, false)
+		if err != nil {
+			return nil, dramaError(err)
+		}
+		if boards, err = s.boardHashes(ctx, ep.UserID, p.CanvasID); err != nil {
+			return nil, err
+		}
+	}
+	return s.episodeViewWith(ctx, ep, boards)
+}
+
+// boardHashes 读短剧画布里已出图的故事板；没接画布读取或画布不存在时为空，不挡集摘要。
+func (s *DramaService) boardHashes(ctx context.Context, userID, canvasID uint64) (map[string]string, error) {
+	if s.canvasAssets == nil || s.segments == nil {
+		return nil, nil
+	}
+	canvas, err := s.canvasAssets.GetByID(ctx, userID, canvasID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return drama.BoardHashes(canvas.PayloadJSON)
+}
+
+// episodeViewWith 在基础状态上映射实时片段聚合，避免持久化重复计数。
+func (s *DramaService) episodeViewWith(ctx context.Context, ep model.DramaEpisode, boards map[string]string) (*model.DramaEpisodeView, error) {
 	v := episodeView(ep)
 	if s.segments != nil {
-		var err error
-		v.SegmentCount, v.SegmentSeconds, v.DoneSegmentCount, err = s.segments.Summary(ctx, ep.UserID, ep.ID)
+		stats, err := s.segments.Summary(ctx, ep.UserID, ep.ID, boards)
 		if err != nil {
 			return nil, err
 		}
+		v.SegmentCount, v.SegmentSeconds, v.DoneSegmentCount, v.DoneBoardCount = stats.Count, stats.Seconds, stats.Done, stats.Boards
 	}
 	if ep.FinalAssetID != nil && s.assets != nil {
 		var err error
@@ -459,7 +551,7 @@ func (s *DramaService) dramaEpisodeView(ctx context.Context, ep model.DramaEpiso
 
 // jobView 映射任务状态并保证空范围为[]。
 func jobView(j model.DramaJob) model.DramaJobView {
-	v := model.DramaJobView{ID: idcodec.ID(j.ID), Lane: j.Lane, BatchFrom: j.BatchFrom, BatchTo: j.BatchTo, Step: j.Step, Episodes: append([]int{}, j.Episodes...), Status: j.Status, Progress: j.Progress, Credits: j.Credits, ErrorCode: j.ErrorCode, ErrorMessage: j.ErrorMessage, CreatedAt: j.CreatedAt, FinishedAt: j.FinishedAt}
+	v := model.DramaJobView{ID: idcodec.ID(j.ID), Lane: j.Lane, BatchFrom: j.BatchFrom, BatchTo: j.BatchTo, Step: j.Step, Episodes: append([]int{}, j.Episodes...), Status: j.Status, Progress: j.Progress, Credits: j.Credits, ErrorCode: j.ErrorCode, ErrorMessage: j.ErrorMessage, CreatedAt: j.CreatedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt}
 	if j.Step == "compose" && j.Status == "succeeded" {
 		var result model.DramaComposeResult
 		if json.Unmarshal(j.Output, &result) == nil && result.Asset.ID != 0 {

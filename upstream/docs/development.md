@@ -75,7 +75,7 @@ flowchart LR
 | 后端 | Go 1.27 · Gin · GORM · go-redis · Viper · Zap · goja                                    |
 | Agent | Node.js 22 · pi agent                                                                  |
 | 存储 | PostgreSQL 16（必需）· Redis 7 · 本地磁盘 / 对象存储（OSS · COS · S3 · R2）             |
-| 工程 | golangci-lint · oxlint / oxfmt · pre-commit · GitHub Actions · git-cliff                |
+| 工程 | golangci-lint · oxlint / oxfmt · pre-commit · GitHub Actions                            |
 
 ## 目录结构
 
@@ -150,16 +150,17 @@ feat(canvas): 支持节点分组
 docs: 更新部署说明
 ```
 
-CHANGELOG 由 git-cliff 根据提交信息生成，提交信息会直接出现在版本日志里。
+用户可感知的改动在开发时就写进 [CHANGELOG.md](../CHANGELOG.md) 的 `[Unreleased]`，规则见 [贡献指南](../CONTRIBUTING.md#版本日志changelog)。
 
 分支命名、提交粒度、PR 描述、Issue 填写和评审合并流程见 [贡献指南](../CONTRIBUTING.md)。
 
 ## 持续集成与发布
 
 - 推送到 `master` 时，CI 运行前后端的 lint、构建和测试。
+- PR 上的 `Changelog` 检查（`.github/workflows/changelog.yml`）：有 `feat` / `fix` / `perf` / 破坏性变更提交时，`[Unreleased]` 必须新增条目，`skip-changelog` 标签可豁免；本地由 pre-commit 的 `commit-msg` 钩子做同样的检查（`scripts/changelog-check.mjs`）。
 - 数据库迁移只能向前：最近一个 `v*` 标签里已有的迁移文件不能修改、删除或改名，要修正就新增迁移文件，否则 CI 不通过。
 - 推送 `v*` 标签时，CI 先校验标签、`VERSION` 和 [CHANGELOG.md](../CHANGELOG.md) 是否一致，再构建 `video-canvas-backend` 和 `video-canvas-web` 两个镜像发布到 GHCR，成功后创建 GitHub Release。
-- 因此发版时要先把 `VERSION` 改为目标版本，和 CHANGELOG 一起提交，再创建并推送标签。
+- 因此发版时先把 `[Unreleased]` 整理为 `## [x.y.z] - 日期`（顶部保留新的空 `[Unreleased]`），把 `VERSION` 改为目标版本，一起提交，再创建并推送标签。
 
 ## 相关文档
 

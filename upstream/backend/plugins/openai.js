@@ -9,7 +9,9 @@
  * 渠道怎么填：
  *   - Key  ：OpenAI 的 API Key（sk-...），由宿主按 Bearer 注入；
  *   - base_url：官方填 https://api.openai.com（路径里已带 /v1，base_url 不要再写 /v1）；兼容网关填它的根地址；
- *   - 设置 api：接口，responses（默认）或 chat_completions。网关只实现了 Chat Completions 时选后者。
+ *   - 设置 api：接口，responses（默认）或 chat_completions。网关只实现了 Chat Completions 时选后者；
+ *   - 设置 pathPrefix：接口路径的版本前缀，默认 /v1。智谱 /v4、火山方舟 /api/v3 这类不是 /v1 的上游改这里
+ *     （base_url 填到前缀之前，如 https://open.bigmodel.cn/api/paas + /v4）；上游路径不带版本段（如 DeepSeek）填 /。
  *
  * 写法说明：goja 只保证 ES5.1 + 部分 ES6，所以这里用 var / function，不用可选链与空值合并。
  * 插件没有网络与文件能力，只把任务翻译成请求描述、把响应翻译成统一结果。
@@ -17,7 +19,7 @@
  * 用户输入（宿主按模型能力 capabilities 校验后传入）：
  *   prompt（必填）、system（系统提示，没填就不发）、
  *   max_tokens（最大输出，没填就不发：Responses 发成 max_output_tokens，Chat 发成 max_completion_tokens）、
- *   temperature（没填就不发：推理模型不支持该参数）、images[0]（视觉模型，可选，发成签名 URL）
+ *   temperature（没填就不发：推理模型不支持该参数）、images[0]（视觉模型，可选，默认发成签名 URL）
  * 产物：{type:"text", text, usage:{input_tokens, output_tokens}}，按 Token 计费的模型据此结算；上游没有可用数字就不带 usage。
  *
  * 刻意的选择：
@@ -36,7 +38,7 @@ module.exports = {
     apiVersion: 1,
     key: "openai",
     name: "OpenAI",
-    version: "1.1.0",
+    version: "1.2.1",
     vendor: "openai",
     description: "对接 OpenAI 官方接口：文本（Responses / Chat Completions 可选，同步）",
     auth: { type: "bearer" },
@@ -50,6 +52,20 @@ module.exports = {
         description: "responses：官方推荐的 Responses 接口；chat_completions：只支持 Chat Completions 的网关选这个",
         options: ["responses", "chat_completions"],
         default: "responses",
+      },
+      pathPrefix: {
+        type: "string",
+        label: "接口路径前缀",
+        description: "接口路径里版本段的前缀，默认 /v1；上游是 /v4、/api/v3 之类时改成对应值；上游路径不带版本段就填 /",
+        default: "/v1",
+      },
+      as: {
+        type: "enum",
+        label: "参考图传输格式",
+        description: "选择图片、视频和音频引用的传输格式，默认使用存储 URL。",
+        options: ["url", "dataUrl", "base64"],
+        required: true,
+        default: "url",
       },
     },
     import: { args: {} },
@@ -96,11 +112,11 @@ module.exports = {
   },
 
   buildCheckRequest: function (ctx) {
-    return { method: "GET", path: "/v1/models", timeout: 15 };
+    return { method: "GET", path: apiPath(ctx, "/models"), timeout: 15 };
   },
 
   buildImportRequest: function (ctx, args) {
-    return { method: "GET", path: "/v1/models", timeout: 30 };
+    return { method: "GET", path: apiPath(ctx, "/models"), timeout: 30 };
   },
 
   // 只导入文本类模型（gpt-* / chatgpt-* / o 系列）。
@@ -128,20 +144,36 @@ function useChat(ctx) {
   return settings.api === "chat_completions";
 }
 
+// 接口路径 = 渠道设置 pathPrefix + 后半段（如 /chat/completions）。
+// 前缀没填或只有空白按默认 /v1；"/" 表示不加前缀；缺前导斜杠会补上，末尾斜杠会去掉。
+function apiPath(ctx, rest) {
+  var settings = ctx.channel && ctx.channel.settings ? ctx.channel.settings : {};
+  var prefix = typeof settings.pathPrefix === "string" ? settings.pathPrefix.replace(/^\s+|\s+$/g, "") : "";
+  if (prefix === "") {
+    prefix = "/v1";
+  }
+  prefix = prefix.replace(/\/+$/, "");
+  if (prefix !== "" && prefix.charAt(0) !== "/") {
+    prefix = "/" + prefix;
+  }
+  return prefix + rest;
+}
+
 function buildResponsesRequest(ctx) {
   var input = ctx.input || {};
+  var referenceFormat = (ctx.channel && ctx.channel.settings && ctx.channel.settings.as) || "url";
   var prompt = input.prompt === undefined ? "" : String(input.prompt);
 
   var body = { model: ctx.model.upstreamModel };
   var firstImage = first(input.images);
   if (firstImage) {
-    // 视觉模型：input 用消息数组，图片给签名 URL（宿主把文件引用换成地址）
+    // 视觉模型：input 用消息数组，图片由宿主按渠道设置转换
     body.input = [
       {
         role: "user",
         content: [
           { type: "input_text", text: prompt },
-          { type: "input_image", image_url: { __fileRef: firstImage, as: "url" } },
+          { type: "input_image", image_url: { __fileRef: firstImage, as: referenceFormat } },
         ],
       },
     ];
@@ -161,11 +193,12 @@ function buildResponsesRequest(ctx) {
   }
   body.stream = false;
   body.store = false; // 刻意不在 OpenAI 侧保存对话
-  return { method: "POST", path: "/v1/responses", json: body, timeout: 120 };
+  return { method: "POST", path: apiPath(ctx, "/responses"), json: body, timeout: 120 };
 }
 
 function buildChatRequest(ctx) {
   var input = ctx.input || {};
+  var referenceFormat = (ctx.channel && ctx.channel.settings && ctx.channel.settings.as) || "url";
   var messages = [];
 
   var system = firstString(input.system);
@@ -177,7 +210,7 @@ function buildChatRequest(ctx) {
   if (firstImage) {
     userContent = [
       { type: "text", text: userContent },
-      { type: "image_url", image_url: { url: { __fileRef: firstImage, as: "url" } } },
+      { type: "image_url", image_url: { url: { __fileRef: firstImage, as: referenceFormat } } },
     ];
   }
   messages.push({ role: "user", content: userContent });
@@ -190,7 +223,7 @@ function buildChatRequest(ctx) {
   if (maxTokens !== undefined) {
     body.max_completion_tokens = maxTokens; // max_tokens 已弃用，且与 o 系列不兼容
   }
-  return { method: "POST", path: "/v1/chat/completions", json: body, timeout: 120 };
+  return { method: "POST", path: apiPath(ctx, "/chat/completions"), json: body, timeout: 120 };
 }
 
 // 用户传的 max_tokens 是正数才发；没填就不发，由上游按默认处理。

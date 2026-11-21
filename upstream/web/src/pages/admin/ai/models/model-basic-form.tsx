@@ -33,10 +33,12 @@ import {
   readModelChannel,
   readModelKind,
   readModelNumber,
+  readModelPathPrefix,
   readModelString,
   readModelStrings,
   withModelApiFormat,
   withModelField,
+  withModelPathPrefix,
   withModelUpstream,
 } from "@/utils/admin/model-body";
 import {
@@ -200,6 +202,26 @@ export function ModelBasicForm({
                   <SelectItem value="gemini">Gemini 原生</SelectItem>
                 </SelectContent>
               </Select>
+            </FormField>
+          )}
+          {kind === "agent" && apiFormat === "openai" && (
+            <FormField
+              size="default"
+              label="接口路径前缀"
+              htmlFor="model-path-prefix"
+              error={issueFor(issues, "channels[0].path_prefix")}
+              tip="请求路径是「渠道地址 + 前缀 + /chat/completions」。不填按 /v1；上游是 /v4、/api/v3 之类时填对应值；路径不带版本段填 /。"
+            >
+              <Input
+                id="model-path-prefix"
+                className="font-mono"
+                placeholder="/v1"
+                value={readModelPathPrefix(body)}
+                aria-invalid={!!issueFor(issues, "channels[0].path_prefix")}
+                onChange={(event) =>
+                  onChange((current) => withModelPathPrefix(current, event.target.value))
+                }
+              />
             </FormField>
           )}
         </div>

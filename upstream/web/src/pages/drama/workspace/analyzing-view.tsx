@@ -1,8 +1,10 @@
 import { Check, Loader2 } from "lucide-react";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { useNow } from "@/hooks/use-now";
 import { cn } from "@/lib/utils";
-import { isActiveJob, isPipelineJob } from "@/utils/drama/jobs";
+import { etaLabel, isActiveJob, isPipelineJob, pipelineEta } from "@/utils/drama/jobs";
+import { durationLabel } from "@/utils/drama/start-settings";
 
 import { useWorkspace } from "./context";
 
@@ -28,11 +30,14 @@ export function useAnalyzing() {
 
 /**
  * 研读 / 规划中的步骤与骨架屏（放在大纲页标题下面）：「粗读全书」「分集规划」两步。
- * 粗读完成（已有大纲，或已经开始规划）后进入第二步。
+ * 粗读完成（已有大纲，或已经开始规划）后进入第二步。同模型有足够历史耗时时，
+ * 正在做的一步写还需多久，后面的一步写预计约多久；历史不足就不写。
  */
 export function AnalyzingView() {
   const { drama, jobs } = useWorkspace();
   const { paused } = useAnalyzing();
+  const now = useNow(!paused, 2000);
+  const eta = pipelineEta(drama, jobs, now);
   const planning =
     drama.planCursor > 0 ||
     !!drama.outlineMd ||
@@ -42,10 +47,17 @@ export function AnalyzingView() {
     ["粗读全书", "抽样读开篇与后文，整理人物与梗概"],
     ["分集规划", "按批读原文，生成分集目录"],
   ] as const;
+  /** 每一步的耗时说明：正在做的写还需多久，还没轮到的写预计约多久 */
+  const timing = (index: number) => {
+    if (paused || index < current) return "";
+    const seconds = index === 0 ? eta.analyze : eta.plan;
+    if (seconds === null) return "";
+    if (index === current) return ` · ${etaLabel(seconds)}`;
+    return ` · 预计约 ${durationLabel(Math.max(1, seconds / 60))}`;
+  };
   return (
     <div className="pt-6">
       <h3 className="text-base font-semibold">{paused ? "分集规划已暂停" : "正在研读剧本…"}</h3>
-      <p className="text-muted-foreground mt-1 text-sm">可以离开这个页面，完成后会通知你</p>
       <ol className="mt-6 grid gap-3">
         {steps.map(([title, detail], index) => (
           <li key={title} className="flex items-start gap-3">
@@ -64,7 +76,10 @@ export function AnalyzingView() {
             </span>
             <div>
               <div className="text-sm font-medium">{title}</div>
-              <div className="text-muted-foreground text-xs">{detail}</div>
+              <div className="text-muted-foreground text-xs">
+                {detail}
+                {timing(index)}
+              </div>
             </div>
           </li>
         ))}

@@ -90,6 +90,8 @@ export async function installDom(): Promise<DomEnv> {
   }
   /** jsdom 没有的浏览器 API：给个最小实现，够组件挂载即可 */
   const extras: Record<string, unknown> = {
+    // Base UI 的开关点击时会 new PointerEvent，jsdom 没有，用 MouseEvent 顶上
+    PointerEvent: (win as unknown as Record<string, unknown>).PointerEvent ?? win.MouseEvent,
     ResizeObserver: class {
       observe() {}
       unobserve() {}
@@ -171,5 +173,19 @@ export async function installDom(): Promise<DomEnv> {
       act(async () => {
         await new Promise((resolve) => setTimeout(resolve, ms));
       }),
+  };
+}
+
+/**
+ * 让 base-ui 弹窗的退出动画一直不结束，定格在「正在关闭」这一刻，用来检查关闭途中弹窗里还是原来的内容。
+ * jsdom 没有 getAnimations，base-ui 会立即卸载；这里补一个永不完成的动画。
+ * @param env installDom 返回的环境
+ * @returns 还原函数，测完调用
+ */
+export function holdExitAnimations(env: DomEnv): () => void {
+  const proto = env.win.Element.prototype as unknown as { getAnimations?: () => unknown[] };
+  proto.getAnimations = () => [{ finished: new Promise(() => {}) }];
+  return () => {
+    delete proto.getAnimations;
   };
 }

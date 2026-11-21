@@ -74,7 +74,13 @@ export function ParamsPopover({
             .join(" · ")}
         </span>
       </PopoverTrigger>
-      <PopoverContent side={side} align="start" sideOffset={6} className="w-80">
+      {/* 高度不超过触发器下方的剩余空间，放不下时参数区在弹层内滚动，不把页面撑出滚动条 */}
+      <PopoverContent
+        side={side}
+        align="start"
+        sideOffset={6}
+        className="max-h-(--available-height) w-80"
+      >
         {showOps && (
           <OpTabs
             id="composer"

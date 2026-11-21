@@ -56,6 +56,17 @@ type DramaPrompt struct {
 // TableName 返回个人提示词表名。
 func (DramaPrompt) TableName() string { return "drama_prompts" }
 
+// DramaPromptSplit 是迁移 0041 把「剧本改编」提示词拆成两条时留下的旧 id → 新 id 对照，
+// 后端启动时据此修补项目快照里的编码 id；没有对应页的那一侧为 0（库里是 NULL）。
+type DramaPromptSplit struct {
+	OldID     uint64 `gorm:"primaryKey;autoIncrement:false"`
+	PlanID    uint64 `gorm:"default:null"`
+	ScriptsID uint64 `gorm:"default:null"`
+}
+
+// TableName 返回拆分对照表名。
+func (DramaPromptSplit) TableName() string { return "drama_prompt_splits" }
+
 // DramaPromptChoice 是四环节之一的来源选择。
 type DramaPromptChoice struct {
 	Source string     `json:"source" binding:"required,oneof=builtin mine skill"`
@@ -93,7 +104,7 @@ type DramaSourceEstimate struct {
 
 // SaveDramaPromptReq 创建或覆盖个人提示词，更新须携带 revision。
 type SaveDramaPromptReq struct {
-	Step     string            `json:"step" binding:"required,oneof=adapt assets asset_prompts video"`
+	Step     string            `json:"step" binding:"required,oneof=plan scripts assets asset_prompts video board"`
 	Name     string            `json:"name"`
 	Bodies   map[string]string `json:"bodies"`
 	Revision int64             `json:"revision"`
@@ -109,10 +120,10 @@ type DramaPromptView struct {
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
-// DramaPlanningReq 是范围变更和恢复内置的请求。
+// DramaPlanningReq 是范围变更和恢复内置的请求；改用内置重试只对分集规划（plan）生效，其他环节由业务层拒绝。
 type DramaPlanningReq struct {
 	RangeEnd int    `json:"range_end" binding:"min=0"`
-	Step     string `json:"step" binding:"omitempty,oneof=adapt assets asset_prompts video"`
+	Step     string `json:"step" binding:"omitempty,oneof=plan scripts assets asset_prompts video board"`
 }
 
 // DramaSkillView 是短剧可选择的技能目录项。

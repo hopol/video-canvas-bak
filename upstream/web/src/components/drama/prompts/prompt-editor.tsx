@@ -18,21 +18,21 @@ import {
   type PromptDraft,
 } from "@/utils/drama/prompts";
 
+import { PlaceholderEditor } from "./placeholder-editor";
 import type { PromptLibrary } from "./use-prompt-library";
 
 /** 内置正文没加载到时的占位：页结构照旧，正文留空让用户自己写 */
 const FALLBACK_PAGES: Record<PromptStep, PromptTemplate["pages"]> = {
-  adapt: [
-    { key: "plan", label: "分集规划", body: "" },
-    { key: "scripts", label: "分集剧本", body: "" },
-  ],
+  plan: [{ key: "plan", label: "分集规划", body: "" }],
+  scripts: [{ key: "scripts", label: "分集剧本", body: "" }],
   assets: [{ key: "breakdown", label: "资产拆解", body: "" }],
   asset_prompts: [{ key: "asset_prompts", label: "资产图提示词", body: "" }],
   video: [{ key: "storyboard", label: "视频提示词", body: "" }],
+  board: [{ key: "board", label: "故事板提示词", body: "" }],
 };
 
 /**
- * 提示词编辑器（开拍设置弹窗内侧滑 / 工作台 Sheet 共用）：名称、正文（剧本改编分「分集规划 / 分集剧本」两页）、
+ * 提示词编辑器（开拍设置弹窗内侧滑 / 工作台 Sheet 共用）：名称、正文（环节有多页时显示页签，现在每个环节一页）、
  * 字数、恢复内置、保存。只展示可替换的正文，不展示输入变量和输出结构（它们由系统在后台固定拼接）。
  * 保存成功后 onClose 带回保存的条目，调用方据此在当前行选中它；返回 / 取消传 null。
  */
@@ -130,14 +130,26 @@ export function PromptEditorPane({
         </div>
       )}
       <div className="grid gap-1.5">
-        <Textarea
-          value={body}
-          aria-label="提示词正文"
-          onChange={(event) =>
-            setDraft({ ...draft, bodies: { ...draft.bodies, [draft.page]: event.target.value } })
-          }
-          className="bg-chrome-hover border-chrome-border h-72 resize-none rounded-2xl px-4 py-3 font-mono text-[13px] leading-relaxed"
-        />
+        {step === "board" ? (
+          // 故事板模板里有占位符：整体不可编辑，上面的按钮往里插
+          <PlaceholderEditor
+            value={body}
+            ariaLabel="提示词正文"
+            onChange={(text) =>
+              setDraft((prev) => ({ ...prev, bodies: { ...prev.bodies, [prev.page]: text } }))
+            }
+            className="h-72"
+          />
+        ) : (
+          <Textarea
+            value={body}
+            aria-label="提示词正文"
+            onChange={(event) =>
+              setDraft({ ...draft, bodies: { ...draft.bodies, [draft.page]: event.target.value } })
+            }
+            className="bg-chrome-hover border-chrome-border h-72 resize-none rounded-2xl px-4 py-3 font-mono text-[13px] leading-relaxed"
+          />
+        )}
         <div
           className={cn(
             "text-muted-foreground text-right font-mono text-[11.5px] tabular-nums",

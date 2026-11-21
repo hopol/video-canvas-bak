@@ -149,7 +149,8 @@ export function TasksSheet({
           <SheetTitle>任务历史</SheetTitle>
           <SheetDescription>这张画布上的生成记录，点一条定位到节点</SheetDescription>
         </SheetHeader>
-        {open && <TaskList onPicked={() => onOpenChange(false)} />}
+        {/* 不按 open 条件渲染：关闭途中列表要留着给退出动画，侧栏完全关上后 base-ui 会卸载它，下次打开重新取 */}
+        <TaskList onPicked={() => onOpenChange(false)} />
       </SheetContent>
     </Sheet>
   );

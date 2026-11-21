@@ -69,6 +69,56 @@ func TestGemini_EndpointAndAuthHeaders(t *testing.T) {
 	}
 }
 
+// Target.PathPrefix 是 OpenAI 格式请求路径里的版本段：空等于 /v1，"/" 表示不加前缀，缺前导斜杠补上、末尾斜杠去掉；
+// 渠道地址自带的路径（如 /api/paas）保留在最前面；Gemini 格式的路径固定，不受它影响。
+func TestOpenAI_PathPrefix(t *testing.T) {
+	for _, tc := range []struct{ name, format, base, prefix, wantPath string }{
+		{"空前缀按默认", "", "", "", "/v1/chat/completions"},
+		{"纯空白按默认", "", "", "  ", "/v1/chat/completions"},
+		{"显式 /v1", "", "", "/v1", "/v1/chat/completions"},
+		{"/v4", "", "", "/v4", "/v4/chat/completions"},
+		{"缺前导斜杠", "", "", "v4", "/v4/chat/completions"},
+		{"带末尾斜杠", "", "", "/v4/", "/v4/chat/completions"},
+		{"多段前缀", "", "", "/compatible-mode/v1", "/compatible-mode/v1/chat/completions"},
+		{"斜杠表示不加前缀", "", "", "/", "/chat/completions"},
+		{"渠道地址自带路径", "", "/api/paas", "/v4", "/api/paas/v4/chat/completions"},
+		{"显式 openai 格式也生效", llmgateway.FormatOpenAI, "", "/v3", "/v3/chat/completions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := newUpstream(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				sse(w, chunk(`{"content":"好"}`, "stop"), "[DONE]")
+			})
+			tg := target(up)
+			tg.Format = tc.format
+			tg.BaseURL += tc.base
+			tg.PathPrefix = tc.prefix
+			if _, _, err := streamRaw(t, gateway(), tg, `{"messages":[{"role":"user","content":"hi"}]}`, 0); err != nil {
+				t.Fatal(err)
+			}
+			reqs := up.requests()
+			if len(reqs) != 1 || reqs[0].Path != tc.wantPath {
+				t.Fatalf("路径应为 %s，实际 %+v", tc.wantPath, reqs)
+			}
+		})
+	}
+}
+
+func TestGemini_IgnoresPathPrefix(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		sse(w, `{"candidates":[{"content":{"parts":[{"text":"好"}]},"finishReason":"STOP"}]}`)
+	})
+	tg := target(up)
+	tg.Format = llmgateway.FormatGemini
+	tg.PathPrefix = "/v4"
+	if _, _, err := streamRaw(t, gateway(), tg, `{"messages":[{"role":"user","content":"hi"}]}`, 0); err != nil {
+		t.Fatal(err)
+	}
+	reqs := up.requests()
+	if len(reqs) != 1 || reqs[0].Path != "/antigravity/v1beta/models/gpt-up:streamGenerateContent" {
+		t.Fatalf("Gemini 路径应固定，不受 PathPrefix 影响：%+v", reqs)
+	}
+}
+
 func TestOpenAI_EndpointUnchanged(t *testing.T) {
 	for _, tc := range []struct{ format, prefix, wantPath string }{
 		{"", "", "/v1/chat/completions"},

@@ -285,6 +285,7 @@
 
 - **不选协议**：Agent 模型的 `channels[0].protocol` 必须为空（带了会校验报错）；网关用 `Authorization: Bearer <渠道 API Key>`，并带上渠道的自定义请求头。启用前只检查渠道存在、启用、API Key 已设置；**不需要**渠道挂任何插件，也不需要声明 `endpoints.agent`。
 - **接口格式**：`channels[0].api_format` 可选 `openai`（默认）或 `gemini`；Gemini 使用原生 `/v1beta/models/{模型}:streamGenerateContent`，保留渠道地址的专用前缀，并发送 `x-goog-api-key` 与 Bearer 鉴权头。
+- **接口路径前缀**：`channels[0].path_prefix`（仅 Agent 的 `openai` 格式可填，最长 128，只含字母数字与 `. _ ~ - /`，不含 `//`、`..`）是 OpenAI 兼容请求路径里的版本段，实际请求 `渠道地址 + 前缀 + /chat/completions`。不填等于 `/v1`；`/` 表示不加前缀；缺前导斜杠会补上、末尾斜杠会去掉。非 Agent 模型走协议插件，在协议设置的 `pathPrefix`（OpenAI 文本 / 图片 / 对话生图三个内置插件已声明，默认 `/v1`，规则相同）里填。
 - **能力**：必须设置 `capabilities.context`（`window`、`output`）；`capabilities.vision` 声明能不能看图；`capabilities.video` 声明能不能理解视频画面和声音，只允许 Gemini 格式的 Agent 开启，与看图独立。`capabilities.prompt.max_length` 在这里表示**用户单条消息的字数上限**；没有 `ops`、`refs`、`params`，也不能设 `system`（系统提示词由平台维护）。
 - **识别建议**：`GET /admin/ai/models/limits?name=&channel=` 附带内置模型库的 `vision` / `video` 建议；未识别时省略这两个字段。自动预填只改上下文规格，输入能力由运营手动应用；OpenAI 格式不应用视频建议。
 - **视频理解**：`canvas_inspect_video` 对当前模型发起独立子请求；本地视频传 inlineData（原文件最大 20 MB），对象存储传签名 URL。失败时只有支持看图且 ffmpeg 可用才退回抽帧，明确注明「音频未分析」。子请求按 Token 计费，用途为 `video`，计入本轮积分，不计入主对话上下文大小。

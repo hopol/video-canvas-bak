@@ -8,7 +8,8 @@ import type {
 } from "@/types";
 import { takeUploadFile } from "@/utils/canvas/media";
 import { newNodeLabel } from "@/utils/canvas/node-label";
-import { appendOutput } from "@/utils/canvas/outputs";
+import { activeOutputIdOf, appendOutput, readOutputs } from "@/utils/canvas/outputs";
+import { stripVoicePrefix } from "@/utils/assets/official-voices";
 import type { CharacterRefs } from "@/utils/tasks/capabilities";
 
 /** 形象（造型）名的默认值 */
@@ -202,18 +203,32 @@ export function applyMainImage(
   };
 }
 
+/** 能拿来当声音的最小素材信息：id + 地址必有，文件名有就带上（用来记名字）。 */
+export type VoiceAssetRef = Pick<AssetDto, "id" | "url"> & Partial<Pick<AssetDto, "fileName">>;
+
 /**
  * 绑定一段音频作为声音（上传、素材库、AI 生成都走这里），会取代之前的声音。
+ * 顺手把素材的名字记下来，给角色卡和素材条显示用。
  * @param character 当前角色数据
  * @param asset 音频素材
  * @param origin 来源，只用于展示和排查
  */
 export function applyVoiceAudio(
   character: NodeCharacter,
-  asset: Pick<AssetDto, "id" | "url">,
+  asset: VoiceAssetRef,
   origin: CharacterVoice["origin"],
 ): NodeCharacter {
-  return { ...character, voice: { mode: "audio", assetId: asset.id, src: asset.url, origin } };
+  const name = stripVoicePrefix(asset.fileName);
+  return {
+    ...character,
+    voice: {
+      mode: "audio",
+      assetId: asset.id,
+      src: asset.url,
+      origin,
+      ...(name ? { name } : {}),
+    },
+  };
 }
 
 /** 角色卡上传的校验结果：通过，或一句摆给用户看的原因 */
@@ -234,6 +249,18 @@ export function takeCharacterFile(file: File, want: "image" | "audio"): Characte
   return { ok: true };
 }
 
+/**
+ * 角色卡当前的主图是不是用户自己给的（上传或从素材库选）：当前那一版没有生成任务就是。
+ * 这样的角色卡不出生成面板、没有提示词可改，短剧批量生成也跳过；在历史里切回生成的那一版就恢复。
+ * @param data 节点数据
+ */
+export function characterImageUploaded(data: CanvasNodeData): boolean {
+  if (data.kind !== "character") return false;
+  const activeId = activeOutputIdOf(data);
+  const active = readOutputs(data).find((output) => output.id === activeId);
+  return !!active && !active.taskId;
+}
+
 /** 选好 / 传好素材后写回节点：要改的字段，和被拒的素材的原因（界面就地提示） */
 export type PickedResult = { patch: Partial<CanvasNodeData>; warnings: string[] };
 
@@ -248,7 +275,7 @@ export type PickedResult = { patch: Partial<CanvasNodeData>; warnings: string[] 
  */
 export function applyPickedAssets(
   data: CanvasNodeData,
-  assets: ReadonlyArray<Pick<AssetDto, "id" | "url">>,
+  assets: readonly VoiceAssetRef[],
   purpose: "main" | "extra" | "voice",
   origin: CharacterVoice["origin"] = "library",
 ): PickedResult {
@@ -268,6 +295,28 @@ export function applyPickedAssets(
     else warnings.push(out.reason);
   }
   return { patch: next === character ? {} : { character: next }, warnings };
+}
+
+/**
+ * 从真人库引入：真人的可用图片依次放进角色卡，第一张作主图、其余替换补充图（最多 4 张，去掉与主图重复的）。
+ * 之后角色卡上的图片照常可以换、删、加；生成时可用的备案图会由后端换成 asset:// 引用。
+ * @param data 节点数据
+ * @param images 真人里可用的图片，按顺序
+ * @returns 要写回节点的 patch；没有图时为空对象
+ */
+export function applyHumanImages(
+  data: CanvasNodeData,
+  images: ReadonlyArray<Pick<AssetDto, "id" | "url">>,
+): Partial<CanvasNodeData> {
+  const [main, ...rest] = images;
+  if (!main) return {};
+  const withMain = applyMainImage(data, main);
+  const base = withMain.character ?? emptyCharacter(data.label);
+  const extras = rest
+    .filter((img) => img.id !== main.id)
+    .slice(0, MAX_EXTRAS)
+    .map((img) => ({ assetId: img.id, src: img.url }));
+  return pickChanged(data, { ...withMain, character: { ...base, extras } });
 }
 
 /** 主图写回只带真正变了的字段，避免把整份节点数据当 patch 塞回去 */
