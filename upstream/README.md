@@ -35,11 +35,27 @@
 <table>
   <tr>
     <th width="50%">全流程总览</th>
-    <th width="50%">分镜片场与视频生成</th>
+    <th width="50%">剧本与大纲研读</th>
   </tr>
   <tr>
     <td><a href="docs/assets/screenshots/短剧工作室-总览.png"><img src="docs/assets/screenshots/短剧工作室-总览.png" alt="短剧工作室-全流程总览" /></a></td>
+    <td><a href="docs/assets/screenshots/短剧工作室-剧本.png"><img src="docs/assets/screenshots/短剧工作室-剧本.png" alt="短剧工作室-剧本与大纲研读" /></a></td>
+  </tr>
+  <tr>
+    <th>角色与场景资产管理</th>
+    <th>故事板与提示词转写</th>
+  </tr>
+  <tr>
+    <td><a href="docs/assets/screenshots/短剧工作室资产管理.png"><img src="docs/assets/screenshots/短剧工作室资产管理.png" alt="短剧工作室-资产管理" /></a></td>
+    <td><a href="docs/assets/screenshots/短剧工作室-故事板.png"><img src="docs/assets/screenshots/短剧工作室-故事板.png" alt="短剧工作室-故事板与提示词转写" /></a></td>
+  </tr>
+  <tr>
+    <th>分镜片场与视频生成</th>
+    <th>音色库</th>
+  </tr>
+  <tr>
     <td><a href="docs/assets/screenshots/短剧工作室分镜.png"><img src="docs/assets/screenshots/短剧工作室分镜.png" alt="短剧工作室-分镜片场" /></a></td>
+    <td><a href="docs/assets/screenshots/音色库.png"><img src="docs/assets/screenshots/音色库.png" alt="资产-音色库" /></a></td>
   </tr>
 </table>
 

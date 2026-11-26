@@ -3,6 +3,7 @@ import type { CanvasDetailDto, CanvasGraphDto } from "@/api/canvas/type";
 import { getCanvas, saveCanvasGraph, updateCanvas } from "@/api/canvas";
 import { draftStore } from "@/utils/canvas/draft-idb";
 import { registerExitFlush } from "@/utils/canvas/exit-flush";
+import { trackPendingSave } from "@/utils/canvas/pending-save";
 import { SaveCoordinator } from "@/utils/canvas/save-coordinator";
 import { canKeepalive } from "@/utils/canvas/save-schedule";
 import type { SaveStatus } from "@/utils/canvas/save-status";
@@ -182,8 +183,9 @@ export function useCanvasPersistence({
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("online", onOnline);
     return () => {
-      // 路由跳转离开画布：同步发起草稿写入，云端上传在后台继续。有冲突时不上传，免得又撞一次
-      void coordinator.flush();
+      // 路由跳转离开画布：同步发起草稿写入，云端上传在后台继续。有冲突时不上传，免得又撞一次。
+      // 登记下来：同一页面里紧接着读这张画布的地方（切到片场）先等它落地
+      trackPendingSave(canvasId, coordinator.flush());
       coordinator.setActive(false);
       unregisterExitFlush();
       document.removeEventListener("visibilitychange", onVisibility);
@@ -191,7 +193,7 @@ export function useCanvasPersistence({
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("online", onOnline);
     };
-  }, [coordinator, readOnly]);
+  }, [canvasId, coordinator, readOnly]);
 
   /** 当前的服务端版本号（保存和合并都会推进它） */
   const getVersion = useCallback(() => coordinator.version, [coordinator]);

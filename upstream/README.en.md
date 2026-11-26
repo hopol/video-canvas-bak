@@ -34,12 +34,28 @@ Import a novel, a set of product images, or just a passing thought.
 
 <table>
   <tr>
-    <th width="50%">Workflow overview</th>
-    <th width="50%">Storyboard and video generation</th>
+    <th width="50%">Overview</th>
+    <th width="50%">Script and outline</th>
   </tr>
   <tr>
     <td><a href="docs/assets/screenshots/短剧工作室-总览.png"><img src="docs/assets/screenshots/短剧工作室-总览.png" alt="Drama Studio - Overview" /></a></td>
+    <td><a href="docs/assets/screenshots/短剧工作室-剧本.png"><img src="docs/assets/screenshots/短剧工作室-剧本.png" alt="Drama Studio - Script and outline" /></a></td>
+  </tr>
+  <tr>
+    <th>Characters and scenes</th>
+    <th>Storyboard and prompt rewrite</th>
+  </tr>
+  <tr>
+    <td><a href="docs/assets/screenshots/短剧工作室资产管理.png"><img src="docs/assets/screenshots/短剧工作室资产管理.png" alt="Drama Studio - Asset management" /></a></td>
+    <td><a href="docs/assets/screenshots/短剧工作室-故事板.png"><img src="docs/assets/screenshots/短剧工作室-故事板.png" alt="Drama Studio - Storyboard and prompt rewrite" /></a></td>
+  </tr>
+  <tr>
+    <th>Storyboard and video</th>
+    <th>Voice library</th>
+  </tr>
+  <tr>
     <td><a href="docs/assets/screenshots/短剧工作室分镜.png"><img src="docs/assets/screenshots/短剧工作室分镜.png" alt="Drama Studio - Storyboard" /></a></td>
+    <td><a href="docs/assets/screenshots/音色库.png"><img src="docs/assets/screenshots/音色库.png" alt="Assets - Voice library" /></a></td>
   </tr>
 </table>
 

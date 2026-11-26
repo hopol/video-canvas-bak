@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { AnimatePresence, motion } from "motion/react";
 import { Clapperboard } from "lucide-react";
 
@@ -60,6 +61,7 @@ function Ambient({ src }: { src: string | null }) {
  * 连播用的两个 video 一直挂着（轮播、看故事板时只是藏起来），否则开始连播时拿不到它们。
  */
 export function Preview() {
+  const shared = useSharedWorkspace();
   const { selected, drama, actions, submitting, segments, view } = useStudio();
   const playback = usePlaybackContext();
   // 连播时预览跟着当前片段（选中也会跟过去，这里直接按连播的当前片段取，不等选中更新）
@@ -98,7 +100,7 @@ export function Preview() {
               takes={selected.takes}
               chosenTaskId={selected.chosenTaskId}
               aspect={aspectValue(drama.ratio)}
-              onChoose={(taskId) => void actions.choose(selected, taskId)}
+              onChoose={(taskId) => !shared && void actions.choose(selected, taskId)}
             />
           </div>
         )}

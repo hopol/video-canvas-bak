@@ -106,6 +106,18 @@ func (l *LocalStorage) Open(ctx context.Context, key string) (io.ReadCloser, err
 	return f, nil
 }
 
+var _ Copier = (*LocalStorage)(nil)
+
+// Copy 在本地磁盘上复制文件，沿用 Put 的原子写入；源不存在返回 ErrNotFound。
+func (l *LocalStorage) Copy(ctx context.Context, srcKey, dstKey string) error {
+	f, info, err := l.openFile(srcKey)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return l.Put(ctx, dstKey, f, info.Size(), "")
+}
+
 // openFile 打开磁盘文件并返回 stat 信息，目录和非法 key 都视为不存在。
 func (l *LocalStorage) openFile(key string) (*os.File, fs.FileInfo, error) {
 	full, err := l.path(key)

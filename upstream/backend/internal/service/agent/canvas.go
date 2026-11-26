@@ -52,21 +52,9 @@ type ModelOpsSource func(ctx context.Context) (map[string][]string, error)
 // SetModelOps 设置模型的生成方式来源。装配桥时由 NewAgentBridge 用模型注册表设置。
 func (s *AgentCanvasService) SetModelOps(src ModelOpsSource) { s.modelOps = src }
 
-// registryModelOps 用模型注册表做生成方式来源；注册表缓存了编译结果，每次调用不查库。
+// registryModelOps 用模型注册表做生成方式来源；与节点级编辑共用 service.RegistryModelOps。
 func registryModelOps(reg provider.Registry) ModelOpsSource {
-	return func(ctx context.Context) (map[string][]string, error) {
-		list, err := reg.ListModels(ctx, "")
-		if err != nil {
-			return nil, err
-		}
-		out := make(map[string][]string, len(list))
-		for _, m := range list {
-			if (m.Kind == "video" || m.Kind == "image") && len(m.Capabilities.Ops) > 0 {
-				out[m.Key] = m.Capabilities.Ops
-			}
-		}
-		return out, nil
-	}
+	return ModelOpsSource(service.RegistryModelOps(reg))
 }
 
 // modelOpsLookup 取一次模型的生成方式并包成查询函数；没有来源或取失败时返回 nil（不校验，生成时再兜底）。

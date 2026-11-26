@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useMemo, useState } from "react";
 import { FilePenLine, FileText, LayoutGrid } from "lucide-react";
 
@@ -37,6 +38,7 @@ const TITLES: Record<ScriptDoc, string> = { outline: "故事大纲", characters:
  * 人物传记默认拆成人物卡片看，可切回原文编辑；拆不出人物（写法认不出）时直接显示原文。
  */
 export function ProjectDoc({ doc }: { doc: ScriptDoc }) {
+  const shared = useSharedWorkspace();
   const { drama, patch, reportSave } = useWorkspace();
   const { analyzing, paused } = useAnalyzing();
   const markdown = doc === "outline" ? drama.outlineMd : drama.charactersMd;
@@ -104,7 +106,7 @@ export function ProjectDoc({ doc }: { doc: ScriptDoc }) {
           key={doc}
           value={markdown}
           revision={drama.revision}
-          editable
+          editable={!shared}
           isConflict={isRevisionConflict}
           onStatus={(status) => reportSave(doc, status)}
           onSave={(next) => patch(doc === "outline" ? { outlineMd: next } : { charactersMd: next })}

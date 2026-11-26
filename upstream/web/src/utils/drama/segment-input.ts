@@ -11,7 +11,7 @@ import {
   type IncomingLink,
 } from "@/utils/tasks/capabilities";
 
-import { BOARD_LINE, type BoardRef } from "./board";
+import { boardLine, promptLang, type BoardRef } from "./board";
 import type { DramaAssetType, RefAsset } from "./segment-assets";
 import { durationField, fitDuration, segmentParams } from "./video-models";
 
@@ -50,6 +50,8 @@ export type SegmentPlan = {
   deadLabels: string[];
   /** 故事板这次带没带、为什么 */
   board: BoardPlan;
+  /** 带入故事板时加在提示词最前面的说明（语言跟正文一致，片场原样预览）；没带入为空串 */
+  boardLine: string;
 };
 
 /**
@@ -274,8 +276,10 @@ export function planSegmentInput(args: {
     withBoard || (audioOnly && caps?.ops?.includes("omni"))
       ? "omni"
       : pickVideoOp(caps, { hasImages });
+  // 说明行和正文同一种语言：提交的是英文转写稿（H3）就用英文
+  const line = withBoard ? boardLine(withBoard.shotCount, args.ratio, promptLang(prompt)) : "";
   const params = {
-    prompt: withBoard ? `${BOARD_LINE}\n${prompt}` : prompt,
+    prompt: line ? `${line}\n${prompt}` : prompt,
     ...segmentParams(caps, { seconds: args.seconds, ratio: args.ratio, overrides: args.overrides }),
   };
   const bindings = resolveBindings(caps, op, links, params);
@@ -316,5 +320,6 @@ export function planSegmentInput(args: {
     audioMax: caps?.refs?.audio?.max ?? 0,
     deadLabels: deadLabelsOf(linked),
     board,
+    boardLine: line,
   };
 }

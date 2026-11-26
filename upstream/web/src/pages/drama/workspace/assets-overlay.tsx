@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
@@ -138,6 +139,7 @@ function Credits({ value }: { value: number }) {
 
 /** 列表视图：类型 tab、资产卡网格（可鼠标框选，已生成的也能选上重新生成）、有选中时底部浮出批量操作栏 */
 function AssetList({ items }: { items: AssetItem[] }) {
+  const shared = useSharedWorkspace();
   const ui = useAssetsUi();
   const { jobs } = useWorkspace();
   const editor = useCanvasEditor();
@@ -340,7 +342,8 @@ function AssetList({ items }: { items: AssetItem[] }) {
           </button>
         ))}
       </div>
-      {ui.generateAllTarget &&
+      {!shared &&
+        ui.generateAllTarget &&
         pending.length > 0 &&
         !ui.multi &&
         createPortal(
@@ -361,10 +364,10 @@ function AssetList({ items }: { items: AssetItem[] }) {
         {/* 框选区：铺满滚动区，卡片之间和下方的空白都能按下开始框选 */}
         <div
           ref={marqueeRef}
-          {...marqueeHandlers}
-          onDragOver={onFileDragOver}
+          {...(shared ? {} : marqueeHandlers)}
+          onDragOver={shared ? undefined : onFileDragOver}
           onDragLeave={onFileDragLeave}
-          onDrop={onFileDrop}
+          onDrop={shared ? undefined : onFileDrop}
           className={cn(
             "relative min-h-full p-4",
             selectedItems.length > 0 && "pb-24",
@@ -402,17 +405,19 @@ function AssetList({ items }: { items: AssetItem[] }) {
                 toast.success(`已加入「${human.name}」，正在备案`);
               }}
             />
-            <AddAssetCard
-              type={ui.type}
-              scope={
-                ui.filter.kind === "none"
-                  ? "未分类"
-                  : ui.filter.kind === "episode"
-                    ? `出现在第 ${ui.filter.no} 集`
-                    : "全集出现"
-              }
-              onCreate={createNew}
-            />
+            {!shared && (
+              <AddAssetCard
+                type={ui.type}
+                scope={
+                  ui.filter.kind === "none"
+                    ? "未分类"
+                    : ui.filter.kind === "episode"
+                      ? `出现在第 ${ui.filter.no} 集`
+                      : "全集出现"
+                }
+                onCreate={createNew}
+              />
+            )}
           </div>
           {shown.length === 0 && (
             <div className="text-muted-foreground py-8 text-center text-sm">{hint}</div>
@@ -506,10 +511,11 @@ function AssetList({ items }: { items: AssetItem[] }) {
  * 节点要挂载后才登记动作，没换成的留着，节点数据变了（挂载、出图……）再试，全换好才清掉请求。
  */
 function useApplyModelSwitch(dramaId: string, items: AssetItem[]) {
+  const shared = useSharedWorkspace();
   const pending = useModelSwitchStore((state) => state.byDrama[dramaId]);
   const imageModels = useRemoteModels("image");
   useEffect(() => {
-    if (!pending || imageModels.status !== "ready") return;
+    if (shared || !pending || imageModels.status !== "ready") return;
     const fallback = imageModels.models[0]?.key;
     for (const [slot, picked] of Object.entries(pending) as [keyof typeof pending, string][]) {
       const key = picked || fallback;
@@ -518,7 +524,7 @@ function useApplyModelSwitch(dramaId: string, items: AssetItem[]) {
         : [];
       if (left.length === 0) useModelSwitchStore.getState().done(dramaId, slot);
     }
-  }, [dramaId, imageModels.models, imageModels.status, items, pending]);
+  }, [dramaId, imageModels.models, imageModels.status, items, pending, shared]);
 }
 
 /** 画布视图的底部工具：居中横排工具条、左下视图控件；资产管理和故事板共用 */
@@ -553,10 +559,11 @@ export function CanvasTools() {
 
 /** 画布视图下的外壳：左上资产库浮窗、底部工具、操作提示 */
 function CanvasChrome({ items }: { items: AssetItem[] }) {
+  const shared = useSharedWorkspace();
   return (
     <>
       <LibraryFloat items={items} />
-      <CanvasTools />
+      {!shared && <CanvasTools />}
       <ChromeZone position="bottom-right" className="max-md:hidden">
         <ChromePill className="text-muted-foreground gap-1.5 px-3 text-xs">
           <Hand className="size-3.5" />

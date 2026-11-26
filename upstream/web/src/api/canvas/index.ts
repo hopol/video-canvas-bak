@@ -43,7 +43,7 @@ const normalizeGraph = (value: unknown): CanvasGraphDto => {
 };
 
 /** 将后端画布模型转换成页面和 Flow 组件使用的 DTO。 */
-const mapCanvasProject = (canvas: BackendCanvasProjectDto): CanvasDetailDto => ({
+export const mapCanvasProject = (canvas: BackendCanvasProjectDto): CanvasDetailDto => ({
   id: String(canvas.id),
   title: canvas.title,
   description: null,

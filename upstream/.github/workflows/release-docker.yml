@@ -262,11 +262,63 @@ jobs:
           cache-from: type=gha,scope=updater
           cache-to: type=gha,mode=max,scope=updater
 
+  # 命令行（cli/）不发布到 npm 仓库，安装包挂在本次 GitHub Release 上：
+  # 文件名固定（不带版本号），`releases/latest/download/<文件名>` 永远指向最新一版，
+  # 一键安装脚本（backend/internal/cliinstall/，由后端下发）和 CLI 的升级检查都按这个地址取。
+  pack-cli:
+    name: Pack CLI
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # cli/package.json 的 engines 要求 >= 22.18
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test # pretest 会先 build
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          mkdir -p ../cli-release
+          # --ignore-scripts：dist 已由上一步构建好，不在打包时再跑生命周期脚本
+          tarball="$(npm pack --ignore-scripts --silent --pack-destination ../cli-release)"
+          cd ../cli-release
+          mv "$tarball" video-canvas-cli.tgz
+          sha="$(sha256sum video-canvas-cli.tgz | awk '{print $1}')"
+          printf '%s  video-canvas-cli.tgz\n' "$sha" > video-canvas-cli.tgz.sha256
+          node -e 'const p=require("../cli/package.json");process.stdout.write(JSON.stringify({name:p.name,version:p.version,sha256:process.argv[1]})+"\n")' "$sha" > video-canvas-cli.json
+          version="$(node -p 'require("../cli/package.json").version')"
+          echo "### CLI 安装包" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`video-canvas-cli@$version\`，sha256 \`$sha\`，随本次 Release 发布。" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CLI package
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-release
+          path: cli-release/
+          if-no-files-found: error
+
   # 镜像全部推送成功后才创建 GitHub Release：一键升级会按 Release 判断新版本，
   # 若 Release 先于镜像出现，用户会拉取到尚不存在的镜像。
   release:
     name: Publish release
-    needs: [validate, docker]
+    needs: [validate, docker, pack-cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -275,6 +327,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: release-notes
+
+      - name: Download CLI package
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-release
+          path: cli-release
 
       - name: Create GitHub Release
         env:
@@ -290,3 +348,9 @@ jobs:
               --title "$RELEASE_TAG" \
               --notes-file release-notes.md
           fi
+          # 重跑时覆盖同名附件：三个文件必须来自同一次打包，否则校验和与包对不上
+          gh release upload "$RELEASE_TAG" \
+            cli-release/video-canvas-cli.tgz \
+            cli-release/video-canvas-cli.tgz.sha256 \
+            cli-release/video-canvas-cli.json \
+            --clobber

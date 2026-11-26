@@ -75,7 +75,7 @@ import type {
 } from "@/types";
 import { getModelOptions, pruneRemoteDefaults } from "@/utils/canvas/canvas";
 import { createCanvas } from "@/api/canvas";
-import type { CanvasDetailDto } from "@/api/canvas/type";
+import type { CanvasDetailDto, CanvasGraphDto } from "@/api/canvas/type";
 import { canLinkFrom, canLinkNodes } from "@/utils/canvas/link-rule";
 import { planFileDrop } from "@/utils/canvas/fill-upload";
 import { TEXT_BODY_MAX, clipFileName, clipText, type ClipboardContent } from "@/utils/canvas/paste";
@@ -202,6 +202,8 @@ export type CanvasEditorProps = {
   commandsRef?: Ref<CanvasEditorCommands>;
   /** 立即保存的出口：页面在「被要求让位」时要先存盘，再交锁 */
   saveRef?: Ref<() => Promise<boolean>>;
+  /** 一次保存成功后交出存下的图谱：页面上别的视图（片场的故事板）据此同步，不用再读一次 */
+  onSaved?: (graph: CanvasGraphDto) => void;
   /**
    * 只读预览：同一张画布已在另一个标签页打开时，这里只能看。
    * 不看按钮、看入口——保存与草稿整条链路不启动，节点/连线变更、快捷键、拖放、删除全部掐掉，
@@ -239,6 +241,7 @@ export const CanvasEditor = memo(function CanvasEditor({
   aside,
   commandsRef,
   saveRef,
+  onSaved,
   readOnly = false,
   takeoverState = "idle",
   onTakeover,
@@ -290,6 +293,11 @@ export const CanvasEditor = memo(function CanvasEditor({
   // 保存发请求的那一刻才取图谱，视口也在这时读，所以平移缩放本身不用触发保存
   /** Agent 改画布的同步（见 useAgentCanvasSync）；保存的回调经它转给同步 */
   const agentSyncRef = useRef<ReturnType<typeof useAgentCanvasSync> | null>(null);
+  // 编辑器用 memo 包着，页面传进来的回调放进 ref，换了身份也不牵动编辑器
+  const onSavedRef = useRef(onSaved);
+  useEffect(() => {
+    onSavedRef.current = onSaved;
+  }, [onSaved]);
   const getGraph = useCallback(
     () =>
       hydratedRef.current
@@ -316,7 +324,10 @@ export const CanvasEditor = memo(function CanvasEditor({
     readOnly,
     // 同步要等撤销栈建好才能创建，这里先经 ref 转一道
     autoMerge: () => agentSyncRef.current?.autoMerge() ?? Promise.resolve(null),
-    onSaved: (graph, version) => agentSyncRef.current?.saved(graph, version),
+    onSaved: (graph, version) => {
+      agentSyncRef.current?.saved(graph, version);
+      onSavedRef.current?.(graph);
+    },
   });
   const overlayGate = useOverlayGate(getNodes);
   const {
@@ -765,21 +776,24 @@ export const CanvasEditor = memo(function CanvasEditor({
   );
   /**
    * 给空节点选素材的素材库弹框：记下放进哪个节点、锁定什么种类；关掉时保留种类，关闭动画里不闪成全部种类。
-   * 放进角色卡时多一个「真人库」来源（短剧资产列表的空角色卡也走这里）。
+   * 放进角色卡时多一个「真人库」来源（短剧资产列表的空角色卡也走这里）；
+   * replace 为真是给已有主图的图片节点换主图（确认后走 replaceAsset，不是往空节点里放）。
    */
   const [fillPicker, setFillPicker] = useState<{
     open: boolean;
     id: string;
     kind: MediaType;
     character: boolean;
-  }>({ open: false, id: "", kind: "image", character: false });
+    replace: boolean;
+  }>({ open: false, id: "", kind: "image", character: false, replace: false });
   const openFillPicker = useCallback(
-    (id: string, kind: MediaType) =>
+    (id: string, kind: MediaType, replace = false) =>
       setFillPicker({
         open: true,
         id,
         kind,
         character: (getNode(id)?.data as CanvasNodeData | undefined)?.kind === "character",
+        replace,
       }),
     [getNode],
   );
@@ -1130,7 +1144,7 @@ export const CanvasEditor = memo(function CanvasEditor({
                                   />
                                 )}
                                 {overlay}
-                                {readOnly && (
+                                {readOnly && onTakeover && (
                                   <ReadOnlyBanner
                                     takeoverState={takeoverState}
                                     onTakeover={onTakeover}
@@ -1250,9 +1264,12 @@ export const CanvasEditor = memo(function CanvasEditor({
                                   limit={1}
                                   withHumans={fillPicker.character && fillPicker.kind === "image"}
                                   withOfficialVoices={fillPicker.kind === "audio"}
-                                  confirmLabel="放进节点"
+                                  confirmLabel={fillPicker.replace ? "替换主图" : "放进节点"}
                                   onConfirm={(assets) => {
-                                    if (assets[0]) fill.fillAsset(fillPicker.id, assets[0]);
+                                    if (!assets[0]) return;
+                                    if (fillPicker.replace)
+                                      fill.replaceAsset(fillPicker.id, assets[0]);
+                                    else fill.fillAsset(fillPicker.id, assets[0]);
                                   }}
                                 />
                               </div>

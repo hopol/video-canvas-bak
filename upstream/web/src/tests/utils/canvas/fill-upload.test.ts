@@ -3,10 +3,12 @@ import { describe, expect, test } from "bun:test";
 import type { CanvasNodeData } from "@/types";
 import {
   canFillNode,
+  canReplaceImage,
   fillAccept,
   fillAssetPatch,
   fillStartPatch,
   planFileDrop,
+  replaceImagePatch,
   takeFillFile,
 } from "@/utils/canvas/fill-upload";
 
@@ -103,6 +105,114 @@ describe("fillStartPatch / fillAssetPatch：媒体节点变成上传节点", () 
       taskId: undefined,
       pendingTaskIds: undefined,
     });
+  });
+});
+
+describe("canReplaceImage：已有主图的图片节点能从资产库换图", () => {
+  const done = { src: "https://cdn/a.png", assetId: "a1", status: "done" } as const;
+
+  test("有已存下来的主图、没在生成的图片节点可以换", () => {
+    expect(canReplaceImage(data(done))).toBe(true);
+    expect(canReplaceImage(data({ ...done, uploaded: true }))).toBe(true);
+  });
+
+  test("空节点走「素材库」填充，不走换图", () => {
+    expect(canReplaceImage(data({}))).toBe(false);
+  });
+
+  test("生成中、上传中、本地 blob 还没传完的不能换", () => {
+    expect(canReplaceImage(data({ ...done, status: "running" }))).toBe(false);
+    expect(canReplaceImage(data({ ...done, pendingTaskIds: ["2"] }))).toBe(false);
+    expect(canReplaceImage(data({ ...done, uploadProgress: 30 }))).toBe(false);
+    expect(canReplaceImage(data({ src: "blob:http://x/1", status: "done" }))).toBe(false);
+  });
+
+  test("只有图片节点：视频、音频、角色卡、文本都不收", () => {
+    for (const kind of ["video", "audio", "character", "script", "storyboard"] as const) {
+      expect(canReplaceImage(data({ ...done, kind }))).toBe(false);
+    }
+  });
+});
+
+describe("replaceImagePatch：换成资产库里的图", () => {
+  const asset = {
+    id: "a2",
+    url: "https://cdn/b.png",
+    kind: "image",
+    fileName: "b.png",
+    width: 800,
+    height: 400,
+  } as never;
+
+  test("新图成为当前主图，旧图留在历史里", () => {
+    const patch = replaceImagePatch(
+      data({ src: "https://cdn/a.png", assetId: "a1", status: "done", model: "m1" }),
+      asset,
+      1000,
+    );
+    expect(patch).toMatchObject({
+      src: "https://cdn/b.png",
+      assetId: "a2",
+      mediaType: "image",
+      activeOutputId: "a2",
+      mediaAspect: 2,
+      status: "done",
+      error: null,
+    });
+    expect(patch.outputs?.map((item) => item.id)).toEqual(["a1", "a2"]);
+    expect(patch.outputs?.[1]).toMatchObject({
+      assetId: "a2",
+      src: "https://cdn/b.png",
+      createdAt: 1000,
+    });
+  });
+
+  test("生成的节点换图后仍是生成节点（不标 uploaded），生成面板和提示词不丢", () => {
+    const patch = replaceImagePatch(
+      data({ src: "https://cdn/a.png", assetId: "a1", status: "done", taskId: "7" }),
+      asset,
+      1,
+    );
+    expect("uploaded" in patch).toBe(false);
+    expect("prompt" in patch).toBe(false);
+  });
+
+  test("上传的节点同步文件名，下载名不再是旧图的", () => {
+    const patch = replaceImagePatch(
+      data({
+        src: "https://cdn/a.png",
+        assetId: "a1",
+        status: "done",
+        uploaded: true,
+        fileName: "a.png",
+      }),
+      asset,
+      1,
+    );
+    expect(patch.fileName).toBe("b.png");
+  });
+
+  test("素材没有宽高时不写 mediaAspect；换成已在历史里的同一张只切过去", () => {
+    const noSize = replaceImagePatch(
+      data({ src: "https://cdn/a.png", assetId: "a1", status: "done" }),
+      { id: "a2", url: "https://cdn/b.png", kind: "image", width: null, height: null } as never,
+      1,
+    );
+    expect("mediaAspect" in noSize).toBe(false);
+    const again = replaceImagePatch(
+      data({
+        src: "https://cdn/b.png",
+        assetId: "a2",
+        status: "done",
+        outputs: [
+          { id: "a1", src: "https://cdn/a.png", mediaType: "image", assetId: "a1", createdAt: 1 },
+          { id: "a2", src: "https://cdn/b.png", mediaType: "image", assetId: "a2", createdAt: 2 },
+        ],
+      }),
+      asset,
+      3,
+    );
+    expect(again.outputs).toHaveLength(2);
   });
 });
 

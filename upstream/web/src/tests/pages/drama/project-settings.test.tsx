@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 
 import type { Drama, PromptSettings, UpdateDramaInput } from "@/api/drama/type";
 import type { PromptLibrary } from "@/components/drama/prompts/use-prompt-library";
@@ -30,8 +30,14 @@ let settingsToPrompts: typeof settingsToPromptsType;
 let CommandPalette: typeof CommandPaletteType;
 let DramaWorkspaceContext: typeof DramaWorkspaceContextType;
 let Dialog: typeof DialogType;
+let styleCatalog: ReturnType<typeof spyOn>;
 beforeAll(async () => {
   dom = await installDom();
+  styleCatalog = spyOn(await import("@/hooks/use-drama-styles"), "useDramaStyles").mockReturnValue({
+    ready: true,
+    genres: [{ key: "xianxia", name: "玄幻修仙" }],
+    styles: [{ key: "ink", name: "水墨", prompt: "" }],
+  });
   const sheet = await import("@/pages/drama/workspace/project-settings-dialog");
   ProjectSettingsBody = sheet.ProjectSettingsBody;
   changedSteps = sheet.changedSteps;
@@ -65,6 +71,7 @@ beforeAll(async () => {
   Dialog = (await import("@/components/ui/dialog")).Dialog;
 });
 afterAll(() => {
+  styleCatalog.mockRestore();
   // models store 是全局单例：清掉本文件灌进去的模型，免得影响后面的测试
   useModelsStore.setState({ byKind: {} });
   dom.restore();
@@ -197,6 +204,35 @@ describe("项目设置：纯逻辑", () => {
 });
 
 describe("项目设置：弹窗内容", () => {
+  test.each([
+    [{ genre: "xianxia", styleKey: "ink", episodeSeconds: 75 }, ["玄幻修仙", "水墨", "75 秒/集"]],
+    [
+      { genre: "", styleKey: "custom", styleCustom: "水彩晕染，保留纸面颗粒", episodeSeconds: 90 },
+      ["不指定", "自定义画风 · 水彩晕染，保留纸面颗粒", "90 秒/集"],
+    ],
+    [
+      { sourceKind: "script", unitKind: "episode", unitsTotal: 6, episodeSeconds: 60 },
+      ["不指定", "未设置", "按原分集 · 6 集"],
+    ],
+  ] satisfies [Partial<Drama>, string[]][])(
+    "只读展示项目保存的开拍风格 %j",
+    async (project, values) => {
+      const mounted = await mountBody(dramaOf(project), []);
+      try {
+        const summary = mounted.container.querySelector('dl[aria-label="开拍风格"]');
+        expect(
+          Array.from(summary?.querySelectorAll("dt") ?? [], (term) => term.textContent),
+        ).toEqual(["题材", "画风", "单集时长"]);
+        expect(
+          Array.from(summary?.querySelectorAll("dd") ?? [], (detail) => detail.textContent),
+        ).toEqual(values);
+        expect(summary?.querySelector("button, input, select, textarea")).toBeNull();
+      } finally {
+        await mounted.unmount();
+      }
+    },
+  );
+
   test("提示「修改只影响之后发起的任务」，四行显示已建剧时的设置，来源丢失的行标红提示", async () => {
     const m = await mountBody(dramaOf(), []);
     const text = m.container.textContent ?? "";

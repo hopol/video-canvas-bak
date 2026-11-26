@@ -150,17 +150,16 @@ feat(canvas): 支持节点分组
 docs: 更新部署说明
 ```
 
-用户可感知的改动在开发时就写进 [CHANGELOG.md](../CHANGELOG.md) 的 `[Unreleased]`，规则见 [贡献指南](../CONTRIBUTING.md#版本日志changelog)。
+版本日志在发版时根据合并的 PR 统一整理，开发时不改 [CHANGELOG.md](../CHANGELOG.md)，规则见 [贡献指南](../CONTRIBUTING.md#版本日志changelog)。
 
 分支命名、提交粒度、PR 描述、Issue 填写和评审合并流程见 [贡献指南](../CONTRIBUTING.md)。
 
 ## 持续集成与发布
 
 - 推送到 `master` 时，CI 运行前后端的 lint、构建和测试。
-- PR 上的 `Changelog` 检查（`.github/workflows/changelog.yml`）：有 `feat` / `fix` / `perf` / 破坏性变更提交时，`[Unreleased]` 必须新增条目，`skip-changelog` 标签可豁免；本地由 pre-commit 的 `commit-msg` 钩子做同样的检查（`scripts/changelog-check.mjs`）。
 - 数据库迁移只能向前：最近一个 `v*` 标签里已有的迁移文件不能修改、删除或改名，要修正就新增迁移文件，否则 CI 不通过。
 - 推送 `v*` 标签时，CI 先校验标签、`VERSION` 和 [CHANGELOG.md](../CHANGELOG.md) 是否一致，再构建 `video-canvas-backend` 和 `video-canvas-web` 两个镜像发布到 GHCR，成功后创建 GitHub Release。
-- 因此发版时先把 `[Unreleased]` 整理为 `## [x.y.z] - 日期`（顶部保留新的空 `[Unreleased]`），把 `VERSION` 改为目标版本，一起提交，再创建并推送标签。
+- 因此发版时先根据上个版本以来合并的 PR 整理出 `## [x.y.z] - 日期` 段落（顶部保留空的 `[Unreleased]`），把 `VERSION` 改为目标版本，一起提交，再创建并推送标签。这一步由 `video-canvas-release` 技能完成。
 
 ## 相关文档
 

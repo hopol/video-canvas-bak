@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 import {
@@ -311,6 +312,7 @@ export function OverviewArea({
   onOpenDoc: (doc: ScriptDoc) => void;
   onBreakdownOpen: () => void;
 }) {
+  const shared = useSharedWorkspace();
   const { drama, jobs } = useWorkspace();
   const settled = useDramaJobsStore((state) => state.settled[drama.id] ?? 0);
   const { assets } = useDramaAssets(drama.canvasId, settled);
@@ -505,9 +507,9 @@ export function OverviewArea({
                   tone="bg-info/15 text-info"
                   title={`${next.episodes.length} 集剧本已就绪`}
                   hint="拆解资产后才能生成分镜；拆解后剧本会锁定"
-                  action="拆解"
+                  action={shared ? "查看资产" : "拆解"}
                   disabledReason={next.disabledReason}
-                  onClick={onBreakdownOpen}
+                  onClick={shared ? () => onGo("assets", 0) : onBreakdownOpen}
                 />
               )}
               {toShoot.length > 0 && (

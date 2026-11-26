@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { motion } from "motion/react";
 import { CircleX, Loader2, Trash2 } from "lucide-react";
 
@@ -24,6 +25,7 @@ export function EditorHeading({ no, seq }: { no: number; seq: number }) {
 
 /** 右侧编辑区：标题（第几集第几段）、参考素材条、提示词、失败提示（时长、视频模型和生成按钮在顶栏） */
 export function Editor() {
+  const shared = useSharedWorkspace();
   const { selected, actions, segmentsStatus, no } = useStudio();
 
   if (!selected) {
@@ -68,6 +70,8 @@ export function Editor() {
           <Button
             variant="ghost"
             size="icon-sm"
+            hidden={!!shared}
+            disabled={!!shared}
             aria-label="删除这个片段"
             title="删除这个片段"
             onClick={() => void actions.remove(selected)}
@@ -78,7 +82,19 @@ export function Editor() {
 
         <RefsBar />
 
-        <PromptPane key={selected.id} segment={selected} />
+        {shared ? (
+          <div className="whitespace-pre-wrap text-sm">
+            <p>{selected.prompt}</p>
+            {Object.entries(selected.adaptations ?? {}).map(([key, item]) => (
+              <details key={key}>
+                <summary>{key}</summary>
+                {item.prompt}
+              </details>
+            ))}
+          </div>
+        ) : (
+          <PromptPane key={selected.id} segment={selected} />
+        )}
 
         {error && (
           <div

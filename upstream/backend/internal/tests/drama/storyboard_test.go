@@ -216,3 +216,49 @@ func TestStoryboardPromptIsSeedance(t *testing.T) {
 		}
 	}
 }
+
+// 一段里 @ 到的有声角色就是提交视频时要带的参考音频，不能超过视频模型的上限；同一角色重复引用只算一次。
+func TestStoryboardVoiceLimit(t *testing.T) {
+	voiced := map[string]bool{"a": true, "b": true, "c": true}
+	for _, tc := range []struct {
+		name    string
+		limit   int
+		prompts []string
+		valid   bool
+	}{
+		{"不限", 0, []string{"@[甲](a) @[乙](b) @[丙](c)"}, true},
+		{"恰好到上限", 2, []string{"@[甲](a) @[乙](b)"}, true},
+		{"超过上限", 2, []string{"@[甲](a) @[乙](b) @[丙](c)"}, false},
+		{"重复引用只算一次", 2, []string{"@[甲](a) @[乙](b) 甲又说 @[甲](a)"}, true},
+		{"无声角色和场景不算", 1, []string{"@[甲](a) @[路人](x) @[村口](scene)"}, true},
+		{"按段分别计数", 2, []string{"@[甲](a) @[乙](b)", "@[丙](c) @[甲](a)"}, true},
+		{"后面一段超限", 2, []string{"@[甲](a)", "@[甲](a) @[乙](b) @[丙](c)"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := drama.StoryboardOutput{}
+			for _, prompt := range tc.prompts {
+				out.Segments = append(out.Segments, drama.StoryboardSegment{Seconds: 5, Prompt: prompt})
+			}
+			err := out.ValidateVoices(tc.limit, voiced)
+			if tc.valid && err != nil {
+				t.Fatalf("不该判无效: %v", err)
+			}
+			if !tc.valid && !errors.Is(err, drama.ErrOutputInvalid) {
+				t.Fatalf("应判无效，got %v", err)
+			}
+		})
+	}
+}
+
+// 格式段负责按参考音频上限切段：提示词里要有 max_audios 和 has_voice 的说明。
+func TestStoryboardFormatPromptVoiceLimit(t *testing.T) {
+	prompt, err := drama.Prompt("storyboard_format", map[string]any{"max_seconds": 15, "max_audios": 3, "draft_md": "女子抬头。"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, word := range []string{"`max_audios`", "`has_voice`", `"max_audios":3`} {
+		if !strings.Contains(prompt, word) {
+			t.Fatalf("格式提示词缺少 %s", word)
+		}
+	}
+}

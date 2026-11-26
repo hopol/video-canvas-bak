@@ -40,6 +40,9 @@ import PayReturn from "@/pages/pay/return";
 import Profile from "@/pages/profile";
 import { useMeStore } from "@/store/me";
 import { getToken } from "@/utils/storage/token";
+import CLIPage from "@/pages/cli";
+import CLIDocsPage from "@/pages/cli/docs";
+import CLIAuthorize from "@/pages/cli/authorize";
 
 /**
  * 旧的模型页地址：模型管理已并入渠道与模型主从页，保留 ?channel= / ?model= / ?test= 查询串，
@@ -99,6 +102,11 @@ export const router = createBrowserRouter([
       {
         element: <RequireAuth />,
         children: [
+          /** 命令行登录的确认页：授权的就是当前账号，所以要登录；未登录会带着 ?code= 跳去登录再回来 */
+          {
+            path: "/cli/authorize",
+            element: <CLIAuthorize />,
+          },
           {
             /** 首页和所有画布共用侧栏 + 顶栏 */
             element: <HomeLayout />,
@@ -112,6 +120,9 @@ export const router = createBrowserRouter([
               { path: "conversations/new", element: <Navigate to="/" replace /> },
               { path: "conversations/:id", element: <Conversation /> },
               { path: "profile", element: <Profile /> },
+              /** 命令行（CLI）：自己那页，用户与后台共用同一个组件 */
+              { path: "cli", element: <CLIPage /> },
+              { path: "cli/docs", element: <CLIDocsPage /> },
             ],
           },
           {
@@ -127,6 +138,7 @@ export const router = createBrowserRouter([
             path: "drama/:id",
             element: <DramaWorkspace />,
           },
+          { path: "drama/:id/reader", element: <DramaWorkspace viewer /> },
           /** 营销创作台：全屏，与短剧工作台同级，不带首页侧栏 */
           {
             path: "marketing/:id",
@@ -169,6 +181,8 @@ export const router = createBrowserRouter([
               { path: "agent/steps", element: <AgentStepsPage /> },
               { path: "agent/runs", element: <AgentRunsPage /> },
               { path: "agent/tokens", element: <AgentTokensPage /> },
+              { path: "cli", element: <CLIPage /> },
+              { path: "cli/docs", element: <CLIDocsPage /> },
               { path: "users", element: <UsersPage /> },
               { path: "payment", element: <PaymentAdminPage /> },
               { path: "usage", element: <UsagePage /> },

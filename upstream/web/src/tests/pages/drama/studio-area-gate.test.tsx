@@ -16,7 +16,7 @@ mock.module("@/hooks/use-drama-video-model", () => ({
     status: "ready",
     model: undefined,
     setModel: () => {},
-    maxSeconds: 15,
+    storyboard: { maxSeconds: 15 },
   }),
 }));
 

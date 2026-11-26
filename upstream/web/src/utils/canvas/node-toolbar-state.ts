@@ -30,9 +30,12 @@ export function toolbarGate(data: CanvasNodeData): ToolbarGate {
   };
 }
 
+/** 没有处理函数就不出现的查看类按钮 */
+const CONDITIONAL_TAIL: ReadonlySet<ToolbarTail> = new Set(["addToLibrary", "replaceFromLibrary"]);
+
 /**
  * 功能区右半边实际要显示的查看类按钮。放大、下载、复制没有处理函数时仍显示（点了提示「敬请期待」）；
- * 「加入资产库」是有条件的功能，调用方没给处理函数（节点没有可入库的素材）就不出现。
+ * 「加入资产库」「从资产库替换」是有条件的功能，调用方没给处理函数（节点没有可入库的素材、不能换图）就不出现。
  * @param tail 配置里这种节点的查看类按钮
  * @param handlers 调用方给了处理函数的按钮
  */
@@ -40,5 +43,5 @@ export function visibleTail(
   tail: ToolbarTail[],
   handlers: Partial<Record<ToolbarTail, () => void>> | undefined,
 ): ToolbarTail[] {
-  return tail.filter((item) => item !== "addToLibrary" || !!handlers?.addToLibrary);
+  return tail.filter((item) => !CONDITIONAL_TAIL.has(item) || !!handlers?.[item]);
 }

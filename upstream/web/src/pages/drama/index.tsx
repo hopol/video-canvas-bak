@@ -64,7 +64,12 @@ export default function DramaListPage() {
             还没有短剧，在上面上传一份剧本开始吧
           </div>
         ) : (
-          <DramaGrid items={items} deletingId={deletingId} onDelete={remove} />
+          <DramaGrid
+            items={items}
+            deletingId={deletingId}
+            onDelete={remove}
+            onTransferred={reload}
+          />
         )}
       </section>
     </div>

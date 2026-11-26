@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getDrama, updateDrama } from "@/api/drama";
+import { getSharedWorkspace, type SharedWorkspace } from "@/api/drama/shared-workspace";
 import { DRAMA_ERR, dramaErrorMessage, isDramaError, isRevisionConflict } from "@/api/drama/errors";
 import type { Drama, DramaJob, UpdateDramaInput } from "@/api/drama/type";
 import { useDramaJobsStore } from "@/store/drama";
@@ -22,6 +23,7 @@ export function summarizeSave(states: Record<string, AutosaveStatus>): SaveSumma
 }
 
 const NO_JOBS: DramaJob[] = [];
+const SHARED_REFRESH_MS = 60_000;
 
 /** 工作台对子组件开放的状态与动作 */
 export type DramaWorkspace = {
@@ -46,7 +48,8 @@ export type DramaWorkspace = {
  * - 挂载时拉详情、登记「正在看这部短剧」（WebSocket 重连 / 回到前台时据此对账）、对账一次进行中的任务；
  * - 分集写入、片段完成或任务收尾后重新拉详情：集、大纲、剧本、比例都可能变了。
  */
-export function useDramaWorkspace(id: string) {
+export function useDramaWorkspace(id: string, viewer = false) {
+  const [shared, setShared] = useState<SharedWorkspace | null>(null);
   const [drama, setDrama] = useState<Drama | null>(null);
   const [error, setError] = useState<"notfound" | "failed" | null>(null);
   const [saveStates, setSaveStates] = useState<Record<string, AutosaveStatus>>({});
@@ -60,23 +63,40 @@ export function useDramaWorkspace(id: string) {
   const refresh = useCallback(async () => {
     const seq = ++fetchSeq.current;
     try {
-      const next = await getDrama(id, true);
+      const bundle = viewer ? await getSharedWorkspace(id) : null;
+      const next = bundle?.project ?? (await getDrama(id, true));
       if (seq !== fetchSeq.current) return;
       revisionRef.current = next.revision;
+      setShared(bundle);
       setDrama(next);
       setError(null);
     } catch (e) {
       if (seq !== fetchSeq.current) return;
-      // 已经有数据时刷新失败不打断；第一次就失败才显示错误页
-      setError((prev) => (isDramaError(e, DRAMA_ERR.notFound) ? "notfound" : (prev ?? "failed")));
+      const notFound = isDramaError(e, DRAMA_ERR.notFound);
+      // 暂时断线时保留已打开的工作台，授权失效时立即退出查看。
+      if (viewer && notFound) {
+        setShared(null);
+        setDrama(null);
+      }
+      setError((prev) => (notFound ? "notfound" : (prev ?? "failed")));
     }
-  }, [id]);
+  }, [id, viewer]);
 
   /** 逐集写入或片段完成时同步摘要，分集栏与总览共用最新状态。 */
   useEffect(() => subscribeDramaChanges(id, () => void refresh()), [id, refresh]);
 
   // 首次加载：详情 + 任务对账
   useEffect(() => {
+    if (viewer) {
+      const reload = () => void refresh();
+      reload();
+      window.addEventListener("focus", reload);
+      const interval = window.setInterval(reload, SHARED_REFRESH_MS);
+      return () => {
+        window.removeEventListener("focus", reload);
+        clearInterval(interval);
+      };
+    }
     let active = true;
     void (async () => {
       await refresh();
@@ -88,16 +108,16 @@ export function useDramaWorkspace(id: string) {
       active = false;
       unwatch();
     };
-  }, [id, refresh]);
+  }, [id, refresh, viewer]);
 
   // 详情里带的进行中任务也并进任务卡（刷新页面后立刻有卡片，不用等对账）
   useEffect(() => {
-    if (!drama) return;
+    if (!drama || viewer) return;
     const known = new Set(useDramaJobsStore.getState().byDrama[id]?.map((job) => job.id));
     for (const job of drama.activeJobs) {
       if (!known.has(job.id)) useDramaJobsStore.getState().applyJob(id, job);
     }
-  }, [drama, id]);
+  }, [drama, id, viewer]);
 
   // 任务收尾 -> 重新拉详情
   const firstSettled = useRef(settled);
@@ -108,6 +128,7 @@ export function useDramaWorkspace(id: string) {
 
   const patch = useCallback<DramaWorkspace["patch"]>(
     (fields) => {
+      if (viewer) return Promise.reject(new Error("仅查看"));
       const run = async () => {
         try {
           const next = await updateDrama(id, { ...fields, revision: revisionRef.current });
@@ -128,7 +149,7 @@ export function useDramaWorkspace(id: string) {
       queueRef.current = result.catch(() => undefined);
       return result;
     },
-    [id, refresh],
+    [id, refresh, viewer],
   );
 
   const applyEpisode = useCallback<DramaWorkspace["applyEpisode"]>((no, change) => {
@@ -147,5 +168,15 @@ export function useDramaWorkspace(id: string) {
   }, []);
 
   const save = useMemo(() => summarizeSave(saveStates), [saveStates]);
-  return { drama, error, jobs, save, refresh, patch, applyEpisode, reportSave };
+  return {
+    drama,
+    error,
+    jobs: viewer ? (shared?.project.activeJobs ?? NO_JOBS) : jobs,
+    save,
+    refresh,
+    patch,
+    applyEpisode,
+    reportSave,
+    shared,
+  };
 }

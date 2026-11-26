@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useDramaJobsStore } from "@/store/drama";
 import { useDramaSegmentsStore } from "@/store/drama-segments";
 import { storyboardStart } from "@/utils/drama/episode-cards";
+import type { StoryboardTarget } from "@/utils/drama/video-models";
 
 import { useWorkspace } from "./context";
 import { useEstimate } from "./use-estimate";
@@ -19,17 +20,17 @@ import { useEstimate } from "./use-estimate";
  * 已有出视频的片段时先确认「会清空已有片段」，确认后逐个删片段再提交；
  * 提交撞上 67013（失败的 take 也算）时同样走确认。
  */
-export function useStoryboardStart(maxSeconds: number) {
+export function useStoryboardStart(storyboard: StoryboardTarget) {
   const { drama, refresh } = useWorkspace();
   const [pending, setPending] = useState<number | null>(null);
 
   const submit = useCallback(
     async (no: number) => {
-      const job = await submitJob(drama.id, { step: "storyboard", episodes: [no], maxSeconds });
+      const job = await submitJob(drama.id, { step: "storyboard", episodes: [no], ...storyboard });
       useDramaJobsStore.getState().applyJob(drama.id, job);
       void refresh();
     },
-    [drama.id, maxSeconds, refresh],
+    [drama.id, storyboard, refresh],
   );
 
   const clearThenSubmit = useCallback(
@@ -78,19 +79,19 @@ export function useStoryboardStart(maxSeconds: number) {
   return { start, pending };
 }
 
-/** 「生成脚本 · n 积分」主按钮：估价随所选视频模型的时长上限变化 */
+/** 「生成脚本 · n 积分」主按钮：估价随所选视频模型变化 */
 export function StoryboardButton({
   episode,
   label,
   disabledReason,
-  maxSeconds,
+  storyboard,
   busy,
   onStart,
 }: {
   episode: EpisodeSummary;
   label: string;
   disabledReason: string | null;
-  maxSeconds: number;
+  storyboard: StoryboardTarget;
   busy: boolean;
   onStart: () => void;
 }) {
@@ -98,7 +99,7 @@ export function StoryboardButton({
   const estimate = useEstimate(drama.id, {
     step: "storyboard",
     episodes: [episode.no],
-    maxSeconds,
+    ...storyboard,
   });
   return (
     <Button

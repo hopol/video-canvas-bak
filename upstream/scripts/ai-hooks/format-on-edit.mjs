@@ -27,6 +27,11 @@ const TS_PROJECTS = {
     lintDirs: ["src/", "test/"],
     lintCmd: "npm run lint",
   },
+  cli: {
+    ignore: [/^dist\//, /^node_modules\//, /^package-lock\.json$/],
+    lintDirs: ["src/", "test/"],
+    lintCmd: "npm run lint",
+  },
 };
 
 function readInput() {

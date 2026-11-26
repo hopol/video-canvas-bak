@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
+import { useRef, useState } from "react";
 import { CircleX, Film, Grid2x2, RotateCw } from "lucide-react";
 
 import { MediaPreview } from "@/components/canvas/media-preview";
@@ -162,6 +163,8 @@ const thumbOf = (src: string) => variantUrl(src, "thumb").url;
  * 下面是镜头数 / 宫格、重新生成、进入画布查看；分镜时节点就建好了，没出图（包括失败）也能进画布。
  */
 export function BoardStage() {
+  const shared = useSharedWorkspace();
+  const [preview, setPreview] = useState<{ segment: string; version: string } | null>(null);
   const { selected, boards, openBoardInCanvas } = useStudio();
   /** 在大图上按下的位置；抬起时位移够大就换版 */
   const pressX = useRef<number | null>(null);
@@ -179,16 +182,25 @@ export function BoardStage() {
   );
   const hasImage = (status === "ready" || status === "stale") && !!node?.src;
   const versions = node?.versions ?? [];
+  const local =
+    shared && preview?.segment === selected.id
+      ? versions.find((item) => item.id === preview.version)
+      : undefined;
+  const activeId = local?.id ?? node?.activeId;
+  const pick = (id: string) =>
+    shared
+      ? setPreview({ segment: selected.id, version: id })
+      : void boards.selectVersion(selected, id);
   const versionNo =
     Math.max(
       0,
-      versions.findIndex((item) => item.id === node?.activeId),
+      versions.findIndex((item) => item.id === activeId),
     ) + 1;
   /** 往前 / 往后换一版（滑到哪版采用哪版）；只有多版的出图才能换 */
   const step = (delta: 1 | -1) => {
     if (!hasImage || versions.length < 2) return;
-    const next = neighborVersion(versions, node?.activeId ?? null, delta);
-    if (next) void boards.selectVersion(selected, next);
+    const next = neighborVersion(versions, activeId ?? null, delta);
+    if (next) pick(next);
   };
 
   return (
@@ -232,7 +244,7 @@ export function BoardStage() {
           <>
             {/* 大图先铺缩略图，原图加载完再淡入盖上去 */}
             <MediaPreview
-              src={node.src ?? ""}
+              src={local?.src ?? node.src ?? ""}
               alt={`片段 ${selected.seq + 1} 的故事板`}
               mode="full"
             />
@@ -241,7 +253,7 @@ export function BoardStage() {
                 原稿已改
                 <button
                   type="button"
-                  disabled={!!blocked}
+                  disabled={!!shared || !!blocked}
                   title={blocked ?? undefined}
                   onClick={generate}
                   className="bg-primary text-primary-foreground h-5 rounded-full px-2.5 text-xs font-semibold disabled:opacity-50"
@@ -286,13 +298,13 @@ export function BoardStage() {
               type="button"
               data-version={item.id}
               aria-label={`故事板版本 ${item.id}`}
-              aria-current={item.id === node?.activeId ? "true" : undefined}
+              aria-current={item.id === activeId ? "true" : undefined}
               onClick={() => {
-                if (item.id !== node?.activeId) void boards.selectVersion(selected, item.id);
+                if (item.id !== activeId) pick(item.id);
               }}
               className={cn(
                 "relative h-11 shrink-0 overflow-hidden rounded-lg ring-1 outline-none transition-[box-shadow,opacity]",
-                item.id === node?.activeId
+                item.id === activeId
                   ? "ring-primary opacity-100 ring-2"
                   : "ring-white/15 opacity-60 hover:opacity-100",
               )}
@@ -313,12 +325,12 @@ export function BoardStage() {
           </span>
         )}
         {/* 生成中框里已经有进度，不再放生成按钮；其余状态都是这一个按钮：没有图写「生成」，有过图或失败写「重新生成」 */}
-        {status !== "running" && (
+        {!shared && status !== "running" && (
           <div className={PILL}>
             <button
               type="button"
               className={PILL_BUTTON}
-              disabled={!!blocked}
+              disabled={!!shared || !!blocked}
               title={blocked ?? undefined}
               onClick={generate}
             >

@@ -1,3 +1,5 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
+import { SharedAssetDetail } from "./shared-asset-detail";
 import { motion } from "motion/react";
 import {
   AudioLines,
@@ -172,10 +174,11 @@ export function AssetCard({
   enroll?: { human: VirtualHumanDto | null; onEnroll: () => void };
 }) {
   const Icon = TYPE_ICON[item.type];
+  const shared = useSharedWorkspace();
   const uploaded = assetUploaded(item.data);
   const generated =
     !uploaded && (item.type === "character" || item.type === "scene" || item.type === "prop");
-  const fillable = !multi && item.type !== "text" && canFillNode(item.data);
+  const fillable = !shared && !multi && item.type !== "text" && canFillNode(item.data);
   const fill = fillable ? <FillActions onUpload={onUpload} onPickLibrary={onPickLibrary} /> : null;
   // 已生成的也能勾选：再生成一次就是重新生成
   const canGenerate =
@@ -283,8 +286,9 @@ export function AssetCard({
             {item.name}
             {item.look && <span className="text-muted-foreground font-normal"> · {item.look}</span>}
           </div>
-          {enroll && <EnrollButton name={item.name} enroll={enroll} />}
-          {generated && (
+          {!shared && enroll && <EnrollButton name={item.name} enroll={enroll} />}
+          {shared && <SharedAssetDetail item={item} />}
+          {!shared && generated && (
             <Button
               variant="ghost"
               size="icon-xs"
@@ -295,7 +299,7 @@ export function AssetCard({
               <PencilLine />
             </Button>
           )}
-          {item.type === "character" && (
+          {!shared && item.type === "character" && (
             <Button
               variant="ghost"
               size="icon-xs"

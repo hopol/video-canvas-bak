@@ -51,6 +51,26 @@ describe("visibleTail：功能区查看类按钮", () => {
     expect(visibleTail(NODE_TOOLBAR.image.tail, {})).toEqual(["zoom", "download"]);
   });
 
+  test("图片节点有「从资产库替换」，排在下载之后、加入资产库之前；视频、音频没有", () => {
+    expect(NODE_TOOLBAR.image.tail).toContain("replaceFromLibrary");
+    expect(NODE_TOOLBAR.video.tail).not.toContain("replaceFromLibrary");
+    expect(NODE_TOOLBAR.audio.tail).not.toContain("replaceFromLibrary");
+    expect(
+      visibleTail(NODE_TOOLBAR.image.tail, {
+        addToLibrary: () => {},
+        replaceFromLibrary: () => {},
+      }),
+    ).toEqual(["zoom", "download", "replaceFromLibrary", "addToLibrary"]);
+  });
+
+  test("没有处理函数时「从资产库替换」不出现（空节点、生成中的节点不给）", () => {
+    expect(visibleTail(NODE_TOOLBAR.image.tail, { addToLibrary: () => {} })).toEqual([
+      "zoom",
+      "download",
+      "addToLibrary",
+    ]);
+  });
+
   test("有处理函数时出现，排在放大、下载之后", () => {
     expect(visibleTail(NODE_TOOLBAR.image.tail, { addToLibrary: () => {} })).toEqual([
       "zoom",

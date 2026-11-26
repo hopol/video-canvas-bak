@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import type { TiptapEditorHTMLElement } from "@tiptap/core";
 import type { act as ReactAct, createElement as CreateElement } from "react";
 import type { Root, createRoot as CreateRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -88,6 +89,8 @@ describe("AgentComposer：画布能力开关", () => {
   let act: typeof ReactAct;
   let createRoot: typeof CreateRoot;
   let createElement: typeof CreateElement;
+  let container: HTMLDivElement;
+  let root: Root;
   let AgentComposer: typeof AgentComposerType;
   let useAgentAttachments: typeof import("@/hooks/use-agent-attachments").useAgentAttachments;
 
@@ -118,6 +121,24 @@ describe("AgentComposer：画布能力开关", () => {
     useAgentAttachments = (await import("@/hooks/use-agent-attachments")).useAgentAttachments;
   });
 
+  beforeEach(() => {
+    container = win.document.createElement("div");
+    win.document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    const editor = container.querySelector<TiptapEditorHTMLElement>('[role="textbox"]')?.editor;
+    const unmounted =
+      editor && !editor.isDestroyed
+        ? new Promise<void>((resolve) => editor.once("unmount", () => resolve()))
+        : undefined;
+    await act(async () => root.unmount());
+    await unmounted;
+    container.remove();
+    expect(win.document.querySelectorAll("style[data-tiptap-style]").length).toBe(0);
+  });
+
   afterAll(() => {
     const g = globalThis as unknown as Record<string, unknown>;
     for (const key of GLOBALS) {
@@ -126,10 +147,7 @@ describe("AgentComposer：画布能力开关", () => {
     delete g.IS_REACT_ACT_ENVIRONMENT;
   });
 
-  /** 挂载输入区，返回容器 */
   async function mount(extra: Partial<Parameters<typeof AgentComposerType>[0]> = {}) {
-    const container = win.document.createElement("div");
-    win.document.body.appendChild(container);
     function Host() {
       const attachments = useAgentAttachments();
       return createElement(AgentComposer, {
@@ -151,45 +169,40 @@ describe("AgentComposer：画布能力开关", () => {
         ...extra,
       });
     }
-    let root: Root;
     await act(async () => {
-      root = createRoot(container);
       root.render(createElement(Host));
     });
-    return { container, unmount: () => act(async () => root.unmount()) };
   }
 
   const has = (container: HTMLElement, label: string) =>
     container.querySelector(`[aria-label="${label}"]`) !== null;
 
   test("缺省：附件、插入模型、插入技能都在（画布现状），占位文字是画布的", async () => {
-    const m = await mount();
-    expect(has(m.container, "添加附件")).toBe(true);
-    expect(has(m.container, "插入模型")).toBe(true);
-    expect(has(m.container, "插入技能")).toBe(true);
-    expect(m.container.textContent).toContain("描述你的想法，@ 引用节点，/ 插入技能");
-    await m.unmount();
+    await mount();
+    expect(has(container, "添加附件")).toBe(true);
+    expect(has(container, "插入模型")).toBe(true);
+    expect(has(container, "插入技能")).toBe(true);
+    expect(container.textContent).toContain("描述你的想法，@ 引用节点，/ 插入技能");
   });
 
   test("features 全关：没有附件、插入模型、插入技能；占位文字、页面上下文引用换成后台的", async () => {
     const removed: string[] = [];
-    const m = await mount({
+    await mount({
       features: { attachments: false, mentions: false, models: false, skills: false },
       placeholder: "描述要调整的配置",
       contextRefs: [{ id: "model", label: "模型：kling-v2-1" }],
       onRemoveContextRef: (id) => removed.push(id),
     });
-    expect(has(m.container, "添加附件")).toBe(false);
-    expect(has(m.container, "插入模型")).toBe(false);
-    expect(has(m.container, "插入技能")).toBe(false);
+    expect(has(container, "添加附件")).toBe(false);
+    expect(has(container, "插入模型")).toBe(false);
+    expect(has(container, "插入技能")).toBe(false);
     // 模型选择和发送仍在
-    expect(has(m.container, "Agent 模型")).toBe(true);
-    expect(m.container.textContent).toContain("描述要调整的配置");
-    expect(m.container.textContent).toContain("模型：kling-v2-1");
+    expect(has(container, "Agent 模型")).toBe(true);
+    expect(container.textContent).toContain("描述要调整的配置");
+    expect(container.textContent).toContain("模型：kling-v2-1");
     await act(async () => {
-      (m.container.querySelector('[aria-label="移除 模型：kling-v2-1"]') as HTMLElement).click();
+      (container.querySelector('[aria-label="移除 模型：kling-v2-1"]') as HTMLElement).click();
     });
     expect(removed).toEqual(["model"]);
-    await m.unmount();
   });
 });

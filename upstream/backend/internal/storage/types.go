@@ -39,6 +39,12 @@ type Statter interface {
 	Stat(ctx context.Context, key string) (ObjectInfo, error)
 }
 
+// Copier 是能在存储内部复制对象的存储：内容不经过后端，用于把素材复制给另一个用户（短剧发送副本 / 转移）。
+// 源对象不存在返回 ErrNotFound；目标 key 已存在时覆盖。
+type Copier interface {
+	Copy(ctx context.Context, srcKey, dstKey string) error
+}
+
 // RangeOpener 是能只读取对象一段字节的存储，直传登记时用它读文件头做类型嗅探。
 type RangeOpener interface {
 	// OpenRange 读取 [offset, offset+length) 这一段，不存在返回 ErrNotFound。

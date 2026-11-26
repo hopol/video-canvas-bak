@@ -22,7 +22,7 @@ export type Estimate =
  */
 export function useEstimate(dramaId: string, input: DramaJobInput | null): Estimate {
   const key = input
-    ? `${input.step}|${input.episodes.join(",")}|${input.ratio ?? ""}|${input.maxSeconds ?? ""}`
+    ? `${input.step}|${input.episodes.join(",")}|${input.ratio ?? ""}|${input.maxSeconds ?? ""}|${input.videoModel ?? ""}`
     : "";
   const [result, setResult] = useState<{ key: string; value: Estimate } | null>(null);
 

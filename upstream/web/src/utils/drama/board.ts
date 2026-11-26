@@ -9,18 +9,82 @@ import { BOARD_SHOTS_PLACEHOLDER } from "./placeholders";
  * 格子按原稿【时间轴】的镜头一一对应，生视频时采用版作为第一张参考图。
  */
 
-/**
- * 生视频时加在提示词最前面的一行（越要紧的素材说明越靠前），告诉模型图片1是什么、按什么顺序、只参考什么。
- * 故事板是带镜头批注的手绘线稿，字和线稿笔触会被模型原样画进成片，所以明说成片里不要它们。
- */
-export const BOARD_LINE =
-  "图片1是本段的手绘分镜宫格图，各格按编号顺序对应各个镜头，只参考构图、站位、景别和镜头衔接；成片是完整连续的画面，按下面写的画风生成，不出现宫格线、边框、编号、线稿笔触和图上的批注文字。";
-
 /** 故事板固定横版 16:9，不跟短剧画幅 */
 export const BOARD_RATIO = "16:9";
 
 /** 一个宫格最多几格；镜头再多就合并进最后一格 */
 const MAX_CELLS = 9;
+
+/** 提示词正文的语言：说明行跟着它走，H3 转写稿是英文，原稿和通用转写稿是中文 */
+export type PromptLang = "zh" | "en";
+
+/**
+ * 判断提示词正文是中文还是英文：先去掉对白（`<d>…</d>`）、资产引用（`@[名](id)`）和引号里的原文，
+ * 这些在英文稿里也保留中文；剩下的拉丁字母比汉字多三倍以上算英文，其余（含空串）算中文。
+ */
+export function promptLang(prompt: string): PromptLang {
+  const body = prompt
+    .replace(/<d>[\s\S]*?<\/d>/g, "")
+    .replace(/@\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/"[^"\n]*"|“[^”\n]*”/g, "");
+  const han = body.match(/\p{Script=Han}/gu)?.length ?? 0;
+  const latin = body.match(/[A-Za-z]/g)?.length ?? 0;
+  return latin > han * 3 ? "en" : "zh";
+}
+
+/**
+ * 生视频时加在提示词最前面的一行（越要紧的素材说明越靠前），告诉模型图片1是什么、格子和镜头怎么对应、只借什么。
+ * - 格子按从左到右、从上到下对应镜头；镜头比格子少时点明多出的格子不用，免得模型多演一镜；
+ * - 宫格里的人物形象常常不一致，形象以角色 / 场景参考图和文字为准，宫格只借构图、站位、景别和衔接；
+ * - 宫格图固定横版，成片画幅不同就要求重新构图，不把横版画面硬塞进竖屏；
+ * - 故事板模板可能是手绘线稿也可能是写实（内置模板、老项目快照、「我的」模板），所以不写死画法，
+ *   只说成片不带宫格线、编号、批注，也不沿用宫格图本身的笔触和色调，画风按提示词里写的；
+ * - 语言跟提示词正文一致（英文稿配英文说明），中英两版意思相同。
+ * @param shots 出图时数出的镜头数；0 = 没识别到时间轴
+ * @param ratio 成片画幅（短剧比例）
+ * @param lang 提示词正文的语言，默认中文
+ */
+export function boardLine(shots: number, ratio: string, lang: PromptLang = "zh"): string {
+  const { cols, rows } = boardLayout(shots);
+  const cells = cols * rows;
+  const counted = shots > 0 && shots <= MAX_CELLS;
+  const spare = counted && shots < cells;
+  const reframe = ratio && ratio !== BOARD_RATIO ? ratio : "";
+  if (lang === "en") {
+    const order = !counted
+      ? "the panels correspond to the shots below in order"
+      : shots === 1
+        ? "panel 1 corresponds to the shot below"
+        : `panels 1-${shots} correspond to shots 1-${shots} below`;
+    const rest = !spare
+      ? ""
+      : shots + 1 === cells
+        ? `; ignore panel ${cells}`
+        : `; ignore panels ${shots + 1}-${cells}`;
+    return (
+      `Image 1 is the storyboard grid for this segment. Read it left to right, top to bottom: ${order}${rest}. ` +
+      "Use each panel only for composition, character blocking, shot size and continuity between shots; " +
+      "character appearance, costumes and set details follow the other reference images and the text. " +
+      (reframe ? `Reframe for ${reframe}. ` : "") +
+      "The video is continuous footage in the style described below, with no grid lines, borders, panel numbers or annotation text, " +
+      "and does not copy the storyboard's own linework or colors."
+    );
+  }
+  const order = !counted
+    ? "各格依次对应下面的各个镜头"
+    : shots === 1
+      ? "第1格对应下面的镜头"
+      : `第1到第${shots}格依次对应下面的第1到第${shots}个镜头`;
+  const rest = !spare
+    ? ""
+    : `，${shots + 1 === cells ? `第${cells}格` : `第${shots + 1}到第${cells}格`}不用`;
+  return (
+    `图片1是本段的分镜宫格图，按从左到右、从上到下的编号顺序，${order}${rest}；` +
+    "只参考每格的构图、人物站位、景别和镜头衔接，人物形象、服装和场景细节以其他参考图和文字描述为准。" +
+    `${reframe ? `成片按 ${reframe} 画幅重新构图，` : "成片"}是完整连续的画面，画风按下面写的生成，` +
+    "不出现宫格线、边框、格子编号和批注文字，也不沿用宫格图本身的笔触和色调。"
+  );
+}
 
 /** 【时间轴】里一个镜头行：「0-3秒：」「6-9.5秒：」开头 */
 const SHOT_RE = /^\s*\d+(?:\.\d+)?\s*[-–~]\s*\d+(?:\.\d+)?\s*秒\s*[:：]\s*(.*)$/;
@@ -267,8 +331,8 @@ export function boardStatus(board: BoardNode | undefined, hash: string | undefin
   return hash !== undefined && hash !== board.sourceHash ? "stale" : "ready";
 }
 
-/** 生视频时能带入的故事板：节点有图（生成中沿用上一版）；没有为 null */
-export type BoardRef = { assetId: string; src: string; stale: boolean };
+/** 生视频时能带入的故事板：节点有图（生成中沿用上一版）；没有为 null。shotCount 给说明行写格子对应 */
+export type BoardRef = { assetId: string; src: string; stale: boolean; shotCount: number };
 
 export function boardRef(board: BoardNode | undefined, hash: string | undefined): BoardRef | null {
   if (!board?.src || !board.assetId) return null;
@@ -276,5 +340,6 @@ export function boardRef(board: BoardNode | undefined, hash: string | undefined)
     assetId: board.assetId,
     src: board.src,
     stale: hash !== undefined && hash !== board.sourceHash,
+    shotCount: board.shotCount,
   };
 }

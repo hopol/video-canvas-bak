@@ -107,7 +107,9 @@ const jobCalls = () => post.mock.calls.filter((c) => c[0] === "/dramas/d1/jobs")
 
 describe("批量生成分镜脚本弹窗", () => {
   test("预选当前集；没拆解、已有分镜的置灰；全选只选能生成的", async () => {
-    const m = await mount(<Body initial={2} maxSeconds={15} onClose={() => {}} />);
+    const m = await mount(
+      <Body initial={2} storyboard={{ maxSeconds: 15, videoModel: "h3" }} onClose={() => {}} />,
+    );
     expect(picked(m.container)).toEqual([2]);
     expect(cell(m.container, 4).disabled).toBe(true);
     expect(cell(m.container, 4).title).toBe("还没拆解");
@@ -118,14 +120,20 @@ describe("批量生成分镜脚本弹窗", () => {
   });
 
   test("积分：每集单独估价再加总（分镜接口一次只估一集）", async () => {
-    const m = await mount(<Body initial={1} maxSeconds={15} onClose={() => {}} />);
+    const m = await mount(
+      <Body initial={1} storyboard={{ maxSeconds: 15, videoModel: "h3" }} onClose={() => {}} />,
+    );
     await dom.click(byText(m.container, "全选可用"));
     await dom.flush(400);
     const estimates = post.mock.calls.filter((c) => String(c[0]).endsWith("/estimate"));
     expect(estimates.every((c) => (c[1] as { episodes: number[] }).episodes.length === 1)).toBe(
       true,
     );
-    expect(estimates.at(-1)?.[1]).toMatchObject({ step: "storyboard", max_seconds: 15 });
+    expect(estimates.at(-1)?.[1]).toMatchObject({
+      step: "storyboard",
+      max_seconds: 15,
+      video_model: "h3",
+    });
     // 10 + 20 + 30
     expect(m.container.textContent).toContain("约 60 积分");
     await m.unmount();
@@ -133,7 +141,13 @@ describe("批量生成分镜脚本弹窗", () => {
 
   test("提交：每集一个任务，同时发出；全部成功后关闭", async () => {
     let closed = 0;
-    const m = await mount(<Body initial={1} maxSeconds={15} onClose={() => (closed += 1)} />);
+    const m = await mount(
+      <Body
+        initial={1}
+        storyboard={{ maxSeconds: 15, videoModel: "h3" }}
+        onClose={() => (closed += 1)}
+      />,
+    );
     await dom.click(byText(m.container, "全选可用"));
     await dom.click(byText(m.container, "生成 3 集脚本"));
     await dom.flush(100);
@@ -142,7 +156,11 @@ describe("批量生成分镜脚本弹窗", () => {
       [2],
       [3],
     ]);
-    expect(jobCalls()[0][1]).toMatchObject({ step: "storyboard", max_seconds: 15 });
+    expect(jobCalls()[0][1]).toMatchObject({
+      step: "storyboard",
+      max_seconds: 15,
+      video_model: "h3",
+    });
     expect(maxInflight).toBe(3);
     expect(closed).toBe(1);
     await m.unmount();
@@ -151,7 +169,13 @@ describe("批量生成分镜脚本弹窗", () => {
   test("部分失败：成功的照常提交并关闭，失败的不影响其他集", async () => {
     failOn = { 2: 67004 };
     let closed = 0;
-    const m = await mount(<Body initial={1} maxSeconds={15} onClose={() => (closed += 1)} />);
+    const m = await mount(
+      <Body
+        initial={1}
+        storyboard={{ maxSeconds: 15, videoModel: "h3" }}
+        onClose={() => (closed += 1)}
+      />,
+    );
     await dom.click(byText(m.container, "全选可用"));
     await dom.click(byText(m.container, "生成 3 集脚本"));
     await dom.flush(100);
@@ -163,7 +187,13 @@ describe("批量生成分镜脚本弹窗", () => {
   test("全部失败：不关闭，弹窗里写明原因", async () => {
     failOn = { 1: 67004 };
     let closed = 0;
-    const m = await mount(<Body initial={1} maxSeconds={15} onClose={() => (closed += 1)} />);
+    const m = await mount(
+      <Body
+        initial={1}
+        storyboard={{ maxSeconds: 15, videoModel: "h3" }}
+        onClose={() => (closed += 1)}
+      />,
+    );
     await dom.click(byText(m.container, "生成 1 集脚本"));
     await dom.flush(100);
     expect(closed).toBe(0);
@@ -182,7 +212,7 @@ describe("批量生成分镜脚本弹窗的开关", () => {
         <DramaWorkspaceContext.Provider
           value={{ drama, jobs: [], refresh: async () => {} } as never}
         >
-          <StoryboardBatchButton current={1} maxSeconds={15} />
+          <StoryboardBatchButton current={1} storyboard={{ maxSeconds: 15, videoModel: "h3" }} />
         </DramaWorkspaceContext.Provider>,
       );
       const body = dom.win.document.body;

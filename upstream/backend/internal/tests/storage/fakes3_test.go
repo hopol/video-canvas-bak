@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -12,7 +13,7 @@ import (
 	. "video-canvas/internal/storage"
 )
 
-// fakeS3 是只实现 PUT / GET(Range) / HEAD / DELETE 的 path 寻址 S3 服务，用来在不联网的情况下
+// fakeS3 是只实现 PUT（含服务端复制）/ GET(Range) / HEAD / DELETE 的 path 寻址 S3 服务，用来在不联网的情况下
 // 验证存储实现的读写、Range、探针流程。它不校验签名，只校验“请求形状”。
 type fakeS3 struct {
 	srv *httptest.Server
@@ -23,6 +24,8 @@ type fakeS3 struct {
 	types   map[string]string
 	ranges  []string // 收到的 Range 头，用于断言只读了需要的字节
 	deleted []string
+	copies  []string // 服务端复制（带 X-Amz-Copy-Source 的 PUT）的源 key
+	gets    int      // GET 对象的次数，用于断言服务端复制没有把内容读回客户端
 
 	failCode   string // 非空时所有请求都返回该 S3 错误码（AccessDenied / NoSuchBucket 等）
 	failStatus int
@@ -92,6 +95,23 @@ func (f *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPut:
+		if src := r.Header.Get("X-Amz-Copy-Source"); src != "" {
+			srcKey := strings.TrimPrefix(strings.TrimPrefix(src, "/"), f.bucket+"/")
+			if unescaped, err := url.PathUnescape(srcKey); err == nil {
+				srcKey = unescaped
+			}
+			b, ok := f.objects[srcKey]
+			if !ok {
+				f.writeErr(w, r, http.StatusNotFound, "NoSuchKey")
+				return
+			}
+			f.copies = append(f.copies, srcKey)
+			f.objects[key] = append([]byte(nil), b...)
+			f.types[key] = f.types[srcKey]
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult><ETag>"fake"</ETag><LastModified>2006-01-02T15:04:05.000Z</LastModified></CopyObjectResult>`)
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		// 明文 HTTP 下 minio-go 用 aws-chunked 流式签名上传，真实 S3 会解码，这里也要解码
 		if strings.HasPrefix(r.Header.Get("X-Amz-Content-Sha256"), "STREAMING-") {
@@ -106,6 +126,9 @@ func (f *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
 		f.deleted = append(f.deleted, key)
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodGet, http.MethodHead:
+		if r.Method == http.MethodGet {
+			f.gets++
+		}
 		b, ok := f.objects[key]
 		if !ok {
 			f.writeErr(w, r, http.StatusNotFound, "NoSuchKey")

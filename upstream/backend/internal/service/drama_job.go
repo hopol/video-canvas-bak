@@ -84,12 +84,12 @@ func (s *DramaService) createDramaJob(ctx context.Context, userID, id uint64, ap
 		return nil, dramaError(err)
 	}
 	if req.Step == "storyboard" {
-		seconds, e := s.storyboardSeconds(ctx, p, req)
+		seconds, audios, e := s.storyboardLimits(ctx, p, req)
 		if e != nil {
 			return nil, e
 		}
 		resolved := *req
-		resolved.MaxSeconds = seconds
+		resolved.MaxSeconds, resolved.MaxAudios = seconds, audios
 		req = &resolved
 	}
 	snap, initial, err := s.jobFreeze(ctx, p, req)

@@ -38,12 +38,18 @@ export type RegisterSettingsValues = {
   queue_multiplier: string;
   /** 排队超时（分钟）输入 */
   queue_max_wait_minutes: string;
+  /** 命令行登录有效期（天）输入 */
+  cli_token_days: string;
 };
 
 /** 注册设置字段级错误 */
 export type RegisterSettingsErrors = Partial<
   Record<
-    "initial_credits" | "default_max_active_tasks" | "queue_multiplier" | "queue_max_wait_minutes",
+    | "initial_credits"
+    | "default_max_active_tasks"
+    | "queue_multiplier"
+    | "queue_max_wait_minutes"
+    | "cli_token_days",
     string
   >
 >;
@@ -91,13 +97,17 @@ export function hasSmtpErrors(errors: object): boolean {
 
 /**
  * 校验注册设置表单
- * @param values 初始积分、默认并发、排队倍数与排队超时输入
+ * @param values 初始积分、默认并发、排队倍数、排队超时与命令行登录有效期输入
  * @returns 字段级错误
  */
 export function validateRegisterSettings(
   values: Pick<
     RegisterSettingsValues,
-    "initial_credits" | "default_max_active_tasks" | "queue_multiplier" | "queue_max_wait_minutes"
+    | "initial_credits"
+    | "default_max_active_tasks"
+    | "queue_multiplier"
+    | "queue_max_wait_minutes"
+    | "cli_token_days"
   >,
 ): RegisterSettingsErrors {
   const errors: RegisterSettingsErrors = {};
@@ -111,6 +121,8 @@ export function validateRegisterSettings(
   const maxWait = parseInteger(values.queue_max_wait_minutes);
   if (maxWait === null || maxWait < 5 || maxWait > 1440)
     errors.queue_max_wait_minutes = "范围 5 到 1440";
+  const cliDays = parseInteger(values.cli_token_days);
+  if (cliDays === null || cliDays < 1 || cliDays > 365) errors.cli_token_days = "范围 1 到 365";
   return errors;
 }
 

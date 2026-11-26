@@ -7,6 +7,7 @@ describe("作品页的范围（地址栏 ?scope=）", () => {
     expect(parseWorksScope("all")).toBe("all");
     expect(parseWorksScope("mine")).toBe("mine");
     expect(parseWorksScope("drama")).toBe("drama");
+    expect(parseWorksScope("shared-drama")).toBe("shared-drama");
     expect(parseWorksScope("marketing")).toBe("marketing");
   });
 

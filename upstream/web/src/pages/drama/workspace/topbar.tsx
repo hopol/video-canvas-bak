@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -7,7 +8,9 @@ import {
   Search,
   SlidersHorizontal,
 } from "lucide-react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
+import { dramaSharing } from "@/api/drama/share";
+import { confirm } from "@/components/admin-ui/confirm-dialog";
 
 import { ChromePill, ChromeSeparator } from "@/components/canvas/chrome/chrome";
 import { useAgentModel } from "@/components/drama/agent-model-picker";
@@ -157,7 +160,9 @@ export function Topbar({
   /** 任务面板里点集号：跳到这一步对应的工序页和集 */
   onGo: (stage: WorkspaceStage, ep?: number) => void;
 }) {
-  const { save } = useWorkspace();
+  const { save, drama } = useWorkspace();
+  const navigate = useNavigate();
+  const shared = useSharedWorkspace();
   const status = SAVE_LABEL[save];
   return (
     <header className="border-border bg-chrome relative z-30 grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-3 border-b px-3 backdrop-blur-xl">
@@ -166,32 +171,54 @@ export function Topbar({
           variant="ghost"
           size="icon-sm"
           aria-label="返回短剧列表"
-          render={<Link to="/drama" />}
+          render={<Link to={shared ? "/canvases?scope=shared-drama" : "/drama"} />}
         >
           <ArrowLeft />
         </Button>
-        <TitleInput />
+        {shared ? <strong className="truncate">{drama.title}</strong> : <TitleInput />}
         <span
           role="status"
           className={cn(
-            "text-muted-foreground ml-1 inline-flex shrink-0 items-center gap-1 text-xs whitespace-nowrap max-lg:hidden",
+            "text-muted-foreground ml-1 inline-flex shrink-0 items-center gap-1 text-xs whitespace-nowrap ",
             status.tone,
           )}
         >
-          {status.icon}
-          {status.text}
+          {!shared && status.icon}
+          {shared ? "仅查看" : status.text}
         </span>
-        <TaskPill onGo={onGo} />
+        {!shared && <TaskPill onGo={onGo} />}
+        {shared && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  title: "退出这部短剧的共享？",
+                  description: drama.title,
+                  confirmLabel: "退出共享",
+                }))
+              )
+                return;
+              await dramaSharing.remove(drama.id, "me");
+              navigate("/canvases?scope=shared-drama", { replace: true });
+            }}
+          >
+            退出共享
+          </Button>
+        )}
       </div>
       <StageTabs stage={stage} hints={hints} onChange={onStage} />
       <div className="flex items-center justify-end gap-0.5">
         {/* 画风 / 比例 / 模型：这里只显示；点开进项目设置，模型在那里改 */}
-        <ProjectSettings onSettings={onSettings} />
+        {!shared && <ProjectSettings onSettings={onSettings} />}
         <Button
           variant="ghost"
           size="sm"
           aria-label="命令面板"
           title="命令面板（⌘K）"
+          hidden={!!shared}
+          disabled={!!shared}
           onClick={onPalette}
           className="text-muted-foreground max-2xl:hidden"
         >

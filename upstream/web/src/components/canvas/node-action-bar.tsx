@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { ChevronDown, Copy, Download, FolderPlus, Maximize2, Sparkle } from "lucide-react";
+import { ChevronDown, Copy, Download, FolderPlus, Maximize2, Replace, Sparkle } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -154,6 +154,7 @@ const TAIL_META = {
   download: { icon: Download, label: "下载" },
   copy: { icon: Copy, label: "复制文本" },
   addToLibrary: { icon: FolderPlus, label: "加入资产库" },
+  replaceFromLibrary: { icon: Replace, label: "从资产库替换" },
 } as const;
 
 /**
@@ -177,7 +178,7 @@ export function NodeActionBar({
   gate: ToolbarGate;
   /** 加工类功能和菜单项的处理函数，key 是配置里的 id；没有就当占位 */
   onAction?: Partial<Record<string, () => void>>;
-  /** 放大、下载、复制的处理函数，没有就当占位；加入资产库没有处理函数就不显示 */
+  /** 放大、下载、复制的处理函数，没有就当占位；加入资产库、从资产库替换没有处理函数就不显示 */
   onTail?: Partial<Record<ToolbarTail, () => void>>;
   /** 宫格切分「自定义」选定了行列；没有就当占位（选了也只提示敬请期待） */
   onGridPick?: (rows: number, cols: number) => void;

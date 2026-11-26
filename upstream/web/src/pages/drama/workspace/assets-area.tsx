@@ -1,7 +1,9 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Frame, LayoutGrid, Loader2, type LucideIcon } from "lucide-react";
 
+import type { CanvasGraphDto } from "@/api/canvas/type";
 import { listSegments } from "@/api/drama";
 import { confirm } from "@/components/admin-ui/confirm-dialog";
 import { CanvasEditor } from "@/components/canvas-editor/canvas-editor";
@@ -49,6 +51,7 @@ export function DramaCanvas({
   commandsRef,
   onNodeCreate,
   onFail,
+  onSaved,
 }: {
   /** 编辑器 overlay 插槽的内容；要引用稳定（模块顶层常量），否则会牵动编辑器 */
   overlay: React.ReactNode;
@@ -56,13 +59,19 @@ export function DramaCanvas({
   onNodeCreate: (node: CanvasNode) => CanvasNode;
   /** 画布没能加载出来（读取失败、被别的标签页占着编辑锁）：调用方据此放弃，别一直占着 */
   onFail?: () => void;
+  /** 编辑器存盘成功，交出存下的图谱（片场据此同步故事板状态） */
+  onSaved?: (graph: CanvasGraphDto) => void;
 }) {
   const { drama } = useWorkspace();
+  const shared = useSharedWorkspace();
   const canvasId = drama.canvasId;
   /** 被要求让位前先存盘：编辑器的 saveNow 经这个 ref 交出来 */
   const saveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
-  const lock = useCanvasLock(canvasId, { onYield: () => saveRef.current() });
-  const { opened, error, mountSeq, readOnly, replace } = useCanvasOpening(canvasId, lock.status);
+  const lock = useCanvasLock(shared ? undefined : canvasId, { onYield: () => saveRef.current() });
+  const { opened, error, mountSeq, readOnly, replace } = useCanvasOpening(
+    shared ? undefined : canvasId,
+    lock.status,
+  );
   const dramaRef = useRef(drama);
   useEffect(() => {
     dramaRef.current = drama;
@@ -110,7 +119,11 @@ export function DramaCanvas({
       </div>
     );
   }
-  const current = opened && opened.canvas.id === canvasId ? opened : null;
+  const current = shared
+    ? { canvas: shared.canvas, recovery: null }
+    : opened && opened.canvas.id === canvasId
+      ? opened
+      : null;
   if (!current) {
     return (
       <div className="text-muted-foreground grid h-full place-items-center text-sm">
@@ -125,10 +138,11 @@ export function DramaCanvas({
         canvas={current.canvas}
         recovery={current.recovery}
         onConflict={(latest) => replace({ canvas: latest, recovery: null })}
-        readOnly={readOnly}
+        readOnly={!!shared || readOnly}
         takeoverState={lock.takeoverState}
-        onTakeover={lock.takeover}
+        onTakeover={shared ? undefined : lock.takeover}
         saveRef={saveRef}
+        onSaved={onSaved}
         menuItems={buildMenuItems}
         onNodeCreate={onNodeCreate}
         toolbarExtra={renderToolbarExtra}
@@ -210,6 +224,7 @@ export function AssetsArea({
   /** 打开资产拆解对话框：从剧本里拆出角色、场景、道具 */
   onBreakdownOpen: () => void;
 }) {
+  const shared = useSharedWorkspace();
   const { drama, jobs } = useWorkspace();
   const breakdownBlocked =
     busyReason(jobs) ??
@@ -272,7 +287,8 @@ export function AssetsArea({
         <Button
           variant="outline"
           size="sm"
-          disabled={!!breakdownBlocked}
+          hidden={!!shared}
+          disabled={!!shared || !!breakdownBlocked}
           title={breakdownBlocked ?? "从已写好的剧本里拆出角色、场景和道具"}
           onClick={onBreakdownOpen}
         >

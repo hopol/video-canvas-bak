@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { useEffect } from "react";
 
 import { installDom, type DomEnv } from "@/tests/helpers/dom";
 import type { useDramaAssets as HookType } from "@/hooks/use-drama-assets";
 import type { publishCanvasPatch as PublishType } from "@/utils/agent/patch-bus";
+import { trackPendingSave } from "@/utils/canvas/pending-save";
 
 /** 片场读短剧画布：后端改了画布（故事板出图、写节点）推 canvas.patch 时重读，故事板跟着更新 */
 
@@ -70,6 +72,67 @@ describe("useDramaAssets：后端改画布时重读", () => {
     await dom.flush();
     expect(reads).toBe(before + 1);
     expect(state()).toBe("done:https://cdn/31.png");
+    await m.unmount();
+  });
+});
+
+describe("useDramaAssets：片场里的画布编辑器存盘后直接用存下的画布", () => {
+  test("applyGraph 换上存下的故事板节点（在画布里点了生成 → 生成中），不再读一次画布", async () => {
+    boardSrc = "https://cdn/31.png";
+    const handle: { apply?: (nodes: never[]) => void } = {};
+    function Probe() {
+      const { boards, applyGraph } = useDramaAssets("c2");
+      useEffect(() => {
+        handle.apply = applyGraph as never;
+      }, [applyGraph]);
+      const board = boards.get("s1");
+      return (
+        <span data-testid="state">{board ? `${board.status}:${board.taskId ?? ""}` : "none"}</span>
+      );
+    }
+    const m = await dom.mount(<Probe />);
+    await dom.flush();
+    const state = () => m.container.querySelector("[data-testid=state]")?.textContent;
+    expect(state()).toBe("done:");
+    const before = reads;
+    await dom.act(async () =>
+      handle.apply?.([
+        {
+          id: "b1",
+          type: "canvas",
+          data: {
+            kind: "image",
+            src: "https://cdn/31.png",
+            assetId: "31",
+            status: "running",
+            taskId: "t9",
+            drama: { episodes: [1], board: { segmentId: "s1", sourceHash: "h1" } },
+          },
+        },
+      ] as never[]),
+    );
+    expect(state()).toBe("running:t9");
+    expect(reads).toBe(before);
+    await m.unmount();
+  });
+});
+
+describe("useDramaAssets：别处的画布刚卸载、补存还没落地", () => {
+  test("先等补存落地再读画布（资产管理里点了生成，马上切到片场）", async () => {
+    boardSrc = "https://cdn/31.png";
+    let finish!: (ok: boolean) => void;
+    trackPendingSave("c3", new Promise<boolean>((resolve) => (finish = resolve)));
+    const before = reads;
+    function Probe() {
+      useDramaAssets("c3");
+      return null;
+    }
+    const m = await dom.mount(<Probe />);
+    await dom.flush();
+    expect(reads).toBe(before);
+    await dom.act(async () => finish(true));
+    await dom.flush();
+    expect(reads).toBe(before + 1);
     await m.unmount();
   });
 });

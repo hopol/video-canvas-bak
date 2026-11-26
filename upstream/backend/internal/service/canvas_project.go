@@ -11,6 +11,7 @@ import (
 
 	"video-canvas/internal/model"
 	"video-canvas/internal/pkg/errcode"
+	"video-canvas/internal/pkg/ws"
 	"video-canvas/internal/repository"
 	"video-canvas/pkg/pagination"
 )
@@ -27,6 +28,10 @@ type CanvasProjectRepo interface {
 type CanvasProjectService struct {
 	repo     CanvasProjectRepo
 	coverURL func(key string) string
+	// bc 把节点级编辑的差异推给用户的其它在线端（浏览器）；nil 表示不推。
+	bc ws.Broadcaster
+	// modelOps 提供模型支持的生成方式，节点级编辑据此校验 mode；nil 表示不校验。
+	modelOps CanvasModelOpsSource
 }
 
 // CanvasProjectOption 是画布服务的可选依赖。
@@ -35,6 +40,17 @@ type CanvasProjectOption func(*CanvasProjectService)
 // WithCoverURL 设置封面素材 key 到访问地址的转换；不设置时列表不返回封面地址。
 func WithCoverURL(fn func(key string) string) CanvasProjectOption {
 	return func(s *CanvasProjectService) { s.coverURL = fn }
+}
+
+// WithCanvasBroadcaster 设置 canvas.patch 的推送器：节点级编辑写库后用它通知浏览器，
+// 否则开着这张画布的页面 revision 落后，下次自动保存会撞上 409。
+func WithCanvasBroadcaster(bc ws.Broadcaster) CanvasProjectOption {
+	return func(s *CanvasProjectService) { s.bc = bc }
+}
+
+// WithCanvasModelOps 设置模型生成方式的来源，让节点级编辑与 Agent 一样按模型能力校验 mode。
+func WithCanvasModelOps(src CanvasModelOpsSource) CanvasProjectOption {
+	return func(s *CanvasProjectService) { s.modelOps = src }
 }
 
 // NewCanvasProjectService 创建画布服务；封面地址转换等可选依赖用 CanvasProjectOption 传入。

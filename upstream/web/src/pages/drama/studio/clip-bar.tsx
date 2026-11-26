@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useState } from "react";
 import { Reorder } from "motion/react";
 import { CircleX, Film, Loader2, Pause, Play, Plus } from "lucide-react";
@@ -71,6 +72,7 @@ function Clip({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const shared = useSharedWorkspace();
   const { submitting, boards } = useStudio();
   const take = playableTake(segment);
   const running = segment.status === "running" || submitting.has(segment.id);
@@ -79,6 +81,7 @@ function Clip({
     board === "ready" || board === "stale" ? (boards.nodeOf(segment)?.src ?? null) : null;
   return (
     <Reorder.Item
+      dragListener={!shared}
       value={segment}
       as="div"
       role="button"
@@ -144,6 +147,7 @@ function Clip({
  * 连播：按 seq 依次播采用的视频，播放头随时间移动，点片段跳到该段开头。
  */
 export function ClipBar() {
+  const shared = useSharedWorkspace();
   const { segments, selected, select, actions } = useStudio();
   const playback = usePlaybackContext();
   const { bindPlayhead } = playback;
@@ -199,8 +203,14 @@ export function ClipBar() {
           </span>
         )}
         <span className="flex-1" />
-        <BoardFillButton />
-        <Button variant="ghost" size="sm" onClick={() => void actions.batch()}>
+        {!shared && <BoardFillButton />}
+        <Button
+          hidden={!!shared}
+          disabled={!!shared}
+          variant="ghost"
+          size="sm"
+          onClick={() => void actions.batch()}
+        >
           批量生成分镜视频
         </Button>
       </div>
@@ -212,7 +222,7 @@ export function ClipBar() {
             as="div"
             values={visible}
             onReorder={(list) => {
-              if (complete) setLocal({ base: segments, list });
+              if (!shared && complete) setLocal({ base: segments, list });
             }}
             onPointerUp={commit}
             className="flex shrink-0 gap-1"
@@ -243,6 +253,8 @@ export function ClipBar() {
           variant="outline"
           size="icon"
           className="hover:border-primary hover:text-primary h-[76px] w-12 shrink-0 border-dashed"
+          hidden={!!shared}
+          disabled={!!shared}
           aria-label="新增片段"
           title="新增片段"
           onClick={() => void actions.add()}

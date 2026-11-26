@@ -23,6 +23,7 @@ import { useCanvasList } from "@/hooks/use-canvas-list";
 import { useDramaList } from "@/hooks/use-drama-list";
 import { useMarketingList } from "@/hooks/use-marketing-list";
 import { DramaCard } from "@/pages/drama/drama-grid";
+import { SharedDramaList } from "@/pages/drama/shared-list";
 import { ProjectCard } from "@/pages/marketing/project-grid";
 import { mixWorks, parseWorksScope, type WorksScope } from "@/utils/home/works";
 
@@ -88,6 +89,7 @@ export default function CanvasList() {
       instant
       deleting={dramas.deletingId === drama.id}
       onDelete={() => dramas.remove(drama.id)}
+      onTransferred={dramas.reload}
     />
   );
 
@@ -191,6 +193,7 @@ export default function CanvasList() {
             { value: "all", label: "全部" },
             { value: "mine", label: "个人画布" },
             { value: "drama", label: "个人短剧" },
+            { value: "shared-drama", label: "共享给我" },
             { value: "marketing", label: "个人营销片" },
           ]}
         />
@@ -203,7 +206,9 @@ export default function CanvasList() {
       </AssetsToolbar>
 
       <div className={GRID}>
-        {scope === "drama" ? (
+        {scope === "shared-drama" ? (
+          <SharedDramaList key={list.keyword} keyword={list.keyword} />
+        ) : scope === "drama" ? (
           <NewStudioCard to="/drama" label="新建短剧" />
         ) : scope === "marketing" ? (
           <NewStudioCard to="/marketing" label="新建营销片" />
@@ -215,7 +220,7 @@ export default function CanvasList() {
           />
         )}
         {/* 切换范围时直接换内容，不做列表的进出场动画 */}
-        {body}
+        {scope !== "shared-drama" && body}
       </div>
 
       {(dramasMore || projectsMore) && !loading && (

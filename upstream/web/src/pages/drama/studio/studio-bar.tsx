@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { CloudAlert, Loader2, MonitorPlay, RotateCw, Timer } from "lucide-react";
 
 import { ChipPopover, MenuLabel } from "@/components/drama/pickers";
@@ -120,9 +121,10 @@ const NO_JOBS: never[] = [];
  * 合成整集挪到了「成片」页；这里只管把片段做出来。
  */
 export function StudioBar() {
+  const shared = useSharedWorkspace();
   const { drama, episode, no, save, video, canvasEntry } = useStudio();
   const jobs = useDramaJobsStore((state) => state.byDrama[drama.id]) ?? NO_JOBS;
-  const starter = useStoryboardStart(video.maxSeconds);
+  const starter = useStoryboardStart(video.storyboard);
   const status = SAVE_LABEL[save];
   const blocked = jobConflictReason(jobs, "storyboard", [no]);
   return (
@@ -142,9 +144,9 @@ export function StudioBar() {
       )}
       <span className="flex-1" />
       {/* 画布视图里用不上这些按钮，藏起来免得误点；只留左边的切换 */}
-      {canvasEntry.view === "list" && (
+      {!shared && canvasEntry.view === "list" && (
         <>
-          <StoryboardBatchButton current={no} maxSeconds={video.maxSeconds} />
+          <StoryboardBatchButton current={no} storyboard={video.storyboard} />
           <Button
             variant="ghost"
             size="icon-sm"

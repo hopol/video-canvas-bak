@@ -269,17 +269,11 @@ func ComposePrompt(s *GenSource, refs map[string][]uint64) string {
 		}
 	}
 	for id, text := range texts {
-		texts[id] = expandMediaPrompt(text, names, numbers)
+		// 文本节点整段都是台词 / 字幕 / 屏幕文字：要被人念出来或看见，引用只还原名字，不给画面编号
+		texts[id] = expandRefsIn(text, names, nil)
 	}
 	cited := map[string]bool{}
-	body := promptRef.ReplaceAllStringFunc(s.Prompt, func(m string) string {
-		id := promptRef.FindStringSubmatch(m)[2]
-		if text, ok := texts[id]; ok {
-			cited[id] = true
-			return text
-		}
-		return expandMediaPrompt(m, names, numbers)
-	})
+	body := expandScriptPrompt(s.Prompt, texts, names, numbers, cited)
 	parts := []string{strings.TrimSpace(body)}
 	for _, t := range s.Texts {
 		if text := texts[t.NodeID]; text != "" && !cited[t.NodeID] {
@@ -295,15 +289,48 @@ func ComposePrompt(s *GenSource, refs map[string][]uint64) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// expandMediaPrompt 只展开人物和媒体引用，不递归展开文本节点，避免剧本之间相互引用形成循环。
-func expandMediaPrompt(text string, names, numbers map[string]string) string {
+// speechQuote 识别台词、字幕这类要被人念出来或看见的文字。
+// 只认成对的引号，单引号不参与，避免把夹注里的词误判成台词。
+var speechQuote = regexp.MustCompile(`“[^”\n]*”|「[^」\n]*」|"[^"\n]*"`)
+
+// expandScriptPrompt 展开整段提示词：引号外按素材编号（画面要看的是第几张图），
+// 引号里是台词与字幕，视频模型会照着念，把道具念成「图片2」就是噪声，那里只还原名字。
+// 被 @ 到的文本节点换成它的正文并记为已引用，调用方据此避免重复追加。
+func expandScriptPrompt(prompt string, texts, names, numbers map[string]string, cited map[string]bool) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range speechQuote.FindAllStringIndex(prompt, -1) {
+		b.WriteString(expandPromptRefs(prompt[last:loc[0]], texts, names, numbers, cited))
+		b.WriteString(expandPromptRefs(prompt[loc[0]:loc[1]], texts, names, nil, cited))
+		last = loc[1]
+	}
+	b.WriteString(expandPromptRefs(prompt[last:], texts, names, numbers, cited))
+	return b.String()
+}
+
+// expandPromptRefs 展开一段提示词里的引用；numbers 为 nil 时只还原引用名，不给画面编号。
+func expandPromptRefs(text string, texts, names, numbers map[string]string, cited map[string]bool) string {
+	return promptRef.ReplaceAllStringFunc(text, func(m string) string {
+		id := promptRef.FindStringSubmatch(m)[2]
+		if body, ok := texts[id]; ok {
+			cited[id] = true
+			return body
+		}
+		return expandRefsIn(m, names, numbers)
+	})
+}
+
+// expandRefsIn 展开一段文字里的引用：角色优先取人物名；numbers 为 nil 时只还原引用名，不给画面编号。
+func expandRefsIn(text string, names, numbers map[string]string) string {
 	return promptRef.ReplaceAllStringFunc(text, func(m string) string {
 		sub := promptRef.FindStringSubmatch(m)
 		if name, ok := names[sub[2]]; ok {
 			return name
 		}
-		if number, ok := numbers[sub[2]]; ok {
-			return number
+		if numbers != nil {
+			if number, ok := numbers[sub[2]]; ok {
+				return number
+			}
 		}
 		return sub[1]
 	})

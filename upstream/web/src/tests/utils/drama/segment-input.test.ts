@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Capabilities } from "@/api/model/type";
 import type { NodeCharacter } from "@/types";
 import type { RefAsset } from "@/utils/drama/segment-assets";
-import { BOARD_LINE } from "@/utils/drama/board";
+import { boardLine } from "@/utils/drama/board";
 import { planSegmentInput } from "@/utils/drama/segment-input";
 
 /** 角色卡节点自带的数据：补充图 2、音频音色 9（素材 id 在 payload 里是字符串） */
@@ -362,14 +362,17 @@ describe("planSegmentInput：时长与校验", () => {
 
 describe("planSegmentInput：故事板作为第一张参考图", () => {
   const assets = [character("n1"), scene("n2")];
-  const board = { assetId: "31", src: "https://cdn/31.png", stale: false };
+  const board = { assetId: "31", src: "https://cdn/31.png", stale: false, shotCount: 3 };
   const prompt = "@[林川](n1)走进@[村口](n2)";
 
   test("有故事板：排在参考图第一张，提示词开头加说明行，其余引用从图片2起编号", () => {
     const plan = planSegmentInput({ ...base, caps: video(), prompt, assets, board });
     expect(plan.op).toBe("omni");
     expect(plan.input.images).toEqual([31, 5, 1, 2]);
-    expect(plan.input.prompt).toStartWith(`${BOARD_LINE}\n林川（图片3中的人物）走进图片2`);
+    // 说明行按故事板的镜头数和短剧画幅写，并原样交给片场预览
+    const line = boardLine(3, "9:16");
+    expect(plan.boardLine).toBe(line);
+    expect(plan.input.prompt).toStartWith(`${line}\n林川（图片3中的人物）走进图片2`);
     expect(plan.board).toEqual({ state: "image", reason: "" });
     expect(plan.errors).toEqual({});
     expect(plan.imageCount).toBe(4);
@@ -390,6 +393,15 @@ describe("planSegmentInput：故事板作为第一张参考图", () => {
     const without = planSegmentInput({ ...base, caps: video(), prompt: "一个人走进村口", assets });
     expect(without.op).toBe("t2v");
     expect(without.input.images).toBeUndefined();
+  });
+
+  test("提示词是英文（H3 转写稿）：说明行也用英文", () => {
+    const english =
+      "integrated_multimodal_description: [Shot 1] @[林川](n1) walks into @[村口](n2).";
+    const plan = planSegmentInput({ ...base, caps: video(), prompt: english, assets, board });
+    const line = boardLine(3, "9:16", "en");
+    expect(plan.boardLine).toBe(line);
+    expect(plan.input.prompt).toStartWith(`${line}\n`);
   });
 
   test("故事板过期：照样带上，并提示已过期", () => {
@@ -415,7 +427,8 @@ describe("planSegmentInput：故事板作为第一张参考图", () => {
     });
     expect(plan.op).toBe("i2v");
     expect(plan.input.images).not.toContain(31);
-    expect(plan.input.prompt).not.toContain(BOARD_LINE);
+    expect(plan.input.prompt).not.toContain("分镜宫格图");
+    expect(plan.boardLine).toBe("");
     expect(plan.board).toEqual({
       state: "unsupported",
       reason: "当前模型把第一张图当首帧，故事板未带入",

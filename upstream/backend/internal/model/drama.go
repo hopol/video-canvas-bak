@@ -212,6 +212,10 @@ type DramaJobReq struct {
 	Episodes   []int  `json:"episodes" binding:"max=200,dive,min=1,max=100000"`
 	Ratio      string `json:"ratio" binding:"omitempty,oneof=9:16 16:9 21:9 3:4 4:3 1:1"`
 	MaxSeconds int    `json:"max_seconds" binding:"omitempty,min=4,max=60"`
+	// VideoModel 是片场当前选的视频模型，分镜按它的时长与参考音频上限切段；空串用项目视频模型
+	VideoModel string `json:"video_model" binding:"omitempty,max=128"`
+	// MaxAudios 由服务端按视频模型解析，不收请求
+	MaxAudios int `json:"-"`
 }
 
 // DramaSummary 列表项。

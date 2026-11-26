@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useState } from "react";
 import { FilePenLine } from "lucide-react";
 
@@ -175,13 +176,14 @@ export function EmptyScript({
   /** 改钩子 / 悬念；不传就是只读 */
   onSaveMeta?: (field: MetaField, value: string) => Promise<void>;
 }) {
+  const shared = useSharedWorkspace();
   return (
     <div data-slot="empty-script" className="mt-12 flex flex-col items-center gap-4 text-center">
       <span className="bg-muted text-muted-foreground grid size-12 place-items-center rounded-2xl">
         <FilePenLine className="size-6" />
       </span>
       <div className="text-[15px] font-medium">这一集还没有剧本</div>
-      <Button size="sm" onClick={onGenerate}>
+      <Button hidden={!!shared} disabled={!!shared} size="sm" onClick={onGenerate}>
         生成剧本
       </Button>
       <MetaFields episode={episode} onSave={onSaveMeta} />

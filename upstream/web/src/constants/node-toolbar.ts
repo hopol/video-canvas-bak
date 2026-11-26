@@ -47,10 +47,11 @@ export type ToolbarAction = {
 /**
  * 分隔线右边的「查看类」按钮，都是通用能力，不在配置里单独写名字：
  * zoom 是放大预览，download 是下载素材，copy 是复制文本，
- * addToLibrary 是把素材加入资产库（节点没有可入库的素材时不出现，见 visibleTail）。
+ * addToLibrary 是把素材加入资产库（节点没有可入库的素材时不出现，见 visibleTail），
+ * replaceFromLibrary 是从资产库挑一张图换掉图片节点的主图（节点不能换图时不出现，见 visibleTail）。
  * 生成历史不在功能区：入口是节点右上角的多版本徽标（docs/design/多结果归并）。
  */
-export type ToolbarTail = "zoom" | "download" | "copy" | "addToLibrary";
+export type ToolbarTail = "zoom" | "download" | "copy" | "addToLibrary" | "replaceFromLibrary";
 
 export type NodeToolbarConfig = {
   /** 分隔线左边的「加工类」按钮，从左到右 */
@@ -61,6 +62,8 @@ export type NodeToolbarConfig = {
 
 /** 图片、视频这类产出素材版本的节点共用的右半边 */
 const MEDIA_TAIL: ToolbarTail[] = ["zoom", "download", "addToLibrary"];
+/** 图片节点的右半边：比共用的多一个「从资产库替换」，排在加入资产库之前 */
+const IMAGE_TAIL: ToolbarTail[] = ["zoom", "download", "replaceFromLibrary", "addToLibrary"];
 
 /**
  * 选中节点时，标题行上方功能区的按钮清单（设计稿 6.16）。
@@ -109,7 +112,7 @@ export const NODE_TOOLBAR: Record<NodeKind, NodeToolbarConfig> = {
         ],
       },
     ],
-    tail: MEDIA_TAIL,
+    tail: IMAGE_TAIL,
   },
   audio: {
     actions: [

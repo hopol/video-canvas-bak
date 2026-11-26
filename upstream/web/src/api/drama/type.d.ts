@@ -439,6 +439,8 @@ export interface DramaJobInput {
   ratio?: DramaRatio;
   /** storyboard：所选视频模型的单段时长上限（秒），缺省 15，范围 4–60 */
   maxSeconds?: number;
+  /** storyboard：片场当前选的视频模型，后端按它的参考音频上限切段；缺省用项目视频模型 */
+  videoModel?: string;
 }
 
 /** WebSocket drama.episode 事件载荷：该集剧本状态已保存，需重新读取短剧详情。 */

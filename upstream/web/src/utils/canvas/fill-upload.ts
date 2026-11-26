@@ -2,6 +2,7 @@ import type { AssetDto } from "@/api/asset/type";
 import type { CanvasNodeData, MediaType, NodeKind } from "@/types";
 
 import { takeUploadFile } from "./media";
+import { appendOutput, isGenerating } from "./outputs";
 
 /** 能往里放文件的节点种类，和它收的素材种类：角色卡收的是形象图 */
 const FILL_MEDIA: Partial<Record<NodeKind, MediaType>> = {
@@ -77,6 +78,45 @@ export function fillAssetPatch(asset: AssetDto): Partial<CanvasNodeData> {
     fileName: asset.fileName ?? undefined,
     status: "done",
     ...CLEAR_TASK,
+  };
+}
+
+/**
+ * 图片节点能不能从资产库换主图：已经有存下来的主图（本地 blob 还没传完的不算），且没在生成、没在上传。
+ * 空节点走「素材库」填充（canFillNode），不走这里。
+ * @param data 节点数据
+ */
+export function canReplaceImage(data: CanvasNodeData): boolean {
+  if (data.kind !== "image") return false;
+  if (!data.src || data.src.startsWith("blob:")) return false;
+  return !isGenerating(data) && data.uploadProgress === undefined;
+}
+
+/**
+ * 从资产库选了一张图换掉图片节点的主图：作为节点的新一版并设为当前版本，旧图留在节点历史里，随时能切回去。
+ * 节点还是原来的节点：生成的仍是生成节点（不标 uploaded，提示词和生成面板都在），上传的只同步文件名。
+ * 素材有宽高就一并记下画幅，免得换了不同比例的图后节点框跳一下。
+ * @param data 节点当前数据
+ * @param asset 选中的图片素材
+ * @param now 入列时间，毫秒
+ */
+export function replaceImagePatch(
+  data: CanvasNodeData,
+  asset: AssetDto,
+  now: number = Date.now(),
+): Partial<CanvasNodeData> {
+  return {
+    ...appendOutput(data, {
+      id: asset.id,
+      src: asset.url,
+      mediaType: "image",
+      assetId: asset.id,
+      createdAt: now,
+    }),
+    ...(asset.width && asset.height ? { mediaAspect: asset.width / asset.height } : {}),
+    ...(data.uploaded ? { fileName: asset.fileName ?? undefined } : {}),
+    status: "done",
+    error: null,
   };
 }
 

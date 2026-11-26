@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { SharedWorkspaceContext } from "@/hooks/use-shared-workspace";
+import type { SharedWorkspace } from "@/api/drama/shared-workspace";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { AddAssetCard, AssetCard } from "@/pages/drama/workspace/asset-card";
@@ -39,6 +41,26 @@ const card = (
   );
 
 describe("AssetCard：短剧资产卡", () => {
+  test("查看者可以定位与查看详情，无法上传素材或编辑提示词", () => {
+    const out = renderToStaticMarkup(
+      <SharedWorkspaceContext.Provider value={{} as SharedWorkspace}>
+        <AssetCard
+          item={item()}
+          index={0}
+          multi={false}
+          selected={false}
+          onToggle={noop}
+          onLocate={noop}
+          onEditPrompt={noop}
+          onEditCharacter={noop}
+        />
+      </SharedWorkspaceContext.Provider>,
+    );
+    expect(out).toContain("在画布中打开 林薇");
+    expect(out).toContain("查看 林薇 的详情");
+    expect(out).not.toContain("编辑 林薇");
+    expect(out).not.toContain(">上传<");
+  });
   test("整张卡就是进画布的入口，没有悬停的「生成」「画布」按钮", () => {
     const out = card(item());
     expect(out).toContain('aria-label="在画布中打开 林薇"');

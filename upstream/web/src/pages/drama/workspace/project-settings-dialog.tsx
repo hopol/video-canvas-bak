@@ -27,10 +27,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRemoteModels } from "@/hooks/use-models";
+import { useDramaStyles } from "@/hooks/use-drama-styles";
 import { useModelSwitchStore } from "@/store/drama-model-switch";
 import { pickBoardModel } from "@/utils/drama/board-input";
+import { CUSTOM_STYLE_KEY } from "@/utils/drama/options";
 import { PROMPT_STEPS, sameChoice } from "@/utils/drama/prompts";
-import { promptsToChoices, type StartPrompts } from "@/utils/drama/start-settings";
+import { promptsToChoices, secondsLock, type StartPrompts } from "@/utils/drama/start-settings";
 
 import { useWorkspace } from "./context";
 
@@ -76,8 +78,43 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
+function ProjectStyleSummary() {
+  const { drama } = useWorkspace();
+  const { genres, styles } = useDramaStyles();
+  const genre = genres.find((item) => item.key === drama.genre)?.name || drama.genre || "不指定";
+  const style =
+    drama.styleKey === CUSTOM_STYLE_KEY
+      ? ["自定义画风", drama.styleCustom].filter(Boolean).join(" · ")
+      : styles.find((item) => item.key === drama.styleKey)?.name || drama.styleKey || "未设置";
+  const duration =
+    (drama.unitsTotal > 0 && secondsLock(drama.sourceKind || null, drama).label) ||
+    (drama.episodeSeconds > 0
+      ? `${drama.episodeSeconds} 秒/集${drama.sourceKind === "script" ? "（参考）" : ""}`
+      : "未设置");
+
+  return (
+    <Section label="开拍风格（只读）">
+      <dl
+        aria-label="开拍风格"
+        className="bg-chrome-hover/60 mx-3 grid gap-2 rounded-xl px-3 py-2.5 text-[13px]"
+      >
+        {[
+          ["题材", genre],
+          ["画风", style],
+          ["单集时长", duration],
+        ].map(([label, value]) => (
+          <div key={label} className="grid grid-cols-[5em_minmax(0,1fr)] gap-2">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="whitespace-pre-wrap wrap-anywhere">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </Section>
+  );
+}
+
 /**
- * 项目设置的内容（弹窗正文，每次打开重新挂载）：Agent 模型 + 资产图片模型三行 + 故事板图片模型 + 提示词四行，同开拍设置；
+ * 项目设置的内容（弹窗正文，每次打开重新挂载）：只读开拍风格、模型与提示词设置；
  * 新建 / 编辑「我的提示词」时整块换成编辑器。
  * 点「完成」才保存（PATCH text_model / image_models / prompts）；故事板的模型不会让资产卡换模型，只影响之后发起的任务；
  * 换了图片模型的类型，资产区里还没生成的卡跟着换成新模型。
@@ -156,6 +193,7 @@ export function ProjectSettingsBody({
         <DialogTitle>项目设置</DialogTitle>
       </DialogHeader>
       <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-2 py-4">
+        <ProjectStyleSummary />
         <div className="bg-chrome-hover/60 mx-3 rounded-xl px-3 py-2 text-[13px]">
           修改只影响之后发起的任务，还没生成的资产会换成新的图片模型
         </div>

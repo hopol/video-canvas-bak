@@ -90,24 +90,16 @@ func (s *AssetService) CopyBySha256(ctx context.Context, userID uint64, sha stri
 			return nil, fmt.Errorf("按哈希复制素材: %w", err)
 		}
 		src := &candidates[i]
-		body, err := s.openAssetObject(ctx, src)
-		if err != nil {
-			logger.Warn("按哈希复制素材时跳过不可读的候选", zap.Uint64("asset_id", src.ID), zap.Error(err))
-			continue
-		}
 
 		// 4. 复制到新 key 而不是共用源 key：storage_key 全局唯一（/files/<key> 靠它反查素材），
 		//    而且源素材被原用户删除时会连带删除对象，共用会让导入者的素材一起失效。
 		//    key 格式与 ingest 一致：u{用户ID}/{年月}/{随机uuid}{扩展名}
 		key := fmt.Sprintf("u%d/%s/%s%s", userID, s.now().Format("200601"), newAssetUUID(), assetMimeExt[src.MimeType])
-		putErr := dst.Storage.Put(ctx, key, body, src.ByteSize, src.MimeType)
-		_ = body.Close()
-		if putErr != nil {
-			// 目标存储写失败不是候选的问题，换候选也不会好；清理可能已部分落地的对象后直接返回
-			s.cleanup(ctx, dst.Storage, key)
-			return nil, fmt.Errorf("复制素材到存储失败: %w", putErr)
+		if err := s.copyObject(ctx, src, dst, key); errors.Is(err, errCandidateUnreadable) {
+			continue
+		} else if err != nil {
+			return nil, err
 		}
-
 		return &model.Asset{
 			UserID:     userID,
 			Kind:       src.Kind,
@@ -124,6 +116,44 @@ func (s *AssetService) CopyBySha256(ctx context.Context, userID uint64, sha stri
 		}, nil
 	}
 	return nil, ErrAssetNotFoundByHash
+}
+
+// errCandidateUnreadable 表示这个候选的源文件读不到，CopyBySha256 换下一个候选。
+var errCandidateUnreadable = errors.New("候选素材不可读")
+
+// copyObject 把一个候选素材复制到 dst 存储的 key 下。源和目标是同一个存储、且存储支持服务端复制时，
+// 让存储自己复制（S3 系是 CopyObject，内容不经过后端）；否则、或服务端复制因源文件以外的原因失败时，读出再写入。
+// 源文件读不到返回 errCandidateUnreadable；写目标失败返回其它错误，此时已清理可能部分落地的对象。
+func (s *AssetService) copyObject(ctx context.Context, src *model.Asset, dst *storage.Handle, key string) error {
+	if copier, ok := dst.Storage.(storage.Copier); ok && src.PublicURL == "" && src.StorageID == dst.ID {
+		err := copier.Copy(ctx, src.StorageKey, key)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, storage.ErrNotFound) {
+			logger.Warn("按哈希复制素材时跳过不可读的候选", zap.Uint64("asset_id", src.ID), zap.Error(err))
+			return errCandidateUnreadable
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("按哈希复制素材: %w", ctxErr)
+		}
+		logger.Warn("服务端复制素材失败，改为读出再写入", zap.Uint64("asset_id", src.ID), zap.Error(err))
+		s.cleanup(ctx, dst.Storage, key)
+	}
+
+	body, err := s.openAssetObject(ctx, src)
+	if err != nil {
+		logger.Warn("按哈希复制素材时跳过不可读的候选", zap.Uint64("asset_id", src.ID), zap.Error(err))
+		return errCandidateUnreadable
+	}
+	putErr := dst.Storage.Put(ctx, key, body, src.ByteSize, src.MimeType)
+	_ = body.Close()
+	if putErr != nil {
+		// 目标存储写失败不是候选的问题，换候选也不会好；清理可能已部分落地的对象后直接返回
+		s.cleanup(ctx, dst.Storage, key)
+		return fmt.Errorf("复制素材到存储失败: %w", putErr)
+	}
+	return nil
 }
 
 // DiscardCopies 删除 CopyBySha256 产生的副本对象，用于导入事务失败后的回收。

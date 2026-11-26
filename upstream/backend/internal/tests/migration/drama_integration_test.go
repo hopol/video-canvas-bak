@@ -40,7 +40,7 @@ next:
 func TestDramaMigration_Upgrade(t *testing.T) {
 	db := isolatedDB(t)
 	// 短剧迁移（0017–0019）都留给升级步骤；0020 删表更晚，也不能提前跑；0042 给 0017 建的表加列，同样留到升级步骤
-	before := migrationsExcept(t, "0017_", "0018_", "0019_", "0020_", "0025_", "0026_", "0027_", "0042_")
+	before := migrationsExcept(t, "0017_", "0018_", "0019_", "0020_", "0025_", "0026_", "0027_", "0042_", "0047_")
 	if err := migration.Run(context.Background(), db, migration.Options{FS: before, Logger: testLogger()}); err != nil {
 		t.Fatal(err)
 	}

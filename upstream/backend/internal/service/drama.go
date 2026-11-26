@@ -246,7 +246,8 @@ func (s *DramaService) Get(ctx context.Context, userID, id uint64) (*model.Drama
 	if err != nil {
 		return nil, err
 	}
-	v := &model.DramaView{SourceChars: p.SourceChars, UnitsTotal: p.UnitsTotal, UnitKind: p.UnitKind, Phase: p.Phase, PlanCursor: p.PlanCursor, RangeEnd: p.RangeEnd, PauseReason: p.PauseReason, PauseCode: p.PauseCode, PromptSettings: settings, ID: idcodec.ID(p.ID), Title: p.Title, CanvasID: idcodec.ID(p.CanvasID), Status: p.Status, SourceKind: p.SourceKind, Genre: p.Genre, StyleKey: p.StyleKey, StyleCustom: p.StyleCustom, Ratio: p.Ratio, TargetEpisodes: p.TargetEpisodes, EpisodeSeconds: p.EpisodeSeconds, TextModel: p.TextModel, VideoModel: p.VideoModel, ImageModels: dramaImageModels(p), ImageParams: dramaImageParams(p), OutlineMD: p.OutlineMD, CharactersMD: p.CharactersMD, Revision: p.Revision, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, Episodes: []model.DramaEpisodeSummary{}, ActiveJobs: []model.DramaJobView{}}
+	v := dramaProjectView(p)
+	v.PromptSettings = settings
 	// 故事板在短剧画布上：读一次画布，各集共用
 	boards, err := s.boardHashes(ctx, p.UserID, p.CanvasID)
 	if err != nil {
@@ -490,6 +491,10 @@ func checkDramaStyle(key, custom string) error {
 }
 
 // episodeView 映射集状态，正文只在单集接口返回。
+func dramaProjectView(p *model.DramaProject) *model.DramaView {
+	return &model.DramaView{SourceChars: p.SourceChars, UnitsTotal: p.UnitsTotal, UnitKind: p.UnitKind, Phase: p.Phase, PlanCursor: p.PlanCursor, RangeEnd: p.RangeEnd, PauseReason: p.PauseReason, PauseCode: p.PauseCode, ID: idcodec.ID(p.ID), Title: p.Title, CanvasID: idcodec.ID(p.CanvasID), Status: p.Status, SourceKind: p.SourceKind, Genre: p.Genre, StyleKey: p.StyleKey, StyleCustom: p.StyleCustom, Ratio: p.Ratio, TargetEpisodes: p.TargetEpisodes, EpisodeSeconds: p.EpisodeSeconds, TextModel: p.TextModel, VideoModel: p.VideoModel, ImageModels: dramaImageModels(p), ImageParams: dramaImageParams(p), OutlineMD: p.OutlineMD, CharactersMD: p.CharactersMD, Revision: p.Revision, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, Episodes: []model.DramaEpisodeSummary{}, ActiveJobs: []model.DramaJobView{}}
+}
+
 func episodeView(e model.DramaEpisode) model.DramaEpisodeView {
 	status := e.StoryboardStatus
 	if status == "" {

@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -84,6 +85,7 @@ export function EpisodeRail({
   onPick: (ep: number) => void;
   onDoc?: (doc: ScriptDoc) => void;
 }) {
+  const shared = useSharedWorkspace();
   const { drama, jobs, refresh } = useWorkspace();
   const [adding, setAdding] = useState(false);
   const [continueOpen, setContinueOpen] = useState(false);
@@ -199,16 +201,20 @@ export function EpisodeRail({
                 style={{ height: row.size, transform: `translateY(${row.start}px)` }}
               >
                 <ActionContextMenu
-                  actions={[
-                    {
-                      key: "delete",
-                      label: "删除",
-                      icon: <Trash2 />,
-                      destructive: true,
-                      disabledReason: blocked,
-                      onSelect: () => void removeOne(episode),
-                    },
-                  ]}
+                  actions={
+                    shared
+                      ? []
+                      : [
+                          {
+                            key: "delete",
+                            label: "删除",
+                            icon: <Trash2 />,
+                            destructive: true,
+                            disabledReason: blocked,
+                            onSelect: () => void removeOne(episode),
+                          },
+                        ]
+                  }
                 >
                   <RailItem
                     active={!doc && ep === episode.no}
@@ -245,7 +251,7 @@ export function EpisodeRail({
         </div>
       </div>
       <div className="flex shrink-0 flex-col gap-1 pt-1">
-        {canContinuePlanning(drama) && (
+        {!shared && canContinuePlanning(drama) && (
           <button
             type="button"
             aria-label="继续规划"
@@ -257,7 +263,7 @@ export function EpisodeRail({
             继续规划
           </button>
         )}
-        {stage === "script" && drama.episodes.length > 0 && (
+        {!shared && stage === "script" && drama.episodes.length > 0 && (
           <button
             type="button"
             aria-label="新增一集"

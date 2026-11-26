@@ -1,0 +1,53 @@
+{
+  "name": "video-canvas-cli",
+  "version": "0.6.3",
+  "private": true,
+  "description": "连镜（video-canvas）命令行：设备授权登录、画布读写与节点编辑、生成与任务等待、小镜 Agent、运行记录导出",
+  "keywords": [
+    "agent-skill",
+    "ai-video",
+    "canvas",
+    "cli",
+    "storyboard",
+    "video-canvas"
+  ],
+  "homepage": "https://github.com/zaylora/video-canvas/tree/master/cli#readme",
+  "bugs": {
+    "url": "https://github.com/zaylora/video-canvas/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zaylora/video-canvas.git",
+    "directory": "cli"
+  },
+  "bin": {
+    "vc": "./dist/cli.js",
+    "video-canvas-cli": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skill",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.ts",
+    "lint": "oxlint",
+    "format": "oxfmt src test",
+    "format:check": "oxfmt --check src test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "typescript": "~6.0.2"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

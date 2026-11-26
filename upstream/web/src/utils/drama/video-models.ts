@@ -39,6 +39,9 @@ export function modelMaxSeconds(caps: Capabilities | undefined): number | null {
 }
 
 /** 生成分镜时给后端的 max_seconds：取模型时长上限，夹在 4–60，没有就用缺省 15 */
+/** 生成分镜脚本时随请求带上的视频模型约束：单段时长上限，和片场当前选的视频模型（后端按它的参考音频上限切段） */
+export type StoryboardTarget = { maxSeconds: number; videoModel?: string };
+
 export function storyboardMaxSeconds(info: ModelInfo | undefined): number {
   const max = modelMaxSeconds(info?.capabilities);
   if (max === null) return STORYBOARD_SECONDS.fallback;

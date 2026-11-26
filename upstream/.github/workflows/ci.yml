@@ -120,6 +120,41 @@ jobs:
       - name: Build
         run: npm run build
 
+  # 命令行工具（Node/TypeScript，发布到 npm 的 video-canvas-cli）：与 agent 同一套 oxfmt / oxlint / tsc。
+  # test 脚本带 pretest（先 build），所以 Test 之后的 Build 只是显式确认产物能生成
+  cli:
+    name: CLI (format + lint + typecheck + test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # package.json 的 engines 要求 >= 22.18
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
   web:
     name: Web (format + typecheck + lint + test + build)
     runs-on: ubuntu-latest

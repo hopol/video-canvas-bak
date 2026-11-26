@@ -1,6 +1,6 @@
 import { motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleX, Languages, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
+import { CircleX, Grid2x2, Languages, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { isRevisionConflict } from "@/api/drama/errors";
 import type { AdaptFormat, Segment } from "@/api/drama/type";
@@ -369,6 +369,7 @@ function AutosavedPrompt({
         disabled && "opacity-60",
       )}
     >
+      <BoardLinePreview />
       <PromptChipResolverProvider value={resolver}>
         <PromptEditor
           ref={editorRef}
@@ -385,5 +386,29 @@ function AutosavedPrompt({
         />
       </PromptChipResolverProvider>
     </div>
+  );
+}
+
+/**
+ * 提示词框顶部的故事板说明：带入故事板时生成会在提示词最前面加这一行（不写进原稿），
+ * 这里原样亮出来，灰色、不可编辑，看得出是提示词的一部分但改不了；默认一行，点一下展开全文。
+ * 说明跟着当前标签的文字走（英文转写稿配英文说明）。没带入故事板时不显示。
+ */
+export function BoardLinePreview() {
+  const { plan } = useStudio();
+  const [open, setOpen] = useState(false);
+  if (!plan?.boardLine) return null;
+  return (
+    <button
+      type="button"
+      aria-label="故事板说明"
+      aria-expanded={open}
+      title={open ? undefined : plan.boardLine}
+      onClick={() => setOpen((value) => !value)}
+      className="text-muted-foreground/80 hover:text-muted-foreground border-border focus-visible:ring-ring/60 mb-2 flex shrink-0 cursor-default items-start gap-1.5 border-b pb-2 text-left text-xs leading-relaxed outline-none select-text focus-visible:ring-2"
+    >
+      <Grid2x2 className="mt-[3px] size-3 shrink-0" />
+      <span className={cn("min-w-0", !open && "line-clamp-1")}>{plan.boardLine}</span>
+    </button>
   );
 }

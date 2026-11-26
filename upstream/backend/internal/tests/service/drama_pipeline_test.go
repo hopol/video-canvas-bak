@@ -37,6 +37,7 @@ type dramaMemory struct {
 	hasTakes   bool
 	replaceErr error
 	durations  map[string][]int // 按步骤给模型 9 的历史耗时（秒）
+	canvas     []byte           // 画布内容；为空时用默认的村口画布
 	mu         *sync.Mutex      // 并发拆解批次时由 lockedDramaMemory 和假画布共用
 }
 
@@ -226,6 +227,9 @@ func (r *dramaMemory) Summary(ctx context.Context, userID, episodeID uint64, _ m
 func (r *dramaMemory) GetByID(_ context.Context, userID, canvasID uint64) (*model.CanvasProject, error) {
 	if userID != r.project.UserID || canvasID != r.project.CanvasID {
 		return nil, repository.ErrNotFound
+	}
+	if r.canvas != nil {
+		return &model.CanvasProject{PayloadJSON: r.canvas}, nil
 	}
 	return &model.CanvasProject{PayloadJSON: []byte(`{"nodes":[{"id":"n_scene","data":{"drama":{"type":"scene","name":"村口","look":"夜","episodes":[]},"params":{"prompt":"夜间村口灯光"}}},{"id":"n_other","data":{"drama":{"type":"prop","name":"其他集","look":"","episodes":[2]},"params":{"prompt":"不应输入"}}},{"id":"n_orphan","data":{"drama":{"type":"prop","name":"未分类道具","look":"","episodes":null},"params":{"prompt":"未分类不应输入"}}}]}`)}, nil
 }

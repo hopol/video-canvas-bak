@@ -19,6 +19,7 @@ import {
   storyboardBatchSubmit,
   storyboardOptions,
 } from "@/utils/drama/episodes";
+import type { StoryboardTarget } from "@/utils/drama/video-models";
 
 import { useWorkspace } from "./context";
 import { EpisodeGrid, RangeSelect } from "./episode-pick";
@@ -35,20 +36,25 @@ type BatchEstimate =
  * 选中的集分别估价再加总（分镜接口一次只能估一集）。输入停 250ms 才请求，旧结果作废；
  * 任一集估不出来就显示那一集的原因。
  */
-function useBatchEstimate(dramaId: string, episodes: readonly number[], maxSeconds: number) {
-  const key = `${episodes.join(",")}|${maxSeconds}`;
+function useBatchEstimate(
+  dramaId: string,
+  episodes: readonly number[],
+  storyboard: StoryboardTarget,
+) {
+  const target = `${storyboard.maxSeconds}|${storyboard.videoModel ?? ""}`;
+  const key = `${episodes.join(",")}|${target}`;
   const [result, setResult] = useState<{ key: string; value: BatchEstimate } | null>(null);
-  /** 每集的估价，按「集号|时长上限」缓存在这次打开的弹窗里：勾选增减时只估新加的集 */
+  /** 每集的估价，按「集号|时长上限|视频模型」缓存在这次打开的弹窗里：勾选增减时只估新加的集 */
   const [estimateCache] = useState(() => new Map<string, Promise<number>>());
 
   useEffect(() => {
     if (episodes.length === 0) return;
     let active = true;
     const estimateOne = (no: number) => {
-      const cacheKey = `${no}|${maxSeconds}`;
+      const cacheKey = `${no}|${target}`;
       let hit = estimateCache.get(cacheKey);
       if (!hit) {
-        hit = estimateJob(dramaId, { step: "storyboard", episodes: [no], maxSeconds });
+        hit = estimateJob(dramaId, { step: "storyboard", episodes: [no], ...storyboard });
         // 失败的不缓存，下次重新估
         hit.catch(() => estimateCache.delete(cacheKey));
         estimateCache.set(cacheKey, hit);
@@ -96,13 +102,13 @@ function useBatchEstimate(dramaId: string, episodes: readonly number[], maxSecon
  */
 export function StoryboardBatchBody({
   initial,
-  maxSeconds,
+  storyboard,
   onClose,
 }: {
   /** 预先选中的集（片场当前集），不能选时忽略 */
   initial: number;
-  /** 视频模型的片段时长上限，和单集「生成脚本」一致 */
-  maxSeconds: number;
+  /** 视频模型和片段时长上限，和单集「生成脚本」一致 */
+  storyboard: StoryboardTarget;
   onClose: () => void;
 }) {
   const { drama, jobs, refresh } = useWorkspace();
@@ -115,7 +121,7 @@ export function StoryboardBatchBody({
   const [error, setError] = useState<string | null>(null);
 
   const submit = storyboardBatchSubmit(selected);
-  const estimate = useBatchEstimate(drama.id, submit.ok ? selected : [], maxSeconds);
+  const estimate = useBatchEstimate(drama.id, submit.ok ? selected : [], storyboard);
 
   const toggle = (no: number) =>
     setSelected((prev) =>
@@ -127,7 +133,9 @@ export function StoryboardBatchBody({
     setSubmitting(true);
     setError(null);
     const results = await Promise.allSettled(
-      selected.map((no) => submitJob(drama.id, { step: "storyboard", episodes: [no], maxSeconds })),
+      selected.map((no) =>
+        submitJob(drama.id, { step: "storyboard", episodes: [no], ...storyboard }),
+      ),
     );
     const failed: string[] = [];
     let started = 0;
@@ -234,13 +242,13 @@ export function StoryboardBatchDialog({
   onOpenChange,
   session,
   initial,
-  maxSeconds,
+  storyboard,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   session: number;
   initial: number;
-  maxSeconds: number;
+  storyboard: StoryboardTarget;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -248,7 +256,7 @@ export function StoryboardBatchDialog({
         <StoryboardBatchBody
           key={session}
           initial={initial}
-          maxSeconds={maxSeconds}
+          storyboard={storyboard}
           onClose={() => onOpenChange(false)}
         />
       </DialogContent>
@@ -259,14 +267,14 @@ export function StoryboardBatchDialog({
 /**
  * 片场右上角的「批量生成脚本」：按钮和弹窗放在一起，空状态的工具条和片场顶栏共用。
  * @param current 当前看的集，打开时预选（不能选时忽略）
- * @param maxSeconds 视频模型的片段时长上限
+ * @param storyboard 视频模型和片段时长上限
  */
 export function StoryboardBatchButton({
   current,
-  maxSeconds,
+  storyboard,
 }: {
   current: number;
-  maxSeconds: number;
+  storyboard: StoryboardTarget;
 }) {
   const [open, setOpen] = useState(false);
   const [session, setSession] = useState(0);
@@ -284,7 +292,7 @@ export function StoryboardBatchButton({
         onOpenChange={setOpen}
         session={session}
         initial={current}
-        maxSeconds={maxSeconds}
+        storyboard={storyboard}
       />
     </>
   );

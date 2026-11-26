@@ -36,6 +36,7 @@ var (
 	_ RangeOpener    = (*S3Storage)(nil)
 	_ DirectUploader = (*S3Storage)(nil)
 	_ BucketChecker  = (*S3Storage)(nil)
+	_ Copier         = (*S3Storage)(nil)
 )
 
 // NewFromSpec 按服务商预设创建 S3 兼容存储：先校验并规范化配置，再按寻址方式创建客户端。
@@ -160,6 +161,29 @@ func (s *S3Storage) Delete(ctx context.Context, key string) error {
 			return nil
 		}
 		return fmt.Errorf("storage: 删除对象失败: %w", err)
+	}
+	return nil
+}
+
+// Copy 用服务端 CopyObject 在同一个桶里复制对象，OSS / COS / S3 / R2 都支持，内容不经过后端。
+// 单次 CopyObject 上限 5GB，超过时服务商会报错，调用方应退回读出再写入。
+func (s *S3Storage) Copy(ctx context.Context, srcKey, dstKey string) error {
+	src, err := s.objectKey(srcKey)
+	if err != nil {
+		return err
+	}
+	dst, err := s.objectKey(dstKey)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: s.bucket, Object: dst},
+		minio.CopySrcOptions{Bucket: s.bucket, Object: src})
+	if err != nil {
+		if isS3NotFound(err) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("storage: 复制对象失败: %w", err)
 	}
 	return nil
 }

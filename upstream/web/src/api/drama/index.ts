@@ -276,6 +276,7 @@ export const toJobBody = (input: DramaJobInput) =>
     episodes: input.episodes,
     ratio: input.ratio || undefined,
     max_seconds: input.step === "storyboard" ? input.maxSeconds : undefined,
+    video_model: input.step === "storyboard" ? input.videoModel || undefined : undefined,
   });
 
 /** PATCH /drama-segments/:sid 请求体 */

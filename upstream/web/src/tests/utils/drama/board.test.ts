@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { CanvasNodeData } from "@/types";
 import {
-  BOARD_LINE,
   BOARD_RATIO,
   boardLayout,
+  boardLine,
+  promptLang,
   boardPrompt,
   boardRef,
   boardsFromGraph,
@@ -235,26 +236,112 @@ describe("utils/drama/board：画布上的故事板节点", () => {
       assetId: "31",
       src: "https://cdn/31.png",
       stale: true,
+      shotCount: 3,
     });
     expect(boardRef(of({ status: "running" }), "h1")).toEqual({
       assetId: "31",
       src: "https://cdn/31.png",
       stale: false,
+      shotCount: 3,
     });
   });
+});
 
-  test("提示词说明行点名图片1是宫格图", () => {
-    expect(BOARD_LINE).toContain("图片1");
-    expect(BOARD_LINE).toContain("分镜宫格图");
+describe("boardLine：生视频时提示词最前面的故事板说明", () => {
+  test("点名图片1是分镜宫格图，按从左到右、从上到下的顺序对应镜头", () => {
+    const line = boardLine(4, "16:9");
+    expect(line).toStartWith("图片1是本段的分镜宫格图");
+    expect(line).toContain("从左到右、从上到下");
+    expect(line).toContain("第1到第4格依次对应下面的第1到第4个镜头");
   });
 
-  test("提示词说明行：按格子顺序对应镜头、只参考构图；成片不带宫格线、编号、线稿和批注文字（故事板是带批注的手绘稿）", () => {
-    expect(BOARD_LINE).toContain("手绘");
-    expect(BOARD_LINE).toContain("编号顺序");
-    expect(BOARD_LINE).toContain("只参考构图");
-    for (const word of ["宫格线", "编号", "线稿", "批注文字"]) {
-      expect(BOARD_LINE.slice(BOARD_LINE.indexOf("不出现"))).toContain(word);
+  test("镜头比格子少（3 镜排 2x2）：点明多出来的格子不用", () => {
+    expect(boardLine(3, "16:9")).toContain("第1到第3格依次对应下面的第1到第3个镜头，第4格不用");
+    expect(boardLine(5, "16:9")).toContain("第6格不用");
+    expect(boardLine(1, "16:9")).toContain("第1格对应下面的镜头，第2到第4格不用");
+  });
+
+  test("没识别到镜头或镜头超过 9 个（最后一格合并了多个镜头）：不写具体格数", () => {
+    for (const shots of [0, 12]) {
+      const line = boardLine(shots, "16:9");
+      expect(line).toContain("各格依次对应下面的各个镜头");
+      expect(line).not.toMatch(/第\d/);
     }
-    expect(BOARD_LINE).toContain("下面写的画风");
+  });
+
+  test("只借构图、站位、景别和衔接，人物形象以其他参考图和文字为准", () => {
+    const line = boardLine(3, "16:9");
+    expect(line).toContain("只参考每格的构图、人物站位、景别和镜头衔接");
+    expect(line).toContain("人物形象、服装和场景细节以其他参考图和文字描述为准");
+  });
+
+  test("宫格图固定横版：成片画幅不同时要求按成片画幅重新构图，相同时不提", () => {
+    expect(boardLine(3, "9:16")).toContain("成片按 9:16 画幅重新构图");
+    expect(boardLine(3, BOARD_RATIO)).not.toContain("重新构图");
+    expect(boardLine(3, "")).not.toContain("重新构图");
+  });
+
+  test("不写死故事板画法（模板可以是手绘也可以是写实）；成片不带宫格线、编号、批注和宫格图本身的笔触色调", () => {
+    const line = boardLine(3, "9:16");
+    expect(line).not.toContain("手绘");
+    for (const word of ["宫格线", "边框", "格子编号", "批注文字"]) {
+      expect(line.slice(line.indexOf("不出现"))).toContain(word);
+    }
+    expect(line).toContain("不沿用宫格图本身的笔触和色调");
+    expect(line).toContain("画风按下面写的生成");
+  });
+});
+
+describe("boardLine：英文提示词（H3 转写稿）配英文说明", () => {
+  test("点名 Image 1 是分镜宫格图，按从左到右、从上到下对应镜头，多出的格子不用", () => {
+    const line = boardLine(3, "9:16", "en");
+    expect(line).toStartWith("Image 1 is the storyboard grid for this segment.");
+    expect(line).toContain("left to right, top to bottom");
+    expect(line).toContain("panels 1-3 correspond to shots 1-3 below; ignore panel 4");
+    expect(line).not.toMatch(/\p{Script=Han}/u);
+  });
+
+  test("格子对应的各种情况", () => {
+    expect(boardLine(1, "16:9", "en")).toContain(
+      "panel 1 corresponds to the shot below; ignore panels 2-4",
+    );
+    expect(boardLine(4, "16:9", "en")).not.toContain("ignore");
+    expect(boardLine(7, "16:9", "en")).toContain("ignore panels 8-9");
+    for (const shots of [0, 12]) {
+      expect(boardLine(shots, "16:9", "en")).toContain(
+        "the panels correspond to the shots below in order",
+      );
+    }
+  });
+
+  test("只借构图等，形象以参考图为准；画幅不同要求重新构图；成片不带宫格痕迹", () => {
+    const line = boardLine(3, "9:16", "en");
+    expect(line).toContain("only for composition, character blocking, shot size and continuity");
+    expect(line).toContain("follow the other reference images and the text");
+    expect(line).toContain("Reframe for 9:16.");
+    expect(boardLine(3, BOARD_RATIO, "en")).not.toContain("Reframe");
+    for (const word of ["grid lines", "borders", "panel numbers", "annotation text", "linework"]) {
+      expect(line).toContain(word);
+    }
+  });
+});
+
+describe("promptLang：提示词正文是中文还是英文", () => {
+  test("中文原稿、通用转写稿是中文；空串按中文", () => {
+    expect(promptLang("【画幅风格】9:16 竖屏，真人电影质感，RGB 暖色。")).toBe("zh");
+    expect(promptLang("@[垂钓台](n_scene) 0-5秒：中景，@[林阳](n_lin)按住石碑。")).toBe("zh");
+    expect(promptLang("")).toBe("zh");
+  });
+
+  test("H3 转写稿：对白、资产引用和引号里的原文是中文，描述是英文，算英文", () => {
+    const h3 = [
+      "integrated_multimodal_description: [Shot 1] Live-action, medium shot. @[闰土](n_runtu) stands in the melon field under the moon.",
+      'The boy with a clear, young voice (S1) says: <d>[Chinese] 月亮底下，你听，啦啦地响了，猹在咬瓜了。</d> A sign reads "海边瓜地".',
+      "",
+      "overall_soundscape: Waves, crickets.",
+      "",
+      "non_diegetic_music: None.",
+    ].join("\n");
+    expect(promptLang(h3)).toBe("en");
   });
 });

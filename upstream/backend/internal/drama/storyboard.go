@@ -63,6 +63,26 @@ func (o StoryboardOutput) ValidateMaxSeconds(limit int) error {
 	return nil
 }
 
+// ValidateVoices 检查每段引用的有声角色不超过视频模型的参考音频上限：片场提交视频时，
+// 段里每个配了声音的角色都要带一个参考音频。同一角色重复引用只算一次；limit 为 0 表示不限。
+func (o StoryboardOutput) ValidateVoices(limit int, voiced map[string]bool) error {
+	if limit <= 0 {
+		return nil
+	}
+	for i, segment := range o.Segments {
+		seen := map[string]bool{}
+		for _, parts := range storyboardMention.FindAllStringSubmatch(segment.Prompt, -1) {
+			if voiced[parts[2]] {
+				seen[parts[2]] = true
+			}
+		}
+		if len(seen) > limit {
+			return invalidOutput("第" + strconv.Itoa(i+1) + "段引用了" + strconv.Itoa(len(seen)) + "个has_voice为true的角色，超过max_audios=" + strconv.Itoa(limit) + "，须在镜头之间拆段")
+		}
+	}
+	return nil
+}
+
 // storyboardMention 只识别产品约定的资产引用格式，其他文本保持原样。
 var storyboardMention = regexp.MustCompile(`@\[([^\]\r\n]+)\]\(([^)\r\n]+)\)`)
 

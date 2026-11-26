@@ -112,15 +112,16 @@ func WithTaskClock(now func() time.Time) GenerationTaskOption {
 // GenerationTaskService 负责任务的提交、取消、查询、状态迁移与积分事务，并实现 provider.TaskStore。
 // worker（internal/provider/worker）只通过本服务导出的迁移方法改变任务状态，自己不碰事务和积分。
 type GenerationTaskService struct {
-	repo        GenerationTaskRepo
-	registry    provider.Registry
-	executor    provider.Executor
-	assets      provider.AssetStore
-	broadcaster ws.Broadcaster
-	cfg         config.AI
-	limits      TaskLimits
-	covers      CanvasCoverSetter
-	observer    GenerationTaskObserver
+	repo         GenerationTaskRepo
+	registry     provider.Registry
+	executor     provider.Executor
+	assets       provider.AssetStore
+	broadcaster  ws.Broadcaster
+	cfg          config.AI
+	limits       TaskLimits
+	covers       CanvasCoverSetter
+	nodeBackfill CanvasNodeBackfiller
+	observer     GenerationTaskObserver
 
 	validateInput func(kind string, caps modelcfg.Capabilities, input map[string]any) (map[string]any, []modelcfg.FieldError)
 	now           func() time.Time
@@ -154,6 +155,12 @@ func NewGenerationTaskService(deps GenerationTaskDeps, opts ...GenerationTaskOpt
 		o(s)
 	}
 	return s
+}
+
+// SetCanvasNodeBackfill 绑定「任务终态写回画布节点」的组件，必须在接收请求前调用。
+func (s *GenerationTaskService) SetCanvasNodeBackfill(backfill CanvasNodeBackfiller) {
+	// 与观察者一样是初始化后注入：画布仓储晚于任务服务创建。
+	s.nodeBackfill = backfill
 }
 
 // SetTaskObserver 在初始化时绑定关联业务观察者，必须在接收请求和启动队列前调用。

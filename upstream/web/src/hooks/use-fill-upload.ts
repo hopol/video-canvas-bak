@@ -7,9 +7,11 @@ import { UPLOAD_STACK_COLUMNS, UPLOAD_STACK_GAP } from "@/constants/canvas";
 import type { CanvasEdge, CanvasNodeData, FlowNode, MediaType, NodeKind } from "@/types";
 import {
   canFillNode,
+  canReplaceImage,
   fillAccept,
   fillAssetPatch,
   fillStartPatch,
+  replaceImagePatch,
   takeFillFile,
 } from "@/utils/canvas/fill-upload";
 import { isGroupNode } from "@/utils/canvas/group";
@@ -26,6 +28,10 @@ export type FillUploadActions = {
   pickAsset: (id: string) => void;
   /** 把素材库里选好的素材放进空节点 */
   fillAsset: (id: string, asset: AssetDto) => void;
+  /** 打开素材库给已有主图的图片节点选一张图换主图；节点不能换图（生成中等）时提示并作罢 */
+  pickReplace: (id: string) => void;
+  /** 把素材库里选好的图换成图片节点的主图，旧图留在节点历史里 */
+  replaceAsset: (id: string, asset: AssetDto) => void;
   /** 每个文件新建一个指定种类的节点并放进去，从视口中心起按网格排开；返回建出的节点 id */
   createFilled: (kind: NodeKind, files: File[]) => string[];
 };
@@ -68,8 +74,8 @@ export function useFillUpload({
   ) => string;
   /** 批量新建时第一个节点的落点（画布坐标） */
   origin: () => { x: number; y: number };
-  /** 打开锁定种类、单选的素材库弹框，选好后交回 fillAsset */
-  openAssetPicker: (id: string, kind: MediaType) => void;
+  /** 打开锁定种类、单选的素材库弹框，选好后交回 fillAsset（replace 为真时交回 replaceAsset） */
+  openAssetPicker: (id: string, kind: MediaType, replace?: boolean) => void;
 }): FillUploadActions {
   /** 上传素材不生成，接进来的线没有用处 */
   const dropIncoming = useCallback(
@@ -178,6 +184,38 @@ export function useFillUpload({
     [dropIncoming, emptyNode, patchNode],
   );
 
+  /** 节点还在、是有主图的图片节点；否则提示并返回 null */
+  const replaceableNode = useCallback(
+    (id: string) => {
+      const node = getNode(id);
+      if (!node || isGroupNode(node)) return null;
+      if (!canReplaceImage(node.data)) {
+        warn("这张图正在生成或上传，完成后再换");
+        return null;
+      }
+      return node;
+    },
+    [getNode],
+  );
+
+  const pickReplace = useCallback(
+    (id: string) => {
+      if (replaceableNode(id)) openAssetPicker(id, "image", true);
+    },
+    [openAssetPicker, replaceableNode],
+  );
+
+  const replaceAsset = useCallback(
+    (id: string, asset: AssetDto) => {
+      const node = replaceableNode(id);
+      if (!node) return;
+      if (asset.kind !== "image") return warn("素材种类和节点对不上");
+      // 换图不动接进来的线：生成节点换了主图，仍可以接着用它的提示词和参考图重新生成
+      patchNode(id, replaceImagePatch(node.data, asset));
+    },
+    [patchNode, replaceableNode],
+  );
+
   const createFilled = useCallback(
     (kind: NodeKind, files: File[]) => {
       const start = origin();
@@ -215,7 +253,15 @@ export function useFillUpload({
   );
 
   return useMemo(
-    () => ({ fillFile, pickFile, pickAsset, fillAsset, createFilled }),
-    [createFilled, fillAsset, fillFile, pickAsset, pickFile],
+    () => ({
+      fillFile,
+      pickFile,
+      pickAsset,
+      fillAsset,
+      pickReplace,
+      replaceAsset,
+      createFilled,
+    }),
+    [createFilled, fillAsset, fillFile, pickAsset, pickFile, pickReplace, replaceAsset],
   );
 }

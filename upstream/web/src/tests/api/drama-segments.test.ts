@@ -149,11 +149,18 @@ describe("api/drama：片段请求体", () => {
     });
   });
 
-  test("分镜任务带 max_seconds，其他步骤不带", () => {
+  test("分镜任务带 max_seconds 和 video_model，其他步骤不带", () => {
     expect(toJobBody({ step: "storyboard", episodes: [1], maxSeconds: 10 })).toEqual({
       step: "storyboard",
       episodes: [1],
       max_seconds: 10,
+    });
+    expect(
+      toJobBody({ step: "storyboard", episodes: [1], maxSeconds: 10, videoModel: "h3" }),
+    ).toEqual({ step: "storyboard", episodes: [1], max_seconds: 10, video_model: "h3" });
+    expect(toJobBody({ step: "scripts", episodes: [1], videoModel: "h3" })).toEqual({
+      step: "scripts",
+      episodes: [1],
     });
     expect(toJobBody({ step: "scripts", episodes: [1] })).toEqual({
       step: "scripts",

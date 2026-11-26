@@ -8,7 +8,7 @@ import type {
   RefSpec,
 } from "@/api/model/type";
 import type { CanvasNodeData, NodeKind } from "@/types";
-import { findPreset } from "@/constants/presets";
+import { findPreset, type PresetKind } from "@/constants/presets";
 import { expandPrompt, promptPresets, promptRefIds } from "@/utils/canvas/prompt-tokens";
 
 /** 参数 + 参数名，按 capabilities.params 的键顺序排列（也就是参数面板的显示顺序） */
@@ -525,40 +525,73 @@ function checkParam(field: ParamField, value: unknown): { value: unknown } | { e
 /** 提交时素材引用写成「图片1」这种编号，序号按 input 里同类素材的顺序 */
 const REF_WORD: Record<RefKind, string> = { image: "图片", video: "视频", audio: "音频" };
 
+/** 成对的引号圈住的是台词、字幕：这些字会被念出来或显示出来，里面只能是人话 */
+const SPEECH_QUOTE = /“[^”\n]*”|「[^」\n]*」|"[^"\n]*"/g;
+
+/** 按引号切段执行：引号本身留在片段里，回调能知道自己处理的是不是台词 */
+function expandQuoted(prompt: string, run: (segment: string, speech: boolean) => string): string {
+  let out = "";
+  let last = 0;
+  for (const m of prompt.matchAll(SPEECH_QUOTE)) {
+    const start = m.index ?? 0;
+    out += run(prompt.slice(last, start), false);
+    out += run(m[0], true);
+    last = start + m[0].length;
+  }
+  return last === 0 ? run(prompt, false) : out + run(prompt.slice(last), false);
+}
+
+/**
+ * 单个素材引用的展开规则。numbering 为真时写成「图片1」这种编号，为假（台词）时退回素材名：
+ * 视频模型会把台词照念出来，「图片2」就成了一句台词。
+ */
+function refResolver(
+  links: IncomingLink[],
+  input: Record<string, unknown>,
+  names: Map<string, string>,
+  numbering: boolean,
+): (id: string, label: string) => string {
+  return (id, label) => {
+    const link = links.find((item) => item.sourceId === id);
+    if (!link) return label;
+    if (link.sourceKind === "character") return names.get(id) || link.character?.name || label;
+    const ports = PORTS_OF_KIND[link.sourceKind];
+    if (ports.length !== 1) return label;
+    const port = ports[0];
+    if (port === "text")
+      return expandRefs(
+        link.text?.trim() || label,
+        links.filter((item) => item.sourceKind !== "script"),
+        input,
+        names,
+        !numbering,
+      );
+    if (!numbering) return label;
+    const ref = REF_KEYS.find((item) => item.kind === port);
+    const list = ref ? input[ref.key] : undefined;
+    const asset = toAssetNumber(link.assetId);
+    const index = Array.isArray(list) && asset !== null ? list.indexOf(asset) : -1;
+    return index >= 0 ? `${REF_WORD[port]}${index + 1}` : label;
+  };
+}
+
 /**
  * 把提示词里 @ 进来的素材和节点预设换成模型看得懂的文字：文本上游换成它的正文，
  * 素材换成在 input 里的编号（连线已断、素材没提交的，退回成素材名）；
  * 视频角色卡换成人物名与主图编号；预设换成预设提示词（设计稿 6.13），已下架的退回成名称。
+ * 台词与字幕（引号内，speechOnly 为真时整段）不给编号：视频模型会照着念，「图片2」就成了台词。
  */
 function expandRefs(
   prompt: string,
   links: IncomingLink[],
   input: Record<string, unknown>,
   names: Map<string, string>,
+  speechOnly = false,
 ): string {
-  return expandPrompt(
-    prompt,
-    (id, label) => {
-      const link = links.find((item) => item.sourceId === id);
-      if (!link) return label;
-      if (link.sourceKind === "character") return names.get(id) || link.character?.name || label;
-      const ports = PORTS_OF_KIND[link.sourceKind];
-      if (ports.length !== 1) return label;
-      const port = ports[0];
-      if (port === "text")
-        return expandRefs(
-          link.text?.trim() || label,
-          links.filter((item) => item.sourceKind !== "script"),
-          input,
-          names,
-        );
-      const ref = REF_KEYS.find((item) => item.kind === port);
-      const list = ref ? input[ref.key] : undefined;
-      const asset = toAssetNumber(link.assetId);
-      const index = Array.isArray(list) && asset !== null ? list.indexOf(asset) : -1;
-      return index >= 0 ? `${REF_WORD[port]}${index + 1}` : label;
-    },
-    (kind, id) => findPreset(kind, id)?.prompt,
+  const preset = (kind: PresetKind, id: string) => findPreset(kind, id)?.prompt;
+  if (speechOnly) return expandPrompt(prompt, refResolver(links, input, names, false), preset);
+  return expandQuoted(prompt, (segment, speech) =>
+    expandPrompt(segment, refResolver(links, input, names, !speech), preset),
   );
 }
 
@@ -593,12 +626,14 @@ function composePrompt(
   const parts = [expandRefs(typed, [...links, ...upstream], input, names).trim()];
   for (const [id, text] of texts)
     if (!cited.has(id))
+      // 文本上游整段都是台词 / 字幕 / 屏幕文字，引用只还原名字，不给画面编号
       parts.push(
         expandRefs(
           text,
           links.filter((item) => item.sourceKind !== "script"),
           input,
           names,
+          true,
         ),
       );
   return parts.filter(Boolean).join("\n\n");

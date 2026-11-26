@@ -85,6 +85,35 @@ func TestSettingsService_UpdateRegisterSettings(t *testing.T) {
 			}
 		}
 	})
+	t.Run("命令行登录有效期：不带字段（0）沿用库里已改过的值，不被默认值覆盖", func(t *testing.T) {
+		repo := newFakeSettingsRepo()
+		repo.kv[model.SettingCLITokenDays] = "7"
+		svc := NewSettingsService(repo, &fakeAudit{})
+		// 后台表单没有这个字段，保存其他设置时 CLITokenDays 为 0
+		v, err := svc.UpdateRegisterSettings(ctx, 1, &model.RegisterSettingsView{InitialCredits: 1, DefaultMaxActiveTasks: 2, QueueMultiplier: 5, QueueMaxWaitMinutes: 60})
+		if err != nil || v.CLITokenDays != 7 || repo.kv[model.SettingCLITokenDays] != "7" {
+			t.Fatalf("应沿用库里的 7 天：%+v kv=%v err=%v", v, repo.kv, err)
+		}
+	})
+	t.Run("命令行登录有效期：库里没有值且不带字段时落默认 30 天；显式给值则按给的写", func(t *testing.T) {
+		repo := newFakeSettingsRepo()
+		svc := NewSettingsService(repo, &fakeAudit{})
+		base := model.RegisterSettingsView{InitialCredits: 1, DefaultMaxActiveTasks: 2, QueueMultiplier: 5, QueueMaxWaitMinutes: 60}
+		v, err := svc.UpdateRegisterSettings(ctx, 1, &base)
+		if err != nil || v.CLITokenDays != DefaultCLITokenDays {
+			t.Fatalf("应落默认 %d 天：%+v %v", DefaultCLITokenDays, v, err)
+		}
+		withDays := base
+		withDays.CLITokenDays = 90
+		if v, err = svc.UpdateRegisterSettings(ctx, 1, &withDays); err != nil || v.CLITokenDays != 90 || repo.kv[model.SettingCLITokenDays] != "90" {
+			t.Fatalf("显式值应写入：%+v kv=%v err=%v", v, repo.kv, err)
+		}
+		tooLong := base
+		tooLong.CLITokenDays = 366
+		if _, err := svc.UpdateRegisterSettings(ctx, 1, &tooLong); codeOf(err) != errcode.ErrInvalidParams.Code {
+			t.Fatalf("超过 365 天应 10001：%v", err)
+		}
+	})
 	t.Run("写库失败透传", func(t *testing.T) {
 		repo := newFakeSettingsRepo()
 		repo.setErr = errBoom

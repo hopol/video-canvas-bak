@@ -147,6 +147,20 @@ func (s *UserService) issueToken(u *model.User) (*model.LoginView, error) {
 	return &model.LoginView{Token: token, ExpireAt: expireAt, Role: u.Role}, nil
 }
 
+// IssueTokenWithTTL 按指定有效期签发 JWT：命令行设备授权用它（按后台配置的天数）。
+// 与网页会话的 jwt.expire_hours 分开——命令行是「装一次、长期用」，网页是多设备短会话。
+// 签发的仍是同一套令牌（含 token_version），改密码后命令行登录态同样失效。
+func (s *UserService) IssueTokenWithTTL(u *model.User, ttl time.Duration) (*model.LoginView, error) {
+	if ttl <= 0 {
+		return s.issueToken(u)
+	}
+	token, expireAt, err := utils.GenerateTokenFor(uint(u.ID), u.Username, u.TokenVersion, s.JWTSecret, s.JWTIssuer, ttl)
+	if err != nil {
+		return nil, err
+	}
+	return &model.LoginView{Token: token, ExpireAt: expireAt, Role: u.Role}, nil
+}
+
 // logLogin 写一条登录记录。写失败只记日志：记录是审计辅助，不影响登录结果。
 func (s *UserService) logLogin(ctx context.Context, userID uint64, kind, result string, meta ClientMeta) {
 	l := &model.UserLoginLog{UserID: userID, Kind: kind, Result: result, IP: meta.IP, UserAgent: truncate(meta.UserAgent, maxUserAgentLen)}

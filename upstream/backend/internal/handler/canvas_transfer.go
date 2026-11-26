@@ -27,15 +27,16 @@ const (
 )
 
 // relaxTransferDeadlines 放宽本次请求的读写超时；测试用的 ResponseRecorder 等不支持时返回 ErrNotSupported，忽略即可。
-func relaxTransferDeadlines(c *gin.Context) {
+func relaxTransferDeadlines(c *gin.Context) time.Time {
 	rc := http.NewResponseController(c.Writer)
 	deadline := time.Now().Add(canvasTransferTimeout)
 	if err := rc.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		logger.Warn("放宽画布导入导出读超时失败", zap.Error(err))
+		logger.Warn("放宽素材交付读超时失败", zap.Error(err))
 	}
 	if err := rc.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		logger.Warn("放宽画布导入导出写超时失败", zap.Error(err))
+		logger.Warn("放宽素材交付写超时失败", zap.Error(err))
 	}
+	return deadline
 }
 
 // CanvasTransferHandler 处理画布的导出与导入。

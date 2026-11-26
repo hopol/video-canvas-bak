@@ -1,7 +1,7 @@
 /** 作品页的范围：全部（画布、短剧和营销片混排）、个人画布、个人短剧、个人营销片 */
-export type WorksScope = "all" | "mine" | "drama" | "marketing";
+export type WorksScope = "all" | "mine" | "drama" | "shared-drama" | "marketing";
 
-const SCOPES: readonly WorksScope[] = ["all", "mine", "drama", "marketing"];
+const SCOPES: readonly WorksScope[] = ["all", "mine", "drama", "shared-drama", "marketing"];
 
 /**
  * 读地址栏 ?scope=：认得的原样返回；没写、写错或已下线的「协作画布」（shared）都回到个人画布。

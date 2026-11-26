@@ -1,5 +1,6 @@
 import type { DramaJob } from "@/api/drama/type";
 import { Button } from "@/components/ui/button";
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { episodesLabel, isActiveJob } from "@/utils/drama/jobs";
 
 import { useWorkspace } from "./context";
@@ -7,6 +8,7 @@ import { JobProgressBar, ProgressRing, useCancelJob } from "./job-bar";
 
 /** 一条拆解任务：圆环、集数、细进度条、百分比（排队时写「排队中」）和取消 */
 function Row({ job }: { job: DramaJob }) {
+  const shared = useSharedWorkspace();
   const { busy, cancel } = useCancelJob(job);
   const queued = job.status === "queued";
   return (
@@ -20,7 +22,13 @@ function Row({ job }: { job: DramaJob }) {
       <span className="text-muted-foreground min-w-8 text-xs tabular-nums">
         {queued ? "排队中" : `${job.progress}%`}
       </span>
-      <Button variant="ghost" size="xs" disabled={busy} onClick={() => void cancel()}>
+      <Button
+        hidden={!!shared}
+        variant="ghost"
+        size="xs"
+        disabled={!!shared || busy}
+        onClick={() => void cancel()}
+      >
         取消
       </Button>
     </div>

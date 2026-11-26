@@ -19,6 +19,7 @@ import {
   usePanelPlacement,
 } from "@/components/canvas/hooks/use-panel-placement";
 import { NODE_TOOLBAR, type NodeToolbarConfig, type ToolbarTail } from "@/constants/node-toolbar";
+import { useFillUploadActions } from "@/hooks/use-fill-upload";
 import { useFrameNodes } from "@/hooks/use-frame-nodes";
 import { useRemoteModels } from "@/hooks/use-models";
 import { DURATION, EASE_OUT } from "@/lib/motion";
@@ -31,6 +32,7 @@ import { useStoryboardEditor } from "@/store/storyboard-editor";
 import { useTrimStore } from "@/store/trim";
 import type { CanvasNodeData } from "@/types";
 import { downloadMedia, downloadName } from "@/utils/canvas/download";
+import { canReplaceImage } from "@/utils/canvas/fill-upload";
 import { addNodeToLibrary, canAddToLibrary } from "@/utils/canvas/library-entry";
 import { toolbarGate } from "@/utils/canvas/node-toolbar-state";
 import { outpaintModels } from "@/utils/canvas/outpaint-node";
@@ -106,6 +108,8 @@ export function NodeOverlays({
   const framePicking = useFramePickStore((state) => state.nodeId === id);
   const enterFramePick = useFramePickStore((state) => state.enter);
   const { captureQuick } = useFrameNodes();
+  /** 不在画布编辑器里（节点组件单独渲染）时为 null，没有「从资产库替换」 */
+  const fillActions = useFillUploadActions();
   /** 「加入资产库」的文件夹选择器是否打开 */
   const [pickingFolder, setPickingFolder] = useState(false);
   const imageModels = useRemoteModels("image", data.kind === "image");
@@ -198,6 +202,9 @@ export function NodeOverlays({
       : undefined,
     // 只有素材已存到服务端的图片、视频、音频节点才有这个按钮，不限来源
     addToLibrary: canAddToLibrary(data) ? () => setPickingFolder(true) : undefined,
+    // 只有已有主图、没在生成的图片节点能换；空节点走自己的「素材库」
+    replaceFromLibrary:
+      fillActions && canReplaceImage(data) ? () => fillActions.pickReplace(id) : undefined,
   };
   /** 选好文件夹后加入资产库；失败（请求层已弹提示）抛出，让选择器保持打开 */
   const confirmAddToLibrary = async (folderId: string | null) => {

@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Loader2, Lock } from "lucide-react";
@@ -59,6 +60,7 @@ function TocItem({
  * 还没有剧本（规划只出目录）时显示空状态：「这一集还没有剧本」+「生成剧本」，以及梗概、钩子、悬念。
  */
 function EpisodeDoc({ no, onGenerate }: { no: number; onGenerate: (no: number) => void }) {
+  const shared = useSharedWorkspace();
   const { drama, applyEpisode, reportSave } = useWorkspace();
   const summary = drama.episodes.find((ep) => ep.no === no);
   const [episode, setEpisode] = useState<Episode | null>(null);
@@ -89,9 +91,9 @@ function EpisodeDoc({ no, onGenerate }: { no: number; onGenerate: (no: number) =
   // 目录里这一集的 revision / 状态变了（生成完、任务改了）：重新读正文
   useEffect(() => {
     const key = `${revision}:${scriptStatus}`;
-    if (known.current === key) return;
+    if (!shared && known.current === key) return;
     let active = true;
-    getEpisode(drama.id, no)
+    (shared ? Promise.resolve(shared.episodes[no]) : getEpisode(drama.id, no))
       .then((value) => {
         if (!active) return;
         known.current = `${value.revision}:${value.scriptStatus}`;
@@ -102,7 +104,7 @@ function EpisodeDoc({ no, onGenerate }: { no: number; onGenerate: (no: number) =
     return () => {
       active = false;
     };
-  }, [drama.id, no, revision, scriptStatus]);
+  }, [drama.id, no, revision, scriptStatus, shared]);
 
   if (!summary) return null;
   const edit = episodeEditState(summary);
@@ -193,7 +195,11 @@ function EpisodeDoc({ no, onGenerate }: { no: number; onGenerate: (no: number) =
             正在生成这一集的剧本…
           </div>
         ) : empty ? (
-          <EmptyScript episode={summary} onGenerate={() => onGenerate(no)} onSaveMeta={saveMeta} />
+          <EmptyScript
+            episode={summary}
+            onGenerate={() => onGenerate(no)}
+            onSaveMeta={shared ? undefined : saveMeta}
+          />
         ) : (
           <div
             ref={paper}
@@ -208,7 +214,7 @@ function EpisodeDoc({ no, onGenerate }: { no: number; onGenerate: (no: number) =
               key={`ep${no}`}
               value={episode.scriptMd}
               revision={episode.revision}
-              editable={edit.editable}
+              editable={!shared && edit.editable}
               isConflict={isRevisionConflict}
               onStatus={(status) => reportSave(`ep${no}`, status)}
               onSave={async (markdown) => {
@@ -275,7 +281,7 @@ function EpisodeDoc({ no, onGenerate }: { no: number; onGenerate: (no: number) =
           episode={summary}
           unitKind={drama.unitKind}
           inEmptyState={empty}
-          onSaveMeta={saveMeta}
+          onSaveMeta={shared ? undefined : saveMeta}
         />
       </aside>
     </div>
@@ -367,6 +373,7 @@ export function ScriptArea({
   onDoc: (doc: ScriptDoc) => void;
   onBreakdownOpen: () => void;
 }) {
+  const shared = useSharedWorkspace();
   const { drama } = useWorkspace();
   const { analyzing, showAnalyzing } = useAnalyzing();
   /** 写剧本弹窗：从浮条打开用默认选择，从某一集的空状态打开预选这一集 */
@@ -413,7 +420,7 @@ export function ScriptArea({
             />
           )}
         </div>
-        {!showAnalyzing && (
+        {!shared && !showAnalyzing && (
           <NextStepPill
             onBreakdown={onBreakdownOpen}
             onScripts={() => setScripts({ open: true })}

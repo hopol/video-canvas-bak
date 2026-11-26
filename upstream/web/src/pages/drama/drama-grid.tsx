@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { motion } from "motion/react";
-import { Loader2, MoreHorizontal, Trash2 } from "lucide-react";
+import { Loader2, MoreHorizontal, Share2, Trash2 } from "lucide-react";
+import { DramaShareDialog } from "./share-dialog";
+import { openDialog } from "@/store/dialog";
 
 import type { DramaSummary } from "@/api/drama/type";
 import { DramaPoster } from "@/components/drama/poster";
@@ -50,6 +52,7 @@ export function DramaCard({
   deleting,
   onDelete,
   instant,
+  onTransferred,
 }: {
   drama: DramaSummary;
   index: number;
@@ -57,6 +60,7 @@ export function DramaCard({
   instant?: boolean;
   deleting: boolean;
   onDelete: () => void;
+  onTransferred: () => void;
 }) {
   const [confirm, setConfirm] = useState(false);
   const status = dramaStatusLabel(drama.status, drama.phase);
@@ -122,6 +126,18 @@ export function DramaCard({
           <MoreHorizontal />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" sideOffset={6} className="w-36">
+          <DropdownMenuItem
+            onClick={() =>
+              openDialog(DramaShareDialog, {
+                id: drama.id,
+                title: drama.title,
+                transferred: onTransferred,
+              })
+            }
+          >
+            <Share2 />
+            共享
+          </DropdownMenuItem>
           <DropdownMenuItem variant="destructive" onClick={() => setConfirm(true)}>
             <Trash2 />
             删除
@@ -160,10 +176,12 @@ export function DramaGrid({
   items,
   deletingId,
   onDelete,
+  onTransferred,
 }: {
   items: DramaSummary[];
   deletingId: string | null;
   onDelete: (id: string) => void;
+  onTransferred: () => void;
 }) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4">
@@ -174,6 +192,7 @@ export function DramaGrid({
           index={index}
           deleting={deletingId === drama.id}
           onDelete={() => onDelete(drama.id)}
+          onTransferred={onTransferred}
         />
       ))}
     </div>

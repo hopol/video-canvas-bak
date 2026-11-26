@@ -137,30 +137,46 @@ func dramaImageModels(p *model.DramaProject) model.DramaImageModels {
 	return out
 }
 
-// storyboardSeconds 分镜单段时长上限：请求显式给了以请求为准；否则取项目视频模型的时长上限（夹在 4–60），
-// 项目没配视频模型、模型已不可用或没有时长参数时回落 15。估价与提交共用，保证两边一致。
-func (s *DramaService) storyboardSeconds(ctx context.Context, p *model.DramaProject, req *model.DramaJobReq) (int, error) {
+// storyboardLimits 解析分镜切段用的两个上限，估价与提交共用，保证两边一致。
+// 视频模型取请求里片场当前选的，没传用项目视频模型；请求点名的模型必须可用，不悄悄换成别的模型切段。
+// 单段时长：请求显式给了以请求为准；否则取模型的时长上限（夹在 4–60），没有模型或时长参数时回落 15。
+// 参考音频：模型收参考音频时取其上限，否则为 0（不限，提交视频时也不会带声音）。
+func (s *DramaService) storyboardLimits(ctx context.Context, p *model.DramaProject, req *model.DramaJobReq) (seconds, audios int, err error) {
+	snap, err := s.storyboardVideoModel(ctx, p, req)
+	if err != nil {
+		return 0, 0, err
+	}
+	seconds = storyboardDefaultSeconds
+	if snap != nil {
+		if maxSeconds, ok := modelMaxSeconds(snap.Model.Capabilities); ok {
+			seconds = min(storyboardMaxSecondsLimit, max(storyboardMinSeconds, int(math.Floor(maxSeconds))))
+		}
+		if audio := snap.Model.Capabilities.Refs.Audio; audio.On {
+			audios = audio.Max
+		}
+	}
 	if req.MaxSeconds != 0 {
-		return req.MaxSeconds, nil
+		seconds = req.MaxSeconds
+	}
+	return seconds, audios, nil
+}
+
+// storyboardVideoModel 返回分镜依据的视频模型快照；项目模型没配或已不可用时返回 nil，由调用方回落缺省。
+func (s *DramaService) storyboardVideoModel(ctx context.Context, p *model.DramaProject, req *model.DramaJobReq) (*provider.Snapshot, error) {
+	if req.VideoModel != "" {
+		if err := s.checkAssetModel(ctx, req.VideoModel, modelcfg.KindVideo, "视频模型"); err != nil {
+			return nil, err
+		}
+		return s.registry.Snapshot(ctx, req.VideoModel)
 	}
 	if p.VideoModel == "" || s.registry == nil {
-		return storyboardDefaultSeconds, nil
+		return nil, nil
 	}
 	snap, err := s.registry.Snapshot(ctx, p.VideoModel)
 	if errors.Is(err, provider.ErrModelUnavailable) {
-		return storyboardDefaultSeconds, nil
+		return nil, nil
 	}
-	if err != nil {
-		return 0, err
-	}
-	if snap == nil {
-		return storyboardDefaultSeconds, nil
-	}
-	maxSeconds, ok := modelMaxSeconds(snap.Model.Capabilities)
-	if !ok {
-		return storyboardDefaultSeconds, nil
-	}
-	return min(storyboardMaxSecondsLimit, max(storyboardMinSeconds, int(math.Floor(maxSeconds)))), nil
+	return snap, err
 }
 
 // modelMaxSeconds 读模型 duration 参数的上限：number 取 max，enum 取数字选项里最大的；没有时长参数返回 false。

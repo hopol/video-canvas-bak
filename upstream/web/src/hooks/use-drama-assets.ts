@@ -1,8 +1,11 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getCanvas } from "@/api/canvas";
+import type { CanvasGraphDto } from "@/api/canvas/type";
 import { useTasksStore } from "@/store/tasks";
 import { subscribeCanvasPatch } from "@/utils/agent/patch-bus";
+import { waitPendingSave } from "@/utils/canvas/pending-save";
 import type { TaskMap } from "@/utils/tasks/merge";
 import { boardsFromGraph, type BoardNode } from "@/utils/drama/board";
 import { assetsFromGraph, type RefAsset } from "@/utils/drama/segment-assets";
@@ -18,6 +21,8 @@ export type DramaAssetsState = {
   boards: ReadonlyMap<string, BoardNode>;
   /** 最近一次读到的故事板：reload 之后立刻取，不用等重新渲染 */
   boardsNow: () => ReadonlyMap<string, BoardNode>;
+  /** 换上一份刚存下的画布节点（片场里的画布编辑器存盘后交过来），不再读一次；还在路上的旧读取作废 */
+  applyGraph: (nodes: CanvasGraphDto["nodes"]) => void;
 };
 
 const NONE: RefAsset[] = [];
@@ -34,9 +39,11 @@ const withVoiceTasks = (assets: RefAsset[], tasks: TaskMap): RefAsset[] =>
  * 顺带取出故事板节点（生视频时作为第一张参考图）。
  * 只读画布，不占编辑锁；角色卡节点的形象、声音就在节点数据里，读到什么就是什么。
  * 页面回到前台时重新读一次，资产页里新生成的形象能跟上；reloadKey 变化也重读（拆解 / 写提示词任务收尾）；
- * 后端改了这张画布（片场生成的故事板写节点、出图回写）推 canvas.patch 时也重读。
+ * 后端改了这张画布（片场生成的故事板写节点、出图回写）推 canvas.patch 时也重读；
+ * 片场里挂着的画布编辑器自己存盘（在画布里点生成、隐藏着的画布回填出图）不推 canvas.patch，由调用方用 applyGraph 交过来。
  */
 export function useDramaAssets(canvasId: string, reloadKey = 0): DramaAssetsState {
+  const shared = useSharedWorkspace();
   const [assets, setAssets] = useState<RefAsset[]>(NONE);
   const [status, setStatus] = useState<DramaAssetsState["status"]>("loading");
   const [boards, setBoards] = useState<ReadonlyMap<string, BoardNode>>(NO_BOARDS);
@@ -45,28 +52,50 @@ export function useDramaAssets(canvasId: string, reloadKey = 0): DramaAssetsStat
   const tasks = useTasksStore((state) => state.tasks);
   const current = useMemo(() => withVoiceTasks(assets, tasks), [assets, tasks]);
 
-  const load = useCallback(async (): Promise<RefAsset[] | null> => {
-    const mine = ++seq.current;
-    try {
-      const canvas = await getCanvas(canvasId);
-      if (mine !== seq.current) return null;
-      const next = assetsFromGraph(canvas.graph.nodes);
+  /** 用一份画布节点更新资产和故事板；mine 不是最新一次（被更晚的读取 / 存盘顶掉）就作废，返回 null */
+  const ingest = useCallback(
+    async (nodes: CanvasGraphDto["nodes"], mine: number): Promise<RefAsset[] | null> => {
+      const next = assetsFromGraph(nodes);
       const voiceIds = [
         ...new Set(next.flatMap((asset) => (asset.voiceTaskId ? [asset.voiceTaskId] : []))),
       ];
-      if (voiceIds.length) await reconcileTaskIds(voiceIds);
+      if (!shared && voiceIds.length) await reconcileTaskIds(voiceIds);
       if (mine !== seq.current) return null;
       setAssets(next);
-      const nextBoards = boardsFromGraph(canvas.graph.nodes);
+      const nextBoards = boardsFromGraph(nodes);
       boardsRef.current = nextBoards;
       setBoards(nextBoards);
       setStatus("ready");
       return withVoiceTasks(next, useTasksStore.getState().tasks);
+    },
+    [shared],
+  );
+
+  const load = useCallback(async (): Promise<RefAsset[] | null> => {
+    const mine = ++seq.current;
+    try {
+      // 刚卸载的画布编辑器（资产管理里改完马上切到片场）还在补存：等它落地再读，不读到旧图谱
+      await waitPendingSave(canvasId);
+      if (mine !== seq.current) return null;
+      const canvas = shared?.canvas ?? (await getCanvas(canvasId));
+      if (mine !== seq.current) return null;
+      return await ingest(canvas.graph.nodes, mine);
     } catch {
       if (mine === seq.current) setStatus((prev) => (prev === "ready" ? prev : "error"));
       return null;
     }
-  }, [canvasId]);
+  }, [canvasId, ingest, shared]);
+  const applyGraph = useCallback(
+    (nodes: CanvasGraphDto["nodes"]) => {
+      // 故事板状态同步先换上，声音任务对账在后面慢慢补
+      const mine = ++seq.current;
+      const nextBoards = boardsFromGraph(nodes);
+      boardsRef.current = nextBoards;
+      setBoards(nextBoards);
+      void ingest(nodes, mine).catch(() => undefined);
+    },
+    [ingest],
+  );
   // 被更晚一次读取顶掉的调用改等最新结果：批量提交时多个片段同时重读，不能有人空手而归
   const latest = useRef<Promise<RefAsset[] | null>>(null);
   const reload = useCallback(() => followLatest(latest, load()), [load]);
@@ -86,5 +115,5 @@ export function useDramaAssets(canvasId: string, reloadKey = 0): DramaAssetsStat
   useEffect(() => subscribeCanvasPatch(canvasId, () => void reload()), [canvasId, reload]);
 
   const boardsNow = useCallback(() => boardsRef.current, []);
-  return { assets: current, status, reload, boards, boardsNow };
+  return { assets: current, status, reload, boards, boardsNow, applyGraph };
 }

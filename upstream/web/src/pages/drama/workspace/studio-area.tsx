@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { Clapperboard, Lock, ScrollText, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -6,6 +7,7 @@ import { episodeCardView } from "@/utils/drama/episode-cards";
 import type { DramaJob } from "@/api/drama/type";
 import { activeStoryboardJob, isActiveJob, jobConflictReason } from "@/utils/drama/jobs";
 import type { WorkspaceStage } from "@/utils/drama/stages";
+import type { StoryboardTarget } from "@/utils/drama/video-models";
 
 import { StudioView } from "../studio/view";
 import { useWorkspace } from "./context";
@@ -71,17 +73,17 @@ function InlineProgress({ job }: { job: DramaJob | undefined }) {
  */
 function GateFrame({
   current,
-  maxSeconds,
+  storyboard,
   children,
 }: {
   current: number;
-  maxSeconds: number;
+  storyboard: StoryboardTarget;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-border flex h-12 shrink-0 items-center justify-end gap-2 border-b px-4">
-        <StoryboardBatchButton current={current} maxSeconds={maxSeconds} />
+        <StoryboardBatchButton current={current} storyboard={storyboard} />
       </div>
       <div className="min-h-0 flex-1">{children}</div>
     </div>
@@ -98,9 +100,10 @@ export function StudioArea({
   /** 打开拆解弹窗（和总览、剧本、资产管理共用同一个） */
   onBreakdownOpen: () => void;
 }) {
+  const shared = useSharedWorkspace();
   const { drama, jobs, refresh } = useWorkspace();
   const video = useDramaVideoModel(drama.id, drama.videoModel);
-  const starter = useStoryboardStart(video.maxSeconds);
+  const starter = useStoryboardStart(video.storyboard);
   const episode = drama.episodes.find((item) => item.no === ep) ?? drama.episodes[0];
 
   if (!episode) {
@@ -129,9 +132,20 @@ export function StudioArea({
     );
   }
 
+  if (shared)
+    return (
+      <Gate
+        icon={<Clapperboard />}
+        title={
+          action.kind === "generating"
+            ? `正在生成第 ${episode.no} 集的分镜脚本…`
+            : `第 ${episode.no} 集还没有分镜`
+        }
+      />
+    );
   /** 空状态都套上带「批量生成脚本」的工具条 */
   const frame = (node: React.ReactNode) => (
-    <GateFrame current={episode.no} maxSeconds={video.maxSeconds}>
+    <GateFrame current={episode.no} storyboard={video.storyboard}>
       {node}
     </GateFrame>
   );
@@ -188,7 +202,7 @@ export function StudioArea({
         episode={episode}
         label={action.label}
         disabledReason={action.disabledReason}
-        maxSeconds={video.maxSeconds}
+        storyboard={video.storyboard}
         busy={starter.pending === episode.no}
         onStart={() => void starter.start(episode)}
       />

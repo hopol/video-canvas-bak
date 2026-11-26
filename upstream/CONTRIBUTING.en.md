@@ -75,15 +75,11 @@ Notes:
 
 ### Changelog
 
-Changelog entries are written during development, not assembled from commits at release time. We follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
+The changelog is written at release time, so **do not edit** `CHANGELOG.md` during development. When releasing, maintainers read the titles, descriptions and changes of the PRs merged since the last version and turn them into user-facing notes. To keep the notes accurate:
 
-- `feat` / `fix` / `perf` and breaking changes (`type!:` or `BREAKING CHANGE:` in the body) must add an entry under `## [Unreleased]` at the top of `CHANGELOG.md` **in the same commit or PR**.
-- Sections are limited to: `新增` (added), `改进` (improved), `修复` (fixed), `废弃` (deprecated), `破坏性变更` (breaking), `文档` (docs). Create the section if missing; entries start with `- `.
-- Write for users, in Simplified Chinese: describe the user-visible result, one change per entry, no function or file names.
-- Do not edit released sections; maintainers turn `[Unreleased]` into the new version at release time.
-- If there is genuinely nothing user-visible (refactors, tests and CI never need entries; a `feat` that is internal only), add a `Changelog: skip` line to the commit body, or ask a maintainer to label the PR `skip-changelog`.
-
-After `pre-commit install`, a `commit-msg` hook checks this on commit; the `Changelog` check on PRs does the same.
+- Give the PR a clear title in commit-message format, e.g. `fix(storyboard): 旧画布的资产在分镜里不再丢失`.
+- For user-visible changes, describe the result in a sentence or two of plain language under "用户能感受到的变化" (user-visible changes) in the PR description. Skip function and file names; write "无" (none) if there is nothing.
+- Do not edit `CHANGELOG.md` or `VERSION`.
 
 ## Pre-submit checks
 
@@ -134,7 +130,7 @@ Running `pre-commit install` is recommended; it runs most of these checks on com
 
 ## Releases
 
-Maintainers handle releases (turning `[Unreleased]` in `CHANGELOG.md` into the new version, updating `VERSION`, tagging `v*`). In a PR, only add entries under `[Unreleased]`; do not touch `VERSION` or released sections. See the [development guide](docs/development.en.md#ci-and-releases).
+Maintainers handle releases (writing the release notes into `CHANGELOG.md`, updating `VERSION`, tagging `v*`). In a PR, describe user-visible changes in the description; do not touch `CHANGELOG.md` or `VERSION`. See the [development guide](docs/development.en.md#ci-and-releases).
 
 ## Code of conduct
 

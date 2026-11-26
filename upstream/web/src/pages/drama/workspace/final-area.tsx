@@ -1,3 +1,4 @@
+import { useSharedWorkspace } from "@/hooks/use-shared-workspace";
 import { useEffect, useState } from "react";
 import { Check, Clapperboard, Combine, Download, Film, Loader2, TriangleAlert } from "lucide-react";
 
@@ -42,18 +43,20 @@ export function FinalArea({
   ep: number;
   onGo: (stage: WorkspaceStage, ep?: number) => void;
 }) {
+  const shared = useSharedWorkspace();
   const { drama, jobs } = useWorkspace();
   const episode = drama.episodes.find((item) => item.no === ep) ?? drama.episodes[0];
   const no = episode?.no ?? 0;
-  const segments =
+  const ownSegments =
     useDramaSegmentsStore((state) => state.byEpisode[segmentKey(drama.id, no)]) ?? NO_SEGMENTS;
+  const segments = shared ? (shared.segments[no] ?? NO_SEGMENTS) : ownSegments;
   const { compose, pending } = useCompose(drama.id);
   const [saving, setSaving] = useState(false);
 
   // 片段读自片段接口：进到成片页（或换集）时拉一次，之后靠推送保持新鲜
   useEffect(() => {
-    if (no > 0) void reloadSegments(drama.id, no);
-  }, [drama.id, no]);
+    if (!shared && no > 0) void reloadSegments(drama.id, no);
+  }, [drama.id, no, shared]);
 
   if (!episode) {
     return (
@@ -266,7 +269,8 @@ export function FinalArea({
             <Button
               className="w-full"
               variant={state === "fresh" ? "outline" : "default"}
-              disabled={!check.enabled || composing}
+              hidden={!!shared}
+              disabled={!!shared || !check.enabled || composing}
               title={check.reason ?? "按顺序拼接各片段采用的视频，不扣积分"}
               onClick={() => void compose(no)}
             >

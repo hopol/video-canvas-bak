@@ -30,13 +30,13 @@
 
 CI 经常因为格式 / lint 挂掉返工，下面几条是硬约束：
 
-- **改完一个文件就格式化它**，不要攒到最后：web 文件 `cd web && bun node_modules/oxfmt/bin/oxfmt <文件>`；agent 文件 `cd agent && npx oxfmt <文件>`（和 web 同一套 oxfmt / oxlint 规则，CI 同样检查）；Go 文件 `cd backend && golangci-lint fmt <文件>`（gofmt + goimports，与 CI 相同）。Claude Code 已用项目钩子自动完成（`.claude/settings.json` → `scripts/ai-hooks/format-on-edit.mjs`），其他助手需要自己跑。
-- **提交前跑 `bash scripts/check.sh`**（`--fix` 先自动格式化，`SKIP_TESTS=1` 跳过测试，可指定 `web` / `backend` / `agent`），它按改动范围执行和 `.github/workflows/ci.yml` 相同的检查。全部通过再提交。
+- **改完一个文件就格式化它**，不要攒到最后：web 文件 `cd web && bun node_modules/oxfmt/bin/oxfmt <文件>`；agent 文件 `cd agent && npx oxfmt <文件>`、cli 文件 `cd cli && npx oxfmt <文件>`（和 web 同一套 oxfmt / oxlint 规则，CI 同样检查）；Go 文件 `cd backend && golangci-lint fmt <文件>`（gofmt + goimports，与 CI 相同）。Claude Code 已用项目钩子自动完成（`.claude/settings.json` → `scripts/ai-hooks/format-on-edit.mjs`），其他助手需要自己跑。
+- **提交前跑 `bash scripts/check.sh`**（`--fix` 先自动格式化，`SKIP_TESTS=1` 跳过测试，可指定 `web` / `backend` / `agent` / `cli`），它按改动范围执行和 `.github/workflows/ci.yml` 相同的检查。全部通过再提交。
 - **不许跳过 Git 钩子**：不用 `--no-verify`、`git commit -n`，不把 `core.hooksPath` 指空。钩子报什么修什么；确认是钩子本身坏了就停下来告诉用户。
 - 写 Go 就按 golangci 限额写：函数 ≤ 80 行、≤ 50 条语句、认知复杂度 ≤ 20；超了就拆函数，不加 `//nolint` 糊过去。
 - 本机 `BUN_OPTIONS` 带 `--preload` 时 `bun run <脚本>` 会只打印帮助并返回 0（假通过），在 `web/` 下跑脚本前先 `unset BUN_OPTIONS`（PowerShell：`$env:BUN_OPTIONS=''`）。
 - 完整流程和常见报错修法见 `.claude/skills/ci-check/SKILL.md`（Codex 直接读该文件）。
-- **版本日志随改动写**：`feat` / `fix` / `perf` 和破坏性变更要在同一个提交里往 `CHANGELOG.md` 的 `## [Unreleased]` 对应小节（新增 / 改进 / 修复 / 废弃 / 破坏性变更 / 文档）加一条面向用户的中文描述；没有用户可感知变化就在提交正文写 `Changelog: skip`。pre-commit 的 `commit-msg` 钩子和 PR 的 `Changelog` 检查都会拦，规则见 `CONTRIBUTING.md`「版本日志」。
+- **版本日志发版时统一整理**：开发时不改 `CHANGELOG.md`。PR 标题按提交信息格式写清楚，用户能感受到的变化写进 PR 描述的「用户能感受到的变化」；发版时由 `video-canvas-release` 技能据此起草日志，维护者确认后写入。规则见 `CONTRIBUTING.md`「版本日志」。
 
 ## 线上 Agent 观测
 
@@ -47,6 +47,7 @@ CI 经常因为格式 / lint 挂掉返工，下面几条是硬约束：
 
 - 仓库根目录 `agent/` 是画布 Agent 服务（TypeScript，Pi Durable + SQLite，独立常驻，零渠道密钥）：会话、运行、审批、事件都在它里面，前端的 Agent 接口由 Go 校验登录态后反向代理过去（`backend/internal/handler/agent/proxy.go`），Go 通过平台 API（`/internal/platform/v1/*`，服务令牌鉴权）提供画布读写、模型代理和计费、生成任务、素材；Go 侧的 Agent 逻辑在 `backend/internal/agent/`、`backend/internal/service/agent/` 和 `backend/internal/handler/agent/`。改动在 `agent/` 下依次跑 `npm run typecheck`、`npm test`、`npm run build`；开发时用 `npm run serve`（Node 22.19+ 的类型剥离，不用先构建，环境变量见 `src/serve.ts` 头部注释），部署镜像里只有 `npm run build` 生成的 `dist/`（`agent/Dockerfile`）。设计与进度见 `docs/design/Agent服务拆分/`，部署、升级备份和恢复见 `docs/docker-production.md`「Agent 服务」。源码只能用「可擦除」的 TS 语法（不用 enum、namespace、参数属性），`tsc` 已通过 `erasableSyntaxOnly` 检查。
 
+- 仓库根目录 `cli/` 是命令行工具（TypeScript，Node >= 22.18，命令名 `video-canvas-cli` / `vc`，经 GitHub Release 分发，不发布到 npm 仓库）：用设备码在网页确认一次登录，之后读写画布、提交生成任务、节点级编辑（`POST /canvas/:id/ops`）；`--json` 输出单行结构化结果供脚本和终端 Agent 解析。后端提供设备授权（`/auth/cli/*`）、业务接口和一键安装脚本（`GET /api/v1/cli/install.sh|.ps1`，内嵌在 `backend/internal/cliinstall/` 的固定文本，不读请求头），不托管安装包。改动在 `cli/` 下依次跑 `npm run format:check`、`npm run lint`、`npm run typecheck`、`npm test`（带 pretest 构建）、`npm run build`，CI 的 cli 任务与之相同。CLI 有独立版本号（`cli/package.json`），与站点版本无关：推 `v*` tag 时 `release-docker.yml` 的 `pack-cli` 任务用 `npm pack` 打包，`release` 任务把 `video-canvas-cli.tgz`、`.tgz.sha256` 和清单 `video-canvas-cli.json` 挂到该 Release 上（文件名固定，`releases/latest/download/…` 永远指向最新一版）。一键安装脚本先校验 sha256 再 `npm i -g` 本地包，最后 `vc skill install`；改脚本时提示文字里的变量写成 `${VAR}`（UTF-8 locale 下 `$VAR）` 会报 unbound variable）。CLI 的升级提示按清单里的 version 判断，所以 CLI 有改动要让用户看到升级提示时，在同一个 PR 里改 `cli/package.json` 的 version。
 - 产品是 React 无限画布 + Go API 的 AI 视频创作应用。
 - 后端链路为 `router → middleware → handler → service → repository/cache`，异步生成经 worker 和 JS plugin-runner 调用模型供应商。
 - 前端通过 HTTP 请求读写资源，通过 WebSocket 接收任务状态，并用任务对账恢复断线期间的更新。
